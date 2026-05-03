@@ -15,7 +15,15 @@ export interface LockOptions {
  * Acquire an exclusive advisory file lock for `targetPath` (a `<targetPath>.lock`
  * sentinel file is created via O_CREAT|O_EXCL), run `fn`, and always release
  * the lock. On contention, retries with exponential backoff up to `timeoutMs`.
- * Stale locks (mtime older than `staleMs`) are force-removed and retried.
+ *
+ * Stale-lock recovery: a lock whose mtime is older than `staleMs` is treated as
+ * abandoned by a crashed prior holder. To avoid the classic TOCTOU race
+ * (process A stats stale → B acquires + releases → A blindly unlinks B's
+ * fresh lock → C now also acquires → A and C both think they own it), the
+ * recovery path checks that the lock's inode + mtimeNs are still identical
+ * after observation, and only then unlinks. If a concurrent process replaced
+ * the lock between observation and removal, the inode/mtime check fails and
+ * recovery aborts, leaving the new lock intact.
  *
  * Ensures the lockfile's parent directory exists (mkdir -p) before attempting
  * acquisition so callers don't have to.
@@ -30,7 +38,6 @@ export const withFileLock = async <T>(
   const timeout = opts.timeoutMs ?? RETRY_TIMEOUT_MS;
   const deadline = Date.now() + timeout;
 
-  // Ensure parent dir exists so O_CREAT can succeed.
   try {
     fs.mkdirSync(path.dirname(lockPath), { recursive: true });
   } catch {
@@ -56,19 +63,33 @@ export const withFileLock = async <T>(
         }
       }
     } catch {
-      // Stale lock detection: force-remove if older than `stale` and retry now.
+      // Stale-lock recovery with inode/mtime double-check (closes TOCTOU).
       try {
-        const stat = fs.statSync(lockPath);
-        if (Date.now() - stat.mtimeMs > stale) {
+        const stat = fs.statSync(lockPath, { bigint: true });
+        const ageMs = Date.now() - Number(stat.mtimeMs);
+        if (ageMs > stale) {
+          // Re-stat just before unlink. If inode + mtimeNs are identical to
+          // what we just observed, no one has replaced the lock — safe to
+          // unlink. Otherwise a fresh writer arrived; abort recovery and
+          // fall through to normal backoff so we don't trample their lock.
           try {
-            fs.unlinkSync(lockPath);
+            const stat2 = fs.statSync(lockPath, { bigint: true });
+            if (
+              stat2.ino === stat.ino &&
+              stat2.mtimeNs === stat.mtimeNs
+            ) {
+              fs.unlinkSync(lockPath);
+              continue;
+            }
+            // mtime/inode changed — someone else replaced it. Don't unlink.
           } catch {
-            // best-effort
+            // file vanished between checks — retry create-exclusive immediately
+            continue;
           }
-          continue;
         }
       } catch {
-        // lock file vanished between EEXIST and stat — try again immediately
+        // lock file vanished between EEXIST and stat — retry immediately
+        continue;
       }
 
       if (Date.now() > deadline) {

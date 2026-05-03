@@ -122,7 +122,7 @@ export const handleWorktreeRemove = (
       worktree_path: payload.worktree_path,
       ts: new Date().toISOString(),
     }
-    yield* Effect.gen(function* () {
+    const append = Effect.gen(function* () {
       const existsE = yield* Effect.either(fs2.exists(ledgerPath))
       const prior =
         existsE._tag === "Right" && existsE.right
@@ -135,6 +135,15 @@ export const handleWorktreeRemove = (
         JSON.stringify(entry) +
         "\n"
       yield* fs2.writeFile(ledgerPath, next)
-    }).pipe(Effect.catchAll(() => Effect.succeed(undefined)))
+    })
+    yield* fs2.withLock(ledgerPath, append).pipe(
+      Effect.catchAll((err) =>
+        Effect.sync(() => {
+          process.stderr.write(
+            `worktree-remove: ledger write failed: ${String(err).slice(0, 120)}\n`,
+          )
+        }),
+      ),
+    )
     return SAFE_DEFAULT
   })

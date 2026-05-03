@@ -54,6 +54,14 @@ export const handleNotification = (
     })
     yield* fs
       .withLock(ledgerPath, append)
-      .pipe(Effect.catchAll(() => Effect.succeed(undefined)))
+      .pipe(
+        Effect.catchAll((err) =>
+          Effect.sync(() => {
+            process.stderr.write(
+              `notification: ledger write failed: ${String(err).slice(0, 120)}\n`,
+            )
+          }),
+        ),
+      )
     return SAFE_DEFAULT
   })
