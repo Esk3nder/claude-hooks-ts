@@ -3,6 +3,9 @@ import { BunRuntime } from "@effect/platform-bun"
 import { HookPayload } from "./schema/payloads.ts"
 import { SAFE_DEFAULT, type HookDecision } from "./schema/decisions.ts"
 import { handleStub } from "./events/_stub.ts"
+import { handlePreToolUse } from "./events/pretool-policy.ts"
+import { handleConfigChange } from "./events/config-guard.ts"
+import { handleFileChanged } from "./events/filechanged-env-guard.ts"
 import { StdinParseError } from "./schema/errors.ts"
 
 const readStdin = (): Effect.Effect<string> =>
@@ -64,7 +67,15 @@ export const program = (argv: ReadonlyArray<string>): Effect.Effect<void> =>
       yield* emit(SAFE_DEFAULT)
       return
     }
-    const decision = yield* handleStub(action, decodedE.right)
+    const payload = decodedE.right
+    const decision = yield*
+      payload._tag === "PreToolUse"
+        ? handlePreToolUse(payload)
+        : payload._tag === "ConfigChange"
+          ? handleConfigChange(payload)
+          : payload._tag === "FileChanged"
+            ? handleFileChanged(payload)
+            : handleStub(action, payload)
     yield* emit(decision)
   }).pipe(
     Effect.catchAllCause((cause) =>
