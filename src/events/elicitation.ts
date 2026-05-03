@@ -1,56 +1,34 @@
 import { Effect } from "effect"
-import * as path from "node:path"
 import type { HookPayload } from "../schema/payloads.ts"
 import type { HookDecision } from "../schema/decisions.ts"
 import { SAFE_DEFAULT } from "../schema/decisions.ts"
-import { FileSystem } from "../services/filesystem.ts"
 import { Project } from "../services/project.ts"
+import { PolicyConfig } from "../services/policy-config.ts"
+import { Elicitations, elicitationSignature } from "../services/elicitations.ts"
 
-interface ElicitationLedgerEntry {
-  readonly session_id: string
-  readonly server_name: string
-  readonly tool_name: string
-  readonly elicitation: unknown
-  readonly ts: string
-}
-
-/**
- * Elicitation — minimal ledger entry. SAFE_DEFAULT (no policy yet).
- */
 export const handleElicitation = (
   payload: HookPayload,
-): Effect.Effect<HookDecision, never, FileSystem | Project> =>
+): Effect.Effect<HookDecision, never, Project | PolicyConfig | Elicitations> =>
   Effect.gen(function* () {
     if (payload._tag !== "Elicitation") return SAFE_DEFAULT
-    const fs = yield* FileSystem
     const project = yield* Project
-    const root = yield* project.root()
-    const ledgerPath = path.join(
-      root,
-      ".claude-hooks",
-      "state",
-      "elicitations.jsonl",
-    )
-    const entry: ElicitationLedgerEntry = {
-      session_id: payload.session_id,
-      server_name: payload.server_name,
-      tool_name: payload.tool_name,
-      elicitation: payload.elicitation,
-      ts: new Date().toISOString(),
+    const cwd = yield* project.root()
+    const policy = yield* PolicyConfig
+    const cfg = yield* policy.load()
+    if (cfg.elicitationDenylist.includes(payload.server_name)) {
+      return { hookSpecificOutput: { hookEventName: "Elicitation" as const, action: "decline" as const } }
     }
-    yield* Effect.gen(function* () {
-      const existsE = yield* Effect.either(fs.exists(ledgerPath))
-      const prior =
-        existsE._tag === "Right" && existsE.right
-          ? yield* fs
-              .readFile(ledgerPath)
-              .pipe(Effect.catchAll(() => Effect.succeed("")))
-          : ""
-      const next =
-        (prior.length === 0 || prior.endsWith("\n") ? prior : prior + "\n") +
-        JSON.stringify(entry) +
-        "\n"
-      yield* fs.writeFile(ledgerPath, next)
-    }).pipe(Effect.catchAll(() => Effect.succeed(undefined)))
+    const signature = elicitationSignature(payload.elicitation)
+    const elicitations = yield* Elicitations
+    const stored = yield* elicitations
+      .lookup(cwd, payload.server_name, payload.tool_name, signature)
+      .pipe(Effect.catchAll(() => Effect.succeed(null)))
+    if (stored === null) return SAFE_DEFAULT
+    if (stored.action === "accept") {
+      return { hookSpecificOutput: { hookEventName: "Elicitation" as const, action: "accept" as const, content: stored.content } }
+    }
+    if (stored.action === "decline") {
+      return { hookSpecificOutput: { hookEventName: "Elicitation" as const, action: "decline" as const } }
+    }
     return SAFE_DEFAULT
   })

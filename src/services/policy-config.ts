@@ -5,6 +5,8 @@ export interface PolicyConfigData {
   readonly secretPathGlobs: ReadonlyArray<string>
   readonly generatedFilePatterns: ReadonlyArray<RegExp>
   readonly secretValuePatterns: ReadonlyArray<RegExp>
+  /** MCP server names auto-declined for elicitation requests. */
+  readonly elicitationDenylist: ReadonlyArray<string>
 }
 
 export interface PolicyConfigApi {
@@ -66,6 +68,7 @@ export const DEFAULT_POLICY: PolicyConfigData = {
     /AKIA[0-9A-Z]{16}/,
     /-----BEGIN [A-Z ]*PRIVATE KEY-----/,
   ],
+  elicitationDenylist: [],
 }
 
 /**

@@ -8,6 +8,7 @@ import { LedgerTest } from "../services/ledger.ts"
 import { RedactTest } from "../services/redact.ts"
 import { BudgetTest } from "../services/budget.ts"
 import { SessionStateTest } from "../services/session-state.ts"
+import { ElicitationsTest } from "../services/elicitations.ts"
 
 export const AppTest = Layer.mergeAll(
   FileSystemTest(),
@@ -19,4 +20,5 @@ export const AppTest = Layer.mergeAll(
   RedactTest(),
   BudgetTest(),
   SessionStateTest(),
+  ElicitationsTest(),
 )
