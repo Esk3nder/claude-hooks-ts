@@ -49,13 +49,6 @@ export type AppendableKey =
   | "subagent_starts"
   | "subagent_stops";
 
-/**
- * SessionState API. Each method has two forms:
- *   1. Explicit `sessionId: string` — for direct test use / when the caller
- *      already has the id in scope.
- *   2. Omitted — reads the current session from the {@link currentSessionId}
- *      FiberRef set by `withSession` at the dispatcher entry point.
- */
 export interface SessionStateApi {
   readonly get: {
     (sessionId: string): Effect.Effect<SessionStateRecord, FsError>;
@@ -91,6 +84,13 @@ export interface SessionStateApi {
       }>,
     ): Effect.Effect<void, FsError>;
   };
+  /**
+   * Reset the session record to {@link EMPTY_SESSION_STATE}, overwriting any
+   * existing on-disk state. Used by `CwdChanged` when a project switch is
+   * detected so stale `files_changed` / `verification_status` from the
+   * previous project don't bleed across.
+   */
+  readonly reset: (sessionId: string) => Effect.Effect<void, FsError>;
 }
 
 export class SessionState extends Context.Tag("SessionState")<
@@ -109,16 +109,6 @@ const isStringArray = (v: unknown): v is ReadonlyArray<string> =>
 
 const decodeStrict = Schema.decodeUnknownEither(SessionStateRecordSchema);
 
-/**
- * Strict schema-validated read. On schema mismatch:
- *   1. write the raw bytes to a `<file>.corrupt-<ts>.bak` sibling for forensics
- *   2. emit a stderr warning
- *   3. return EMPTY_SESSION_STATE (callers should treat as fresh)
- *
- * Returns null only when the input is not even valid JSON, so the lenient
- * fallback can take over (we keep it for back-compat with files written by
- * older builds that allowed missing fields).
- */
 const parseRecordStrict = (
   raw: string,
   filePath: string,
@@ -198,10 +188,6 @@ const mergePatch = (
   ...patch,
 });
 
-/**
- * Resolve a sessionId from either an explicit argument or the
- * `currentSessionId` FiberRef. Fails with `FsError` if neither is available.
- */
 const resolveSessionId = (
   explicit: string | undefined,
 ): Effect.Effect<string, FsError> =>
@@ -238,7 +224,6 @@ export const SessionStateLive = (
                   const raw = await fs.readFile(file, "utf8");
                   const strict = parseRecordStrict(raw, file, sessionId);
                   if (strict !== null) return strict;
-                  // Not JSON at all → treat as empty (parity with old behaviour).
                   return EMPTY_SESSION_STATE;
                 } catch {
                   return EMPTY_SESSION_STATE;
@@ -325,6 +310,27 @@ export const SessionStateLive = (
           ),
         );
       }) as SessionStateApi["appendBatch"],
+      reset: (sessionId: string) =>
+        Effect.tryPromise({
+          try: async () => {
+            const file = statePath(root, sessionId);
+            await fs.mkdir(path.dirname(file), { recursive: true });
+            await withFileLock(file, async () => {
+              await fs.writeFile(
+                file,
+                JSON.stringify(EMPTY_SESSION_STATE, null, 2),
+                "utf8",
+              );
+            });
+          },
+          catch: (cause) =>
+            new FsError({
+              op: "session-state.reset",
+              path: statePath(root, sessionId),
+              message: String(cause),
+              cause,
+            }),
+        }),
     }),
   );
 
@@ -455,6 +461,12 @@ export const SessionStateTest = (
             ),
           );
         }) as SessionStateApi["appendBatch"],
+        reset: (sessionId: string) =>
+          Ref.update(ref, (m) => {
+            const out = new Map(m);
+            out.set(sessionId, EMPTY_SESSION_STATE);
+            return out;
+          }),
       });
     }),
   );

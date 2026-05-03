@@ -5,6 +5,7 @@ import type { HookDecision } from "../schema/decisions.ts"
 import { SAFE_DEFAULT } from "../schema/decisions.ts"
 import { FileSystem } from "../services/filesystem.ts"
 import { Project } from "../services/project.ts"
+import { SessionState } from "../services/session-state.ts"
 
 interface TeammateIdleLedgerEntry {
   readonly session_id: string
@@ -14,16 +15,25 @@ interface TeammateIdleLedgerEntry {
 }
 
 /**
- * TeammateIdle — minimal ledger entry, no policy yet.
+ * TeammateIdle — block going idle if the session has unverified pending work
+ * (`files_changed.length > 0 && verification_status !== "passed"`). Always
+ * appends a best-effort ledger entry; ledger failures are swallowed so they
+ * never affect the decision.
  */
 export const handleTeammateIdle = (
   payload: HookPayload,
-): Effect.Effect<HookDecision, never, FileSystem | Project> =>
+): Effect.Effect<
+  HookDecision,
+  never,
+  FileSystem | Project | SessionState
+> =>
   Effect.gen(function* () {
     if (payload._tag !== "TeammateIdle") return SAFE_DEFAULT
     const fs = yield* FileSystem
     const project = yield* Project
+    const state = yield* SessionState
     const root = yield* project.root()
+
     const ledgerPath = path.join(
       root,
       ".claude-hooks",
@@ -50,5 +60,19 @@ export const handleTeammateIdle = (
         "\n"
       yield* fs.writeFile(ledgerPath, next)
     }).pipe(Effect.catchAll(() => Effect.succeed(undefined)))
+
+    const stateE = yield* Effect.either(state.get(payload.session_id))
+    if (stateE._tag === "Right") {
+      const rec = stateE.right
+      if (
+        rec.files_changed.length > 0 &&
+        rec.verification_status !== "passed"
+      ) {
+        return {
+          continue: false,
+          stopReason: `Files changed (${rec.files_changed.length}) without verification — finish current work before going idle.`,
+        }
+      }
+    }
     return SAFE_DEFAULT
   })
