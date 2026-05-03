@@ -1,15 +1,12 @@
-import { describe, expect, test } from "bun:test"
-import { Effect, Layer, Schema } from "effect"
-import * as path from "node:path"
-import { handlePostCompact } from "../../src/events/postcompact-ledger.ts"
-import { HookPayload } from "../../src/schema/payloads.ts"
-import {
-  FileSystem,
-  FileSystemTest,
-} from "../../src/services/filesystem.ts"
-import { ProjectTest } from "../../src/services/project.ts"
+import { describe, expect, test } from "bun:test";
+import { Effect, Layer, Schema } from "effect";
+import * as path from "node:path";
+import { handlePostCompact } from "../../src/events/postcompact-ledger.ts";
+import { HookPayload } from "../../src/schema/payloads.ts";
+import { FileSystem, FileSystemTest } from "../../src/services/filesystem.ts";
+import { ProjectTest } from "../../src/services/project.ts";
 
-const decode = (raw: unknown) => Schema.decodeUnknownSync(HookPayload)(raw)
+const decode = (raw: unknown) => Schema.decodeUnknownSync(HookPayload)(raw);
 
 const postCompact = (sid: string, trigger?: string) =>
   decode({
@@ -17,31 +14,31 @@ const postCompact = (sid: string, trigger?: string) =>
     session_id: sid,
     hook_event_name: "PostCompact",
     ...(trigger !== undefined ? { trigger } : {}),
-  })
+  });
 
 describe("handlePostCompact", () => {
   test("appends ledger entry, returns SAFE_DEFAULT", async () => {
-    const fsLayer = FileSystemTest()
-    const layer = Layer.mergeAll(fsLayer, ProjectTest({ root: "/proj" }))
+    const fsLayer = FileSystemTest();
+    const layer = Layer.mergeAll(fsLayer, ProjectTest({ root: "/proj" }));
     const program = Effect.gen(function* () {
-      const decision = yield* handlePostCompact(postCompact("sid-1", "auto"))
-      const fs = yield* FileSystem
+      const decision = yield* handlePostCompact(postCompact("sid-1", "auto"));
+      const fs = yield* FileSystem;
       const ledger = path.join(
         "/proj",
         ".claude-hooks",
         "state",
         "postcompact-ledger.jsonl",
-      )
-      const content = yield* fs.readFile(ledger)
-      return { decision, content }
-    })
-    const r = await Effect.runPromise(program.pipe(Effect.provide(layer)))
-    expect(r.decision).toEqual({})
-    expect(r.content).toContain('"session_id":"sid-1"')
-    expect(r.content).toContain('"trigger":"auto"')
-    expect(r.content).toContain('"snapshot_path"')
-    expect(r.content.endsWith("\n")).toBe(true)
-  })
+      );
+      const content = yield* fs.readFile(ledger);
+      return { decision, content };
+    });
+    const r = await Effect.runPromise(program.pipe(Effect.provide(layer)));
+    expect(r.decision).toEqual({});
+    expect(r.content).toContain('"session_id":"sid-1"');
+    expect(r.content).toContain('"trigger":"auto"');
+    expect(r.content).toContain('"snapshot_path"');
+    expect(r.content.endsWith("\n")).toBe(true);
+  });
 
   test("ledger write failure → still returns SAFE_DEFAULT and emits stderr", async () => {
     const failingFs = Layer.succeed(FileSystem, {
@@ -73,42 +70,50 @@ describe("handlePostCompact", () => {
           path: "x",
           message: "boom",
         }) as never,
-    } as unknown as FileSystem["Type"])
-    const layer = Layer.mergeAll(failingFs, ProjectTest({ root: "/proj" }))
+      // Pass-through lock for the mock — body still fails via writeFile.
+      withLock: <A, E>(
+        _targetPath: string,
+        body: Effect.Effect<A, E>,
+      ): Effect.Effect<A, E> => body,
+    } as unknown as FileSystem["Type"]);
+    const layer = Layer.mergeAll(failingFs, ProjectTest({ root: "/proj" }));
 
-    const captured: string[] = []
-    const origWrite = process.stderr.write.bind(process.stderr)
-    ;(process.stderr.write as unknown) = (
+    const captured: string[] = [];
+    const origWrite = process.stderr.write.bind(process.stderr);
+    (process.stderr.write as unknown) = (
       chunk: string | Uint8Array,
     ): boolean => {
       const s2 =
-        typeof chunk === "string" ? chunk : new TextDecoder().decode(chunk)
-      captured.push(s2)
-      return true
-    }
+        typeof chunk === "string" ? chunk : new TextDecoder().decode(chunk);
+      captured.push(s2);
+      return true;
+    };
     try {
       const d = await Effect.runPromise(
         handlePostCompact(postCompact("sid-fail")).pipe(Effect.provide(layer)),
-      )
-      expect(d).toEqual({})
-      const joined = captured.join("")
-      expect(joined).toContain("postcompact-ledger:")
-      expect(joined).toContain("write failed:")
+      );
+      expect(d).toEqual({});
+      const joined = captured.join("");
+      expect(joined).toContain("postcompact-ledger:");
+      expect(joined).toContain("write failed:");
     } finally {
-      ;(process.stderr.write as unknown) = origWrite
+      (process.stderr.write as unknown) = origWrite;
     }
-  })
+  });
 
   test("non-PostCompact payload → SAFE_DEFAULT", async () => {
-    const layer = Layer.mergeAll(FileSystemTest(), ProjectTest({ root: "/proj" }))
+    const layer = Layer.mergeAll(
+      FileSystemTest(),
+      ProjectTest({ root: "/proj" }),
+    );
     const payload = decode({
       _tag: "Stop",
       session_id: "s",
       hook_event_name: "Stop",
-    })
+    });
     const d = await Effect.runPromise(
       handlePostCompact(payload).pipe(Effect.provide(layer)),
-    )
-    expect(d).toEqual({})
-  })
-})
+    );
+    expect(d).toEqual({});
+  });
+});
