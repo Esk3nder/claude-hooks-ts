@@ -2,30 +2,42 @@ import { describe, expect, test } from "bun:test"
 import { Effect, Layer, Schema } from "effect"
 import { handleElicitation } from "../../src/events/elicitation.ts"
 import { HookPayload } from "../../src/schema/payloads.ts"
-import { FileSystem, FileSystemTest } from "../../src/services/filesystem.ts"
 import { ProjectTest } from "../../src/services/project.ts"
+import { PolicyConfigTest } from "../../src/services/policy-config.ts"
+import { Elicitations, ElicitationsTest, elicitationSignature } from "../../src/services/elicitations.ts"
 
 const decode = (raw: unknown) => Schema.decodeUnknownSync(HookPayload)(raw)
 
+const samplePayload = decode({
+  _tag: "Elicitation", session_id: "s1", hook_event_name: "Elicitation",
+  server_name: "mcp.foo", tool_name: "ask", elicitation: { prompt: "?" },
+})
+
 describe("handleElicitation", () => {
-  test("ledger entry + SAFE_DEFAULT", async () => {
-    const layer = Layer.mergeAll(FileSystemTest(), ProjectTest({ root: "/proj" }))
-    const payload = decode({
-      _tag: "Elicitation",
-      session_id: "s1",
-      hook_event_name: "Elicitation",
-      server_name: "mcp.foo",
-      tool_name: "ask",
-      elicitation: { prompt: "?" },
-    })
+  test("server in denylist -> decline", async () => {
+    const layer = Layer.mergeAll(ProjectTest({ root: "/proj" }), PolicyConfigTest({ elicitationDenylist: ["mcp.foo"] }), ElicitationsTest())
+    const d = await Effect.runPromise(handleElicitation(samplePayload).pipe(Effect.provide(layer)))
+    const out = (d as { hookSpecificOutput?: { action?: string } }).hookSpecificOutput
+    expect(out?.action).toBe("decline")
+  })
+
+  test("lookup hit (accept) -> accept with stored content", async () => {
+    const sig = elicitationSignature({ prompt: "?" })
     const program = Effect.gen(function* () {
-      const d = yield* handleElicitation(payload)
-      const fs = yield* FileSystem
-      const c = yield* fs.readFile("/proj/.claude-hooks/state/elicitations.jsonl")
-      return { d, c }
+      const e = yield* Elicitations
+      yield* e.record("/proj", "mcp.foo", "ask", sig, "accept", { ok: 1 })
+      return yield* handleElicitation(samplePayload)
     })
-    const r = await Effect.runPromise(program.pipe(Effect.provide(layer)))
-    expect(r.d).toEqual({})
-    expect(JSON.parse(r.c.trim()).server_name).toBe("mcp.foo")
+    const layer = Layer.mergeAll(ProjectTest({ root: "/proj" }), PolicyConfigTest({ elicitationDenylist: [] }), ElicitationsTest())
+    const d = await Effect.runPromise(program.pipe(Effect.provide(layer)))
+    const out = (d as { hookSpecificOutput?: { action?: string; content?: { ok: number } } }).hookSpecificOutput
+    expect(out?.action).toBe("accept")
+    expect(out?.content?.ok).toBe(1)
+  })
+
+  test("lookup miss -> SAFE_DEFAULT", async () => {
+    const layer = Layer.mergeAll(ProjectTest({ root: "/proj" }), PolicyConfigTest({ elicitationDenylist: [] }), ElicitationsTest())
+    const d = await Effect.runPromise(handleElicitation(samplePayload).pipe(Effect.provide(layer)))
+    expect(d).toEqual({})
   })
 })
