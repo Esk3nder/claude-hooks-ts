@@ -139,26 +139,29 @@ export const handlePostToolBatch = (
     if (sawVerify) verification = sawVerifyFail ? "failed" : "passed"
 
     // Persist into ledger (best-effort; never fail the hook).
-    // Fan out all branches concurrently with a per-branch timeout so a single
-    // slow filesystem write cannot stall the whole hook.
-    const safeAppend = (
-      key: "files_read" | "files_changed" | "commands_run" | "commands_failed" | "tests_run" | "source_urls",
-      v: string,
-    ): Effect.Effect<unknown, never, SessionState> =>
-      state
-        .append(sessionId, key, v)
+    // Coalesce all appends into a single read/modify/write via appendBatch.
+    type BatchKey =
+      | "files_read"
+      | "files_changed"
+      | "commands_run"
+      | "commands_failed"
+      | "tests_run"
+      | "source_urls"
+    const batchEntries: Array<{ readonly key: BatchKey; readonly value: string }> = []
+    for (const f of filesRead) batchEntries.push({ key: "files_read", value: f })
+    for (const f of filesChanged) batchEntries.push({ key: "files_changed", value: f })
+    for (const c of commandsRun) batchEntries.push({ key: "commands_run", value: c })
+    for (const c of commandsFailed) batchEntries.push({ key: "commands_failed", value: c })
+    for (const t of testsRun) batchEntries.push({ key: "tests_run", value: t })
+    for (const u of urlsCollected) batchEntries.push({ key: "source_urls", value: u })
+    if (batchEntries.length > 0) {
+      yield* state
+        .appendBatch(sessionId, batchEntries)
         .pipe(
           Effect.timeout("500 millis"),
-          Effect.orElseSucceed(() => null),
+          Effect.orElseSucceed(() => undefined),
         )
-    const branches: Array<Effect.Effect<unknown, never, SessionState>> = []
-    for (const f of filesRead) branches.push(safeAppend("files_read", f))
-    for (const f of filesChanged) branches.push(safeAppend("files_changed", f))
-    for (const c of commandsRun) branches.push(safeAppend("commands_run", c))
-    for (const c of commandsFailed) branches.push(safeAppend("commands_failed", c))
-    for (const t of testsRun) branches.push(safeAppend("tests_run", t))
-    for (const u of urlsCollected) branches.push(safeAppend("source_urls", u))
-    yield* Effect.all(branches, { concurrency: "unbounded", discard: true })
+    }
 
     let nextAction: string | null = null
     if (filesChanged.length > 0 && verification !== "passed") {

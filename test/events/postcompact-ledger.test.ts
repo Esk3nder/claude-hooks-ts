@@ -43,7 +43,7 @@ describe("handlePostCompact", () => {
     expect(r.content.endsWith("\n")).toBe(true)
   })
 
-  test("ledger write failure → still returns SAFE_DEFAULT", async () => {
+  test("ledger write failure → still returns SAFE_DEFAULT and emits stderr", async () => {
     const failingFs = Layer.succeed(FileSystem, {
       readFile: () =>
         Effect.fail({
@@ -57,7 +57,7 @@ describe("handlePostCompact", () => {
           _tag: "FsError" as const,
           op: "writeFile",
           path: "x",
-          message: "boom",
+          message: "boom-write",
         }) as never,
       exists: () =>
         Effect.fail({
@@ -75,10 +75,28 @@ describe("handlePostCompact", () => {
         }) as never,
     } as unknown as FileSystem["Type"])
     const layer = Layer.mergeAll(failingFs, ProjectTest({ root: "/proj" }))
-    const d = await Effect.runPromise(
-      handlePostCompact(postCompact("sid-fail")).pipe(Effect.provide(layer)),
-    )
-    expect(d).toEqual({})
+
+    const captured: string[] = []
+    const origWrite = process.stderr.write.bind(process.stderr)
+    ;(process.stderr.write as unknown) = (
+      chunk: string | Uint8Array,
+    ): boolean => {
+      const s2 =
+        typeof chunk === "string" ? chunk : new TextDecoder().decode(chunk)
+      captured.push(s2)
+      return true
+    }
+    try {
+      const d = await Effect.runPromise(
+        handlePostCompact(postCompact("sid-fail")).pipe(Effect.provide(layer)),
+      )
+      expect(d).toEqual({})
+      const joined = captured.join("")
+      expect(joined).toContain("postcompact-ledger:")
+      expect(joined).toContain("write failed:")
+    } finally {
+      ;(process.stderr.write as unknown) = origWrite
+    }
   })
 
   test("non-PostCompact payload → SAFE_DEFAULT", async () => {

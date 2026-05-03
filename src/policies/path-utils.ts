@@ -1,3 +1,5 @@
+import { homedir } from "node:os"
+
 /**
  * Glob → RegExp converter scoped to the patterns we use in M2 policies.
  * Supports `**`, `*`, `?`, character classes, and brace alternatives `{a,b}`.
@@ -63,10 +65,10 @@ const escapeRegexChar = (c: string): string =>
 export const normalizePath = (p: string): string => {
   let s = p
   if (s.startsWith("~/")) {
-    const home = process.env["HOME"] ?? ""
+    const home = homedir()
     s = home + "/" + s.slice(2)
   } else if (s === "~") {
-    s = process.env["HOME"] ?? "~"
+    s = homedir() || "~"
   }
   s = s.replace(/\\/g, "/").replace(/\/+/g, "/")
   return s
