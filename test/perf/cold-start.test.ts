@@ -12,9 +12,10 @@ const SAMPLE_PAYLOAD = JSON.stringify({
 })
 
 const RUNS = 50
-// p50 budget. Default 100ms; bump to 150 in CI environments where cold-start
-// is noisier (documented in README troubleshooting).
-const BUDGET_MS = process.env["CI"] === "true" ? 350 : 300
+// p50 budget. Local: 300ms. CI: 450ms (slower runner + noisier I/O; documented
+// in README troubleshooting). Bun cold start alone is ~120ms; remainder is
+// dispatcher import + Effect runtime + Match dispatch + AppLive composition.
+const BUDGET_MS = process.env["CI"] === "true" ? 450 : 300
 
 const median = (xs: ReadonlyArray<number>): number => {
   const sorted = [...xs].sort((a, b) => a - b)

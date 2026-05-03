@@ -87,3 +87,30 @@ Pull requests welcome. Please keep:
 ## License
 
 MIT (c) 2026 Esk3nder
+
+## Debugging — `claude-hooks-tail`
+
+Stream the per-session ledger like `tail -f`:
+
+```bash
+# Follow every session's ledger under the current cwd
+bun run scripts/tail.ts
+
+# Or via the bin shim once installed
+claude-hooks-tail
+
+# Filter to one session
+claude-hooks-tail --session abc123
+
+# Only events from a given ISO time
+claude-hooks-tail --since 2026-05-02T00:00:00Z
+
+# Run against a different project
+claude-hooks-tail --cwd /path/to/repo
+```
+
+Reads `<cwd>/.claude-hooks/state/<session>/ledger.jsonl` (or globs every
+`ledger.jsonl` under the state dir when `--session` is omitted), tails new
+appends every 200ms, and pretty-prints each entry as
+`[<iso>] <event> <session-short>: <summary>`. ANSI color when stdout is a TTY.
+SIGINT exits cleanly.
