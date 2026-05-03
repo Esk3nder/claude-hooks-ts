@@ -21,6 +21,17 @@ import { handleSubagentStart, handleSubagentStop } from "./events/subagent-scope
 import { handleTaskCreated, handleTaskCompleted } from "./events/task-integrity.ts"
 import { handleUserPromptExpansion } from "./events/user-prompt-expansion.ts"
 import { handlePostCompact } from "./events/postcompact-ledger.ts"
+import { handleSetup } from "./events/setup.ts"
+import { handlePermissionDenied } from "./events/permission-denied.ts"
+import { handleStopFailure } from "./events/stop-failure.ts"
+import { handleTeammateIdle } from "./events/teammate-idle.ts"
+import { handleNotification } from "./events/notification.ts"
+import { handleInstructionsLoaded } from "./events/instructions-loaded.ts"
+import { handleCwdChanged } from "./events/cwd-changed.ts"
+import { handleWorktreeCreate } from "./events/worktree-create.ts"
+import { handleWorktreeRemove } from "./events/worktree-remove.ts"
+import { handleElicitation } from "./events/elicitation.ts"
+import { handleElicitationResult } from "./events/elicitation-result.ts"
 import { Approvals, shouldGc } from "./services/approvals.ts"
 import { StdinParseError } from "./schema/errors.ts"
 import { AppLive } from "./layers/live.ts"
@@ -67,8 +78,23 @@ const readStdin = (): Effect.Effect<string> =>
     catch: () => new Error("stdin read failed"),
   }).pipe(Effect.catchAll(() => Effect.succeed("")))
 
+/**
+ * Type guard for the WorktreeCreate raw-string output shape. WorktreeCreate
+ * uniquely emits `{ worktreePath: string }`, which we serialize as a bare
+ * filesystem path on stdout (NOT JSON) so `git worktree add` consumers can
+ * read the path directly.
+ */
+const isWorktreeCreateDecision = (
+  d: HookDecision,
+): d is { worktreePath: string } =>
+  typeof (d as { worktreePath?: unknown }).worktreePath === "string"
+
 const emit = (decision: HookDecision): Effect.Effect<void> =>
   Effect.sync(() => {
+    if (isWorktreeCreateDecision(decision)) {
+      process.stdout.write(decision.worktreePath)
+      return
+    }
     process.stdout.write(JSON.stringify(decision))
   })
 
@@ -118,27 +144,39 @@ const maybeGcApprovals = (
 const routeByTag = (
   payload: HookPayload,
 ): Effect.Effect<HookDecision, never, AppServices> =>
-  Match.value(payload).pipe(
-    Match.tag("PreToolUse", (p) => handlePreToolUse(p)),
-    Match.tag("Stop", (p) => handleStop(p)),
-    Match.tag("PostToolBatch", (p) => handlePostToolBatch(p)),
-    Match.tag("SessionStart", (p) => handleSessionStart(p)),
-    Match.tag("UserPromptSubmit", (p) => handleUserPromptSubmit(p)),
-    Match.tag("PostToolUse", (p) => handlePostToolUse(p)),
-    Match.tag("PreCompact", (p) => handlePreCompact(p)),
-    Match.tag("SessionEnd", (p) => handleSessionEnd(p)),
-    Match.tag("PostToolUseFailure", (p) => handlePostToolUseFailure(p)),
-    Match.tag("PermissionRequest", (p) => handlePermissionRequest(p)),
-    Match.tag("SubagentStart", (p) => handleSubagentStart(p)),
-    Match.tag("SubagentStop", (p) => handleSubagentStop(p)),
-    Match.tag("TaskCreated", (p) => handleTaskCreated(p)),
-    Match.tag("TaskCompleted", (p) => handleTaskCompleted(p)),
-    Match.tag("ConfigChange", (p) => handleConfigChange(p)),
-    Match.tag("FileChanged", (p) => handleFileChanged(p)),
-    Match.tag("UserPromptExpansion", (p) => handleUserPromptExpansion(p)),
-    Match.tag("PostCompact", (p) => handlePostCompact(p)),
-    Match.exhaustive,
-  )
+  Match.type<HookPayload>().pipe(
+    Match.tagsExhaustive({
+      PreToolUse: (p) => handlePreToolUse(p),
+      Stop: (p) => handleStop(p),
+      PostToolBatch: (p) => handlePostToolBatch(p),
+      SessionStart: (p) => handleSessionStart(p),
+      UserPromptSubmit: (p) => handleUserPromptSubmit(p),
+      PostToolUse: (p) => handlePostToolUse(p),
+      PreCompact: (p) => handlePreCompact(p),
+      SessionEnd: (p) => handleSessionEnd(p),
+      PostToolUseFailure: (p) => handlePostToolUseFailure(p),
+      PermissionRequest: (p) => handlePermissionRequest(p),
+      SubagentStart: (p) => handleSubagentStart(p),
+      SubagentStop: (p) => handleSubagentStop(p),
+      TaskCreated: (p) => handleTaskCreated(p),
+      TaskCompleted: (p) => handleTaskCompleted(p),
+      ConfigChange: (p) => handleConfigChange(p),
+      FileChanged: (p) => handleFileChanged(p),
+      UserPromptExpansion: (p) => handleUserPromptExpansion(p),
+      PostCompact: (p) => handlePostCompact(p),
+      Setup: (p) => handleSetup(p),
+      PermissionDenied: (p) => handlePermissionDenied(p),
+      StopFailure: (p) => handleStopFailure(p),
+      TeammateIdle: (p) => handleTeammateIdle(p),
+      Notification: (p) => handleNotification(p),
+      InstructionsLoaded: (p) => handleInstructionsLoaded(p),
+      CwdChanged: (p) => handleCwdChanged(p),
+      WorktreeCreate: (p) => handleWorktreeCreate(p),
+      WorktreeRemove: (p) => handleWorktreeRemove(p),
+      Elicitation: (p) => handleElicitation(p),
+      ElicitationResult: (p) => handleElicitationResult(p),
+    }),
+  )(payload)
 
 const dispatchPayload = (
   _action: string,

@@ -43,6 +43,27 @@ export const ContextInjection = Schema.Struct({
   }),
 })
 
+/**
+ * WorktreeCreate decision: a raw filesystem path written to stdout (NOT JSON).
+ * The dispatcher special-cases emit() for WorktreeCreate to honor this.
+ */
+export const WorktreeCreateDecision = Schema.Struct({
+  worktreePath: Schema.String,
+})
+
+export type WorktreeCreateDecision = Schema.Schema.Type<typeof WorktreeCreateDecision>
+
+/**
+ * Elicitation decision: opaque structured payload returned to the elicitation
+ * subsystem. We model it loosely so future server-specific shapes are accepted.
+ */
+export const ElicitationDecision = Schema.Struct({
+  hookSpecificOutput: Schema.Struct({
+    hookEventName: Schema.Literal("Elicitation"),
+    response: Schema.optional(Schema.Unknown),
+  }),
+})
+
 export const NoOp = Schema.Struct({})
 
 export const HookDecision = Schema.Union(
@@ -50,6 +71,8 @@ export const HookDecision = Schema.Union(
   PermissionRequestDecision,
   StopDecision,
   ContextInjection,
+  WorktreeCreateDecision,
+  ElicitationDecision,
   NoOp,
 )
 
@@ -60,6 +83,8 @@ export const DECISION_SCHEMAS = {
   PermissionRequestDecision,
   StopDecision,
   ContextInjection,
+  WorktreeCreateDecision,
+  ElicitationDecision,
   NoOp,
 } as const
 

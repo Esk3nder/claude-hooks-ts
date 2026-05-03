@@ -9,7 +9,8 @@
   "bin": {
     "claude-hook": "./bin/claude-hook",
     "claude-hooks-install": "./bin/claude-hooks-install",
-    "claude-hooks-tail": "./bin/claude-hooks-tail"
+    "claude-hooks-tail": "./bin/claude-hooks-tail",
+    "claude-hooks-doctor": "./bin/claude-hooks-doctor"
   },
   "scripts": {
     "typecheck": "tsc --noEmit",

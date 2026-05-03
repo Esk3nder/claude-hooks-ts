@@ -129,7 +129,7 @@ For brevity, every payload also carries the common fields `session_id`,
 
 ## StopFailure
 
-- Status: ⏳ not implemented
+- Status: ✅ implemented (`src/events/stop-failure.ts`)
 - Fires for: failure inside a Stop hook.
 - Input: `{ hook_event_name: "StopFailure", error?: unknown }`
 - Output: n/a
@@ -193,7 +193,7 @@ For brevity, every payload also carries the common fields `session_id`,
 
 ## PermissionDenied
 
-- Status: ⏳ not implemented (no schema yet)
+- Status: ✅ implemented (`src/events/permission-denied.ts`)
 - Fires for: after Claude Code rejects a permission request.
 - Input: `{ hook_event_name: "PermissionDenied", tool_name, tool_input, reason? }`
 - Output: n/a
@@ -271,47 +271,47 @@ For brevity, every payload also carries the common fields `session_id`,
 
 ## Setup
 
-- Status: ⏳ not implemented
+- Status: ✅ implemented (`src/events/setup.ts`)
 - Fires for: first-time project setup.
 
 ## TeammateIdle
 
-- Status: ⏳ not implemented
+- Status: ✅ implemented (`src/events/teammate-idle.ts`)
 - Fires for: a sub-agent has been idle for a configured threshold.
 
 ## Notification
 
-- Status: ⏳ not implemented
+- Status: ✅ implemented (`src/events/notification.ts`)
 - Fires for: Claude Code surfacing a UI notification.
 
 ## InstructionsLoaded
 
-- Status: ⏳ not implemented
+- Status: ✅ implemented (`src/events/instructions-loaded.ts`)
 - Fires for: CLAUDE.md / instructions file finished loading.
 
 ## CwdChanged
 
-- Status: ⏳ not implemented
+- Status: ✅ implemented (`src/events/cwd-changed.ts`)
 - Fires for: working directory change inside the session.
 
 ## WorktreeCreate
 
-- Status: ⏳ not implemented
+- Status: ✅ implemented (`src/events/worktree-create.ts`)
 - Fires for: git worktree creation.
 
 ## WorktreeRemove
 
-- Status: ⏳ not implemented
+- Status: ✅ implemented (`src/events/worktree-remove.ts`)
 - Fires for: git worktree removal.
 
 ## Elicitation
 
-- Status: ⏳ not implemented
+- Status: ✅ implemented (`src/events/elicitation.ts`)
 - Fires for: an elicitation request to the user (structured ask).
 
 ## ElicitationResult
 
-- Status: ⏳ not implemented
+- Status: ✅ implemented (`src/events/elicitation-result.ts`)
 - Fires for: result of an elicitation.
 
 ---
@@ -320,8 +320,8 @@ For brevity, every payload also carries the common fields `session_id`,
 
 | Category | Count |
 |---|---|
-| ✅ implemented | 18 |
-| ⏳ not implemented (stubs / future) | 11 |
+| ✅ implemented | 29 |
+| ⏳ not implemented (stubs / future) | 0 |
 | **Total spec events** | **29** |
 
 The 11 unimplemented events are non-blocking and are tracked for follow-up
