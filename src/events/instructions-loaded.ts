@@ -1,5 +1,6 @@
 import { Effect } from "effect"
 import * as path from "node:path"
+import * as fsSync from "node:fs"
 import type { HookPayload } from "../schema/payloads.ts"
 import type { HookDecision } from "../schema/decisions.ts"
 import { SAFE_DEFAULT } from "../schema/decisions.ts"
@@ -14,9 +15,41 @@ interface InstructionsLoadedLedgerEntry {
   readonly ts: string
 }
 
+const STALE_AGE_MS = 30 * 24 * 60 * 60 * 1000 // 30 days
+const MS_PER_DAY = 24 * 60 * 60 * 1000
+
+const isThirdPartyHookFile = (filePath: string): boolean => {
+  const base = path.basename(filePath)
+  return /^bifrost-.*\.md$/.test(base) || /\.cursorrules$/.test(base)
+}
+
 /**
- * InstructionsLoaded — appends a ledger entry capturing which CLAUDE.md /
- * memory file was loaded and why. SAFE_DEFAULT.
+ * Best-effort mtime read in epoch-ms. Null on any failure (missing file,
+ * permission, etc.) — caller treats null as "no opinion".
+ */
+const safeMtimeMs = (filePath: string): number | null => {
+  try {
+    const st = fsSync.statSync(filePath)
+    return st.mtimeMs
+  } catch {
+    return null
+  }
+}
+
+const formatDate = (ms: number): string => {
+  const d = new Date(ms)
+  const yyyy = d.getUTCFullYear()
+  const mm = String(d.getUTCMonth() + 1).padStart(2, "0")
+  const dd = String(d.getUTCDate()).padStart(2, "0")
+  return `${yyyy}-${mm}-${dd}`
+}
+
+/**
+ * InstructionsLoaded — appends a ledger entry for observability, then:
+ *   - Warns when a Project memory file loaded at session start is >30 days
+ *     old (likely-stale CLAUDE.md).
+ *   - Flags third-party hook tooling (`bifrost-*.md`, `.cursorrules`) so the
+ *     user knows claude-hooks-ts may be composing with another layer.
  */
 export const handleInstructionsLoaded = (
   payload: HookPayload,
@@ -53,5 +86,38 @@ export const handleInstructionsLoaded = (
         "\n"
       yield* fs.writeFile(ledgerPath, next)
     }).pipe(Effect.catchAll(() => Effect.succeed(undefined)))
+
+    if (isThirdPartyHookFile(payload.file_path)) {
+      return {
+        hookSpecificOutput: {
+          hookEventName: "InstructionsLoaded",
+          additionalContext: `Third-party hook tooling detected (${path.basename(
+            payload.file_path,
+          )}). claude-hooks-ts may compose with it.`,
+        },
+      }
+    }
+
+    if (
+      payload.memory_type === "Project" &&
+      payload.load_reason === "session_start"
+    ) {
+      const mtime = safeMtimeMs(payload.file_path)
+      if (mtime !== null) {
+        const ageMs = Date.now() - mtime
+        if (ageMs > STALE_AGE_MS) {
+          const ageDays = Math.floor(ageMs / MS_PER_DAY)
+          return {
+            hookSpecificOutput: {
+              hookEventName: "InstructionsLoaded",
+              additionalContext: `CLAUDE.md is ${ageDays} days old (last modified ${formatDate(
+                mtime,
+              )}). Consider refreshing project context.`,
+            },
+          }
+        }
+      }
+    }
+
     return SAFE_DEFAULT
   })
