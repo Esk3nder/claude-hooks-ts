@@ -118,11 +118,90 @@ const FIXTURES: Record<string, unknown> = {
     task_id: "t1",
     status: "ok",
   },
+  Setup: {
+    _tag: "Setup",
+    session_id: "s1",
+    hook_event_name: "Setup",
+    trigger: "init",
+  },
+  PermissionDenied: {
+    _tag: "PermissionDenied",
+    session_id: "s1",
+    hook_event_name: "PermissionDenied",
+    tool_name: "Bash",
+    tool_input: { command: "rm -rf /" },
+    denial_reason: "destructive",
+  },
+  StopFailure: {
+    _tag: "StopFailure",
+    session_id: "s1",
+    hook_event_name: "StopFailure",
+    error_type: "timeout",
+    error_message: "hook timed out",
+  },
+  TeammateIdle: {
+    _tag: "TeammateIdle",
+    session_id: "s1",
+    hook_event_name: "TeammateIdle",
+    teammate_name: "researcher",
+    teammate_type: "subagent",
+  },
+  Notification: {
+    _tag: "Notification",
+    session_id: "s1",
+    hook_event_name: "Notification",
+    notification_type: "info",
+    message: "hello",
+  },
+  InstructionsLoaded: {
+    _tag: "InstructionsLoaded",
+    session_id: "s1",
+    hook_event_name: "InstructionsLoaded",
+    file_path: "/repo/CLAUDE.md",
+    memory_type: "Project",
+    load_reason: "session-start",
+  },
+  CwdChanged: {
+    _tag: "CwdChanged",
+    session_id: "s1",
+    hook_event_name: "CwdChanged",
+    previous_cwd: "/a",
+    new_cwd: "/b",
+  },
+  WorktreeCreate: {
+    _tag: "WorktreeCreate",
+    session_id: "s1",
+    hook_event_name: "WorktreeCreate",
+    base_path: "/repo/.wt",
+    worktree_name: "feat-x",
+  },
+  WorktreeRemove: {
+    _tag: "WorktreeRemove",
+    session_id: "s1",
+    hook_event_name: "WorktreeRemove",
+    worktree_path: "/repo/.wt/feat-x",
+  },
+  Elicitation: {
+    _tag: "Elicitation",
+    session_id: "s1",
+    hook_event_name: "Elicitation",
+    server_name: "mcp.foo",
+    tool_name: "ask",
+    elicitation: { prompt: "?" },
+  },
+  ElicitationResult: {
+    _tag: "ElicitationResult",
+    session_id: "s1",
+    hook_event_name: "ElicitationResult",
+    server_name: "mcp.foo",
+    tool_name: "ask",
+    action: "accept",
+  },
 }
 
 describe("HookPayload union", () => {
-  test("contains a variant for every Claude Code event (18)", () => {
-    expect(HOOK_EVENT_NAMES.length).toBe(18)
+  test("contains a variant for every Claude Code event (29)", () => {
+    expect(HOOK_EVENT_NAMES.length).toBe(29)
     for (const name of HOOK_EVENT_NAMES) {
       expect(PAYLOAD_SCHEMAS[name]).toBeDefined()
     }

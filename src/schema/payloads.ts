@@ -177,6 +177,100 @@ export const TaskCompleted = Schema.TaggedStruct("TaskCompleted", {
   evidence: Schema.optional(Schema.Array(Schema.String)),
 })
 
+/**
+ * Setup — first-time project setup. Per spec, no `permission_mode`.
+ */
+export const Setup = Schema.TaggedStruct("Setup", {
+  ...Common,
+  hook_event_name: Schema.Literal("Setup"),
+  trigger: Schema.optional(Schema.Literal("init", "maintenance")),
+})
+
+/**
+ * PermissionDenied — fired after Claude Code rejects a permission request.
+ * Carries `permission_mode` per spec (tool-related event).
+ */
+export const PermissionDenied = Schema.TaggedStruct("PermissionDenied", {
+  ...Common,
+  permission_mode: Schema.optional(Schema.String),
+  hook_event_name: Schema.Literal("PermissionDenied"),
+  tool_name: Schema.String,
+  tool_input: Schema.Unknown,
+  denial_reason: Schema.String,
+})
+
+/**
+ * StopFailure — failure inside a Stop hook. Per spec, no `permission_mode`.
+ */
+export const StopFailure = Schema.TaggedStruct("StopFailure", {
+  ...Common,
+  hook_event_name: Schema.Literal("StopFailure"),
+  error_type: Schema.String,
+  error_message: Schema.String,
+})
+
+export const TeammateIdle = Schema.TaggedStruct("TeammateIdle", {
+  ...Common,
+  hook_event_name: Schema.Literal("TeammateIdle"),
+  teammate_name: Schema.String,
+  teammate_type: Schema.String,
+})
+
+export const Notification = Schema.TaggedStruct("Notification", {
+  ...Common,
+  hook_event_name: Schema.Literal("Notification"),
+  notification_type: Schema.String,
+  message: Schema.String,
+})
+
+export const InstructionsLoaded = Schema.TaggedStruct("InstructionsLoaded", {
+  ...Common,
+  hook_event_name: Schema.Literal("InstructionsLoaded"),
+  file_path: Schema.String,
+  memory_type: Schema.Literal("User", "Project", "Local", "Managed"),
+  load_reason: Schema.String,
+  globs: Schema.optional(Schema.Array(Schema.String)),
+  trigger_file_path: Schema.optional(Schema.String),
+  parent_file_path: Schema.optional(Schema.String),
+})
+
+export const CwdChanged = Schema.TaggedStruct("CwdChanged", {
+  ...Common,
+  hook_event_name: Schema.Literal("CwdChanged"),
+  previous_cwd: Schema.String,
+  new_cwd: Schema.String,
+})
+
+export const WorktreeCreate = Schema.TaggedStruct("WorktreeCreate", {
+  ...Common,
+  hook_event_name: Schema.Literal("WorktreeCreate"),
+  base_path: Schema.String,
+  worktree_name: Schema.String,
+})
+
+export const WorktreeRemove = Schema.TaggedStruct("WorktreeRemove", {
+  ...Common,
+  hook_event_name: Schema.Literal("WorktreeRemove"),
+  worktree_path: Schema.String,
+})
+
+export const Elicitation = Schema.TaggedStruct("Elicitation", {
+  ...Common,
+  hook_event_name: Schema.Literal("Elicitation"),
+  server_name: Schema.String,
+  tool_name: Schema.String,
+  elicitation: Schema.Unknown,
+})
+
+export const ElicitationResult = Schema.TaggedStruct("ElicitationResult", {
+  ...Common,
+  hook_event_name: Schema.Literal("ElicitationResult"),
+  server_name: Schema.String,
+  tool_name: Schema.String,
+  action: Schema.Literal("accept", "decline", "cancel"),
+  content: Schema.optional(Schema.Unknown),
+})
+
 export const HookPayload = Schema.Union(
   SessionStart,
   UserPromptSubmit,
@@ -196,6 +290,17 @@ export const HookPayload = Schema.Union(
   SubagentStop,
   TaskCreated,
   TaskCompleted,
+  Setup,
+  PermissionDenied,
+  StopFailure,
+  TeammateIdle,
+  Notification,
+  InstructionsLoaded,
+  CwdChanged,
+  WorktreeCreate,
+  WorktreeRemove,
+  Elicitation,
+  ElicitationResult,
 )
 
 export type HookPayload = Schema.Schema.Type<typeof HookPayload>
@@ -219,6 +324,17 @@ export const PAYLOAD_SCHEMAS = {
   SubagentStop,
   TaskCreated,
   TaskCompleted,
+  Setup,
+  PermissionDenied,
+  StopFailure,
+  TeammateIdle,
+  Notification,
+  InstructionsLoaded,
+  CwdChanged,
+  WorktreeCreate,
+  WorktreeRemove,
+  Elicitation,
+  ElicitationResult,
 } as const
 
 export const HOOK_EVENT_NAMES: ReadonlyArray<keyof typeof PAYLOAD_SCHEMAS> = [
@@ -240,4 +356,15 @@ export const HOOK_EVENT_NAMES: ReadonlyArray<keyof typeof PAYLOAD_SCHEMAS> = [
   "SubagentStop",
   "TaskCreated",
   "TaskCompleted",
+  "Setup",
+  "PermissionDenied",
+  "StopFailure",
+  "TeammateIdle",
+  "Notification",
+  "InstructionsLoaded",
+  "CwdChanged",
+  "WorktreeCreate",
+  "WorktreeRemove",
+  "Elicitation",
+  "ElicitationResult",
 ]
