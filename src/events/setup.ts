@@ -92,7 +92,7 @@ export const handleSetup = (
       trigger,
       ts: new Date().toISOString(),
     }
-    yield* Effect.gen(function* () {
+    const append = Effect.gen(function* () {
       const existsE = yield* Effect.either(fs.exists(ledgerPath))
       const prior =
         existsE._tag === "Right" && existsE.right
@@ -105,7 +105,16 @@ export const handleSetup = (
         JSON.stringify(entry) +
         "\n"
       yield* fs.writeFile(ledgerPath, next)
-    }).pipe(Effect.catchAll(() => Effect.succeed(undefined)))
+    })
+    yield* fs.withLock(ledgerPath, append).pipe(
+      Effect.catchAll((err) =>
+        Effect.sync(() => {
+          process.stderr.write(
+            `setup: ledger write failed: ${String(err).slice(0, 120)}\n`,
+          )
+        }),
+      ),
+    )
 
     if (trigger === "maintenance") {
       const before = countApprovalLines(root)

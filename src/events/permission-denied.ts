@@ -84,6 +84,7 @@ export const handlePermissionDenied = (
 
     const recentTail = tailLines(result, TAIL_LINES);
     let count = 0;
+    let skipped = 0;
     for (const line of recentTail) {
       try {
         const obj = JSON.parse(line) as Partial<PermissionDeniedLedgerEntry>;
@@ -98,8 +99,13 @@ export const handlePermissionDenied = (
           }
         }
       } catch {
-        // skip malformed line
+        skipped += 1;
       }
+    }
+    if (skipped > 0) {
+      process.stderr.write(
+        `permission-denied: skipped ${skipped} malformed ledger lines\n`,
+      );
     }
 
     if (count >= REPEAT_THRESHOLD) {
