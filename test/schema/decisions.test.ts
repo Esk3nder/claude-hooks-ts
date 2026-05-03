@@ -3,6 +3,7 @@ import { Schema } from "effect"
 import {
   HookDecision,
   PreToolUseDecision,
+  PermissionRequestDecision,
   StopDecision,
   ContextInjection,
   NoOp,
@@ -32,6 +33,29 @@ const cases: Array<{ name: string; schema: Schema.Schema<unknown, unknown, never
       hookSpecificOutput: {
         hookEventName: "UserPromptSubmit",
         additionalContext: "ctx",
+      },
+    },
+  },
+  {
+    name: "PermissionRequestDecision",
+    schema: PermissionRequestDecision as unknown as Schema.Schema<unknown, unknown, never>,
+    value: {
+      hookSpecificOutput: {
+        hookEventName: "PermissionRequest",
+        permissionDecision: "allow",
+        permissionDecisionReason: "safe repeat",
+      },
+    },
+  },
+  {
+    name: "PreToolUseDecision-with-updatedInput",
+    schema: PreToolUseDecision as unknown as Schema.Schema<unknown, unknown, never>,
+    value: {
+      hookSpecificOutput: {
+        hookEventName: "PreToolUse",
+        permissionDecision: "allow",
+        permissionDecisionReason: "rewritten",
+        updatedInput: { command: "npm test 2>&1 | head -200" },
       },
     },
   },

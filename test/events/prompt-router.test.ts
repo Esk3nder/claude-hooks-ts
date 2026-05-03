@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test"
 import { Effect, Schema } from "effect"
 import { handleUserPromptSubmit } from "../../src/events/prompt-router.ts"
 import { HookPayload } from "../../src/schema/payloads.ts"
+import { SessionStateTest } from "../../src/services/session-state.ts"
 import {
   WORKFLOW_TAGS,
   type WorkflowTag,
@@ -39,7 +40,7 @@ describe("handleUserPromptSubmit", () => {
         hook_event_name: "UserPromptSubmit",
         prompt: samplePromptForTag(tag),
       })
-      const d = await Effect.runPromise(handleUserPromptSubmit(payload))
+      const d = await Effect.runPromise(handleUserPromptSubmit(payload).pipe(Effect.provide(SessionStateTest())))
       const out = d as {
         hookSpecificOutput: { hookEventName: string; additionalContext: string }
       }
@@ -57,7 +58,7 @@ describe("handleUserPromptSubmit", () => {
       session_id: "s",
       hook_event_name: "Stop",
     })
-    const d = await Effect.runPromise(handleUserPromptSubmit(payload))
+    const d = await Effect.runPromise(handleUserPromptSubmit(payload).pipe(Effect.provide(SessionStateTest())))
     expect(d).toEqual({})
   })
 })

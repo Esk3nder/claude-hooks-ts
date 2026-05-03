@@ -18,6 +18,7 @@ export interface SessionStateRecord {
   readonly source_urls: ReadonlyArray<string>
   readonly subagent_starts: ReadonlyArray<string>
   readonly subagent_stops: ReadonlyArray<string>
+  readonly last_workflow: string | null
 }
 
 export const EMPTY_SESSION_STATE: SessionStateRecord = {
@@ -32,6 +33,7 @@ export const EMPTY_SESSION_STATE: SessionStateRecord = {
   source_urls: [],
   subagent_starts: [],
   subagent_stops: [],
+  last_workflow: null,
 }
 
 export type AppendableKey =
@@ -100,6 +102,7 @@ const parseRecord = (raw: string): SessionStateRecord => {
       source_urls: isStringArray(sourceUrls) ? sourceUrls : [],
       subagent_starts: isStringArray(get("subagent_starts")) ? (get("subagent_starts") as ReadonlyArray<string>) : [],
       subagent_stops: isStringArray(get("subagent_stops")) ? (get("subagent_stops") as ReadonlyArray<string>) : [],
+      last_workflow: typeof get("last_workflow") === "string" ? (get("last_workflow") as string) : null,
     }
   } catch {
     return EMPTY_SESSION_STATE

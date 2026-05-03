@@ -5,3 +5,6 @@ dist/
 .env
 .env.*
 !.env.example
+
+.claude-hooks/state/
+*.bak.*

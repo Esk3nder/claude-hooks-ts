@@ -7,12 +7,15 @@
   "license": "MIT",
   "author": "Esk3nder",
   "bin": {
-    "claude-hook": "./bin/claude-hook"
+    "claude-hook": "./bin/claude-hook",
+    "claude-hooks-install": "./bin/claude-hooks-install"
   },
   "scripts": {
     "typecheck": "tsc --noEmit",
     "test": "bun test",
-    "dispatch": "bun run src/dispatcher.ts"
+    "dispatch": "bun run src/dispatcher.ts",
+    "install:dry": "bun run scripts/install.ts --dry-run",
+    "install:apply": "bun run scripts/install.ts --apply"
   },
   "dependencies": {
     "effect": "^3.10.0",

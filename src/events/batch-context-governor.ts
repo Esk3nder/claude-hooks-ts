@@ -38,6 +38,32 @@ const commandFromInput = (input: unknown): string | null => {
   return typeof c === "string" ? c : null
 }
 
+
+const URL_RE = /https?:\/\/[^\s"'<>)]+/g
+
+const urlsFromInput = (input: unknown): ReadonlyArray<string> => {
+  if (typeof input !== "object" || input === null) return []
+  const obj = input as { url?: unknown; query?: unknown }
+  const out: string[] = []
+  if (typeof obj.url === "string") out.push(obj.url)
+  if (typeof obj.query === "string") {
+    const m = obj.query.match(URL_RE)
+    if (m) for (const u of m) out.push(u)
+  }
+  return out
+}
+
+const urlsFromResponse = (response: unknown): ReadonlyArray<string> => {
+  if (response === undefined || response === null) return []
+  let text = ""
+  if (typeof response === "string") text = response
+  else {
+    try { text = JSON.stringify(response) } catch { return [] }
+  }
+  const m = text.match(URL_RE)
+  return m ? Array.from(new Set(m)) : []
+}
+
 const successFromTool = (entry: {
   readonly tool_response?: unknown
 }): boolean => {
@@ -80,6 +106,7 @@ export const handlePostToolBatch = (
     const commandsRun: string[] = []
     const commandsFailed: string[] = []
     const testsRun: string[] = []
+    const urlsCollected: string[] = []
     let verification: VerificationStatus = "none"
     let sawVerify = false
     let sawVerifyFail = false
@@ -103,6 +130,9 @@ export const handlePostToolBatch = (
             if (!success) sawVerifyFail = true
           }
         }
+      } else if (entry.tool_name === "WebFetch" || entry.tool_name === "WebSearch") {
+        for (const u of urlsFromInput(entry.tool_input)) urlsCollected.push(u)
+        for (const u of urlsFromResponse(entry.tool_response)) urlsCollected.push(u)
       }
     }
 
@@ -116,6 +146,7 @@ export const handlePostToolBatch = (
     for (const c of commandsRun) yield* safeAppend("commands_run", c)
     for (const c of commandsFailed) yield* safeAppend("commands_failed", c)
     for (const t of testsRun) yield* safeAppend("tests_run", t)
+    for (const u of urlsCollected) yield* safeAppend("source_urls", u)
 
     let nextAction: string | null = null
     if (filesChanged.length > 0 && verification !== "passed") {

@@ -17,6 +17,7 @@ import { evaluateProtectedPath } from "../policies/protected-paths.ts"
 import { evaluateSettingsSelfProtection } from "../policies/settings-self-protection.ts"
 import { evaluateGeneratedFile } from "../policies/generated-files.ts"
 import { evaluateLockfile } from "../policies/lockfile-paths.ts"
+import { shouldRewrite, rewriteTestCommand } from "../policies/test-output-rewrite.ts"
 
 const decision = (
   permissionDecision: "allow" | "deny" | "ask",
@@ -114,13 +115,45 @@ export const toHookDecision = (d: PolicyDecision): HookDecision => {
   }
 }
 
+const tryRewriteBashInput = (
+  toolName: string,
+  toolInput: unknown,
+): { readonly command: string } | null => {
+  if (toolName !== "Bash") return null
+  const decoded = Schema.decodeUnknownEither(BashInput)(toolInput)
+  if (decoded._tag === "Left") return null
+  const cmd = decoded.right.command
+  if (!shouldRewrite(cmd)) return null
+  return { command: rewriteTestCommand(cmd) }
+}
+
 export const handlePreToolUse = (
   payload: HookPayload,
 ): Effect.Effect<HookDecision> =>
   Effect.sync(() => {
     if (payload._tag !== "PreToolUse") return SAFE_DEFAULT
     const result = evaluateForTool(payload.tool_name, payload.tool_input)
-    return toHookDecision(result)
+    const base = toHookDecision(result)
+    // Only attach updatedInput when not denied/asked.
+    if (result.kind === "deny" || result.kind === "ask") return base
+    const rewrite = tryRewriteBashInput(payload.tool_name, payload.tool_input)
+    if (rewrite === null) return base
+    const inputObj =
+      typeof payload.tool_input === "object" && payload.tool_input !== null
+        ? (payload.tool_input as Record<string, unknown>)
+        : {}
+    const updatedInput = { ...inputObj, command: rewrite.command }
+    return {
+      hookSpecificOutput: {
+        hookEventName: "PreToolUse" as const,
+        permissionDecision: "allow" as const,
+        permissionDecisionReason:
+          result.kind === "allow"
+            ? (result.reason ?? "policy allow")
+            : "Test/build command rewritten to failure-only output.",
+        updatedInput,
+      },
+    }
   })
 
 // Re-export for tests.
