@@ -20,8 +20,14 @@ export const handlePermissionRequest = (
       .lookup(cwd, pattern)
       .pipe(Effect.catchAll(() => Effect.succeed(null)))
 
+    // A "pending" record is not a resolved decision; treat it as no decision.
+    const resolved =
+      lookup !== null && (lookup.status === "approved" || lookup.status === "denied")
+        ? lookup
+        : null
+
     const decisionKind: "allow" | "deny" | "ask" =
-      lookup === null ? "ask" : lookup.status === "approved" ? "allow" : "deny"
+      resolved === null ? "ask" : resolved.status === "approved" ? "allow" : "deny"
 
     const reason =
       decisionKind === "allow"
@@ -29,6 +35,15 @@ export const handlePermissionRequest = (
         : decisionKind === "deny"
           ? `auto-denied by autopilot (prior denial for pattern ${pattern})`
           : `no prior decision for pattern ${pattern}; asking user`
+
+    if (decisionKind === "ask") {
+      // Record the ask as pending so downstream tooling (CLI / future
+      // post-decision events) can resolve the same pattern key. This is what
+      // makes the ledger actually populated rather than dead state.
+      yield* approvals
+        .record({ cwd, pattern, status: "pending", recordedAt: Date.now() })
+        .pipe(Effect.catchAll(() => Effect.succeed(undefined as void)))
+    }
 
     const decision: HookDecision = {
       hookSpecificOutput: {

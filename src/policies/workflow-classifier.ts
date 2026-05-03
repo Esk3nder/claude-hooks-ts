@@ -127,10 +127,13 @@ const RULES: ReadonlyArray<Rule> = [
       /\b(implement|build|add (a |an |the )?(feature|endpoint|button|page|method|function|class|module|hook)|new feature|create (a |an |the )?(component|service|handler))\b/i,
   },
   // Ops: deploy
+  // Tightened to require a true deploy verb context. Excludes documentation
+  // phrases like "release notes", "release notes for", "changelog",
+  // "release history" so they fall through to writing.doc / ops.git.
   {
     tag: "ops.deploy",
     pattern:
-      /\b(deploy|release|ship|rollout|publish (to|the) (npm|registry|production|prod))\b/i,
+      /\b(?:deploy(?:ing|ed|ment)?|ship(?:ping|ped)?|rollout|cut a release|publish (?:to|the) (?:npm|registry|production|prod)|release(?: v?\d|(?: the| a)?(?: hot ?fix| candidate| build)?(?: (?:to|on|into) (?:prod|production|staging|preview|canary)))|release tonight|release today)\b/i,
   },
   // Ops: migration
   {
@@ -148,7 +151,7 @@ const RULES: ReadonlyArray<Rule> = [
   {
     tag: "writing.doc",
     pattern:
-      /\b(docs?|documentation|readme|changelog|tutorial|guide|write up|write-up|blog post|explainer)\b/i,
+      /\b(docs?|documentation|readme|changelog|release notes?|release history|tutorial|guide|write up|write-up|blog post|explainer)\b/i,
   },
   // Research: synthesis
   {

@@ -1,0 +1,21 @@
+src/services/user.ts(14,9): error TS2322: Type 'string' is not assignable to type 'number'.
+src/services/user.ts(27,3): error TS2741: Property 'email' is missing in type '{ id: number; name: string; }' but required in type 'User'.
+src/handlers/auth.ts(8,15): error TS2304: Cannot find name 'jwt'.
+src/handlers/auth.ts(42,5): error TS2532: Object is possibly 'undefined'.
+src/utils/parse.ts(3,22): error TS7006: Parameter 'input' implicitly has an 'any' type.
+src/utils/parse.ts(11,1): error TS1005: ',' expected.
+src/lib/db.ts(56,18): error TS2554: Expected 2 arguments, but got 1.
+src/lib/db.ts(73,9): error TS2769: No overload matches this call.
+  Overload 1 of 3, '(query: string): Promise<Row[]>', gave the following error.
+    Argument of type 'number' is not assignable to parameter of type 'string'.
+test/lib/db.test.ts(12,5): error TS2345: Argument of type 'null' is not assignable to parameter of type 'string'.
+test/lib/db.test.ts(20,18): error TS2540: Cannot assign to 'id' because it is a read-only property.
+
+Found 11 errors in 5 files.
+
+Errors  Files
+     2  src/services/user.ts:14
+     2  src/handlers/auth.ts:8
+     2  src/utils/parse.ts:3
+     2  src/lib/db.ts:56
+     2  test/lib/db.test.ts:12

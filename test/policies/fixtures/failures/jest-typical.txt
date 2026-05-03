@@ -1,0 +1,28 @@
+FAIL  src/sum.test.ts
+  Sum
+    ✓ adds positive numbers (3 ms)
+    ✕ adds negative numbers (5 ms)
+    ✓ handles zero (1 ms)
+
+  ● Sum › adds negative numbers
+
+    expect(received).toBe(expected) // Object.is equality
+
+    Expected: -3
+    Received: 1
+
+       8 |   test("adds negative numbers", () => {
+       9 |     const result = sum(-1, -2)
+    > 10 |     expect(result).toBe(-3)
+         |                    ^
+      11 |   })
+      12 | })
+
+      at Object.<anonymous> (src/sum.test.ts:10:20)
+
+Test Suites: 1 failed, 0 passed, 1 total
+Tests:       1 failed, 2 passed, 3 total
+Snapshots:   0 total
+Time:        1.234 s
+Ran all test suites matching /sum/i.
+Jest exited with code 1.
