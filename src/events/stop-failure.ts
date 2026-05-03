@@ -9,15 +9,61 @@ import { Project } from "../services/project.ts";
 interface StopFailureLedgerEntry {
   readonly session_id: string;
   readonly error_type: string;
+  readonly error_category: FailureCategory;
   readonly error_message: string;
   readonly ts: string;
 }
 
+export type FailureCategory =
+  | "rate_limit"
+  | "authentication"
+  | "server_error"
+  | "max_tokens"
+  | "other";
+
+export const categorizeFailure = (
+  errorType: string,
+  errorMessage: string,
+): FailureCategory => {
+  const t = errorType.toLowerCase();
+  const m = errorMessage.toLowerCase();
+  if (t.includes("rate") || t.includes("429") || m.includes("rate limit")) {
+    return "rate_limit";
+  }
+  if (
+    t.includes("auth") ||
+    t.includes("401") ||
+    t.includes("403") ||
+    m.includes("unauthorized") ||
+    m.includes("authentication")
+  ) {
+    return "authentication";
+  }
+  if (
+    t.includes("max_tokens") ||
+    t.includes("max-tokens") ||
+    t.includes("context_length") ||
+    m.includes("max tokens") ||
+    m.includes("context length")
+  ) {
+    return "max_tokens";
+  }
+  if (
+    t.includes("server") ||
+    /5\d{2}/.test(t) ||
+    t.includes("internal") ||
+    t.includes("overload")
+  ) {
+    return "server_error";
+  }
+  return "other";
+};
+
 /**
- * StopFailure — appends to <cwd>/.claude-hooks/state/failures.jsonl.
- * Best-effort, returns SAFE_DEFAULT. The read-modify-write block is
- * wrapped in `FileSystem.withLock` to prevent concurrent dispatcher
- * processes from interleaving partial JSON lines.
+ * StopFailure — appends to <cwd>/.claude-hooks/state/failures.jsonl, then
+ * categorizes the error and may emit a ContextInjection for actionable
+ * categories (rate_limit, authentication). Other categories return
+ * SAFE_DEFAULT to avoid polluting context with transient noise.
  */
 export const handleStopFailure = (
   payload: HookPayload,
@@ -33,9 +79,14 @@ export const handleStopFailure = (
       "state",
       "failures.jsonl",
     );
+    const category = categorizeFailure(
+      payload.error_type,
+      payload.error_message,
+    );
     const entry: StopFailureLedgerEntry = {
       session_id: payload.session_id,
       error_type: payload.error_type,
+      error_category: category,
       error_message: payload.error_message,
       ts: new Date().toISOString(),
     };
@@ -56,5 +107,23 @@ export const handleStopFailure = (
     yield* fs
       .withLock(ledgerPath, append)
       .pipe(Effect.catchAll(() => Effect.succeed(undefined)));
+
+    if (category === "rate_limit") {
+      return {
+        hookSpecificOutput: {
+          hookEventName: "Stop",
+          additionalContext:
+            "Recent failure: rate_limit. Consider waiting 60s or batching tool calls.",
+        },
+      };
+    }
+    if (category === "authentication") {
+      return {
+        hookSpecificOutput: {
+          hookEventName: "Stop",
+          additionalContext: `Re-auth needed: ${payload.error_message}`,
+        },
+      };
+    }
     return SAFE_DEFAULT;
   });

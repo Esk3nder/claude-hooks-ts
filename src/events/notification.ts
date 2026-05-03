@@ -14,7 +14,9 @@ interface NotificationLedgerEntry {
 }
 
 /**
- * Notification — minimal ledger entry, no policy yet.
+ * Notification — appends a ledger entry under <cwd>/.claude-hooks/state/notifications.jsonl
+ * for future correlation (e.g. idle/waiting nudges). Always returns SAFE_DEFAULT.
+ * Uses withLock to prevent interleaved writes from concurrent hook processes.
  */
 export const handleNotification = (
   payload: HookPayload,
@@ -36,7 +38,7 @@ export const handleNotification = (
       message: payload.message,
       ts: new Date().toISOString(),
     }
-    yield* Effect.gen(function* () {
+    const append = Effect.gen(function* () {
       const existsE = yield* Effect.either(fs.exists(ledgerPath))
       const prior =
         existsE._tag === "Right" && existsE.right
@@ -49,6 +51,9 @@ export const handleNotification = (
         JSON.stringify(entry) +
         "\n"
       yield* fs.writeFile(ledgerPath, next)
-    }).pipe(Effect.catchAll(() => Effect.succeed(undefined)))
+    })
+    yield* fs
+      .withLock(ledgerPath, append)
+      .pipe(Effect.catchAll(() => Effect.succeed(undefined)))
     return SAFE_DEFAULT
   })

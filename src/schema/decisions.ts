@@ -61,6 +61,8 @@ export const ElicitationDecision = Schema.Struct({
   hookSpecificOutput: Schema.Struct({
     hookEventName: Schema.Literal("Elicitation"),
     response: Schema.optional(Schema.Unknown),
+    action: Schema.optional(Schema.Literal("accept", "decline", "cancel")),
+    content: Schema.optional(Schema.Unknown),
   }),
 })
 

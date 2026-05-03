@@ -33,6 +33,8 @@ import { handleWorktreeRemove } from "./events/worktree-remove.ts"
 import { handleElicitation } from "./events/elicitation.ts"
 import { handleElicitationResult } from "./events/elicitation-result.ts"
 import { Approvals, shouldGc } from "./services/approvals.ts"
+import { Elicitations } from "./services/elicitations.ts"
+import { PolicyConfig } from "./services/policy-config.ts"
 import { StdinParseError } from "./schema/errors.ts"
 import { AppLive } from "./layers/live.ts"
 import { TracingLive } from "./services/tracing.ts"
@@ -43,7 +45,7 @@ import type { Git } from "./services/git.ts"
 import type { Project } from "./services/project.ts"
 import type { SessionState } from "./services/session-state.ts"
 
-type AppServices = FileSystem | Shell | Git | Project | SessionState | Approvals
+type AppServices = FileSystem | Shell | Git | Project | SessionState | Approvals | Elicitations | PolicyConfig
 
 /**
  * Test-only override: replace one event handler with an arbitrary Effect.
