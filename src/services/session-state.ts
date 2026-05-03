@@ -16,6 +16,8 @@ export interface SessionStateRecord {
   readonly next_required_action: string | null
   readonly stop_blocked_once: boolean
   readonly source_urls: ReadonlyArray<string>
+  readonly subagent_starts: ReadonlyArray<string>
+  readonly subagent_stops: ReadonlyArray<string>
 }
 
 export const EMPTY_SESSION_STATE: SessionStateRecord = {
@@ -28,6 +30,8 @@ export const EMPTY_SESSION_STATE: SessionStateRecord = {
   next_required_action: null,
   stop_blocked_once: false,
   source_urls: [],
+  subagent_starts: [],
+  subagent_stops: [],
 }
 
 export type AppendableKey =
@@ -37,6 +41,8 @@ export type AppendableKey =
   | "commands_failed"
   | "tests_run"
   | "source_urls"
+  | "subagent_starts"
+  | "subagent_stops"
 
 export interface SessionStateApi {
   readonly get: (sessionId: string) => Effect.Effect<SessionStateRecord, FsError>
@@ -92,6 +98,8 @@ const parseRecord = (raw: string): SessionStateRecord => {
       next_required_action: typeof next === "string" ? next : null,
       stop_blocked_once: stopBlocked === true,
       source_urls: isStringArray(sourceUrls) ? sourceUrls : [],
+      subagent_starts: isStringArray(get("subagent_starts")) ? (get("subagent_starts") as ReadonlyArray<string>) : [],
+      subagent_stops: isStringArray(get("subagent_stops")) ? (get("subagent_stops") as ReadonlyArray<string>) : [],
     }
   } catch {
     return EMPTY_SESSION_STATE

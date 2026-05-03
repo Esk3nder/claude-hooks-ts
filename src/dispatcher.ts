@@ -13,6 +13,11 @@ import { handlePostToolBatch } from "./events/batch-context-governor.ts"
 import { handleStop } from "./events/stop-definition-of-done.ts"
 import { handlePreCompact } from "./events/precompact-snapshot.ts"
 import { handleSessionEnd } from "./events/session-ledger.ts"
+import { handlePostToolUseFailure } from "./events/failure-explainer.ts"
+import { handlePermissionRequest } from "./events/permission-autopilot.ts"
+import { handleSubagentStart, handleSubagentStop } from "./events/subagent-scope-gate.ts"
+import { handleTaskCreated, handleTaskCompleted } from "./events/task-integrity.ts"
+import type { Approvals } from "./services/approvals.ts"
 import { StdinParseError } from "./schema/errors.ts"
 import { AppLive } from "./layers/live.ts"
 import type { FileSystem } from "./services/filesystem.ts"
@@ -21,7 +26,7 @@ import type { Git } from "./services/git.ts"
 import type { Project } from "./services/project.ts"
 import type { SessionState } from "./services/session-state.ts"
 
-type AppServices = FileSystem | Shell | Git | Project | SessionState 
+type AppServices = FileSystem | Shell | Git | Project | SessionState | Approvals
 
 const readStdin = (): Effect.Effect<string> =>
   Effect.tryPromise({
@@ -82,6 +87,18 @@ const dispatchPayload = (
       return handlePreCompact(payload)
     case "SessionEnd":
       return handleSessionEnd(payload)
+    case "PostToolUseFailure":
+      return handlePostToolUseFailure(payload)
+    case "PermissionRequest":
+      return handlePermissionRequest(payload)
+    case "SubagentStart":
+      return handleSubagentStart(payload)
+    case "SubagentStop":
+      return handleSubagentStop(payload)
+    case "TaskCreated":
+      return handleTaskCreated(payload)
+    case "TaskCompleted":
+      return handleTaskCompleted(payload)
     default:
       return handleStub(action, payload)
   }

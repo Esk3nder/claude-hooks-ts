@@ -8,6 +8,7 @@ import { LedgerLive } from "../services/ledger.ts"
 import { RedactLive } from "../services/redact.ts"
 import { BudgetLive } from "../services/budget.ts"
 import { SessionStateLive } from "../services/session-state.ts"
+import { ApprovalsLive } from "../services/approvals.ts"
 
 export const AppLive = Layer.mergeAll(
   FileSystemLive,
@@ -19,4 +20,5 @@ export const AppLive = Layer.mergeAll(
   RedactLive,
   BudgetLive,
   SessionStateLive(),
+  ApprovalsLive,
 )

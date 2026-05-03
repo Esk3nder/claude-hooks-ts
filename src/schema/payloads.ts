@@ -118,6 +118,7 @@ export const SubagentStop = Schema.TaggedStruct("SubagentStop", {
   hook_event_name: Schema.Literal("SubagentStop"),
   subagent_type: Schema.optional(Schema.String),
   task_id: Schema.optional(Schema.String),
+  result: Schema.optional(Schema.String),
 })
 
 export const TaskCreated = Schema.TaggedStruct("TaskCreated", {
@@ -132,6 +133,8 @@ export const TaskCompleted = Schema.TaggedStruct("TaskCompleted", {
   hook_event_name: Schema.Literal("TaskCompleted"),
   task_id: Schema.String,
   status: Schema.optional(Schema.String),
+  acceptance_criteria: Schema.optional(Schema.String),
+  evidence: Schema.optional(Schema.Array(Schema.String)),
 })
 
 export const HookPayload = Schema.Union(

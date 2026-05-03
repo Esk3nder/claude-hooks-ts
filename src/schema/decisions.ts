@@ -9,6 +9,14 @@ export const PreToolUseDecision = Schema.Struct({
   }),
 })
 
+export const PermissionRequestDecision = Schema.Struct({
+  hookSpecificOutput: Schema.Struct({
+    hookEventName: Schema.Literal("PermissionRequest"),
+    permissionDecision: Schema.Literal("allow", "deny", "ask"),
+    permissionDecisionReason: Schema.String,
+  }),
+})
+
 export const StopDecision = Schema.Struct({
   decision: Schema.Literal("block"),
   reason: Schema.String,
@@ -25,6 +33,7 @@ export const NoOp = Schema.Struct({})
 
 export const HookDecision = Schema.Union(
   PreToolUseDecision,
+  PermissionRequestDecision,
   StopDecision,
   ContextInjection,
   NoOp,
@@ -34,6 +43,7 @@ export type HookDecision = Schema.Schema.Type<typeof HookDecision>
 
 export const DECISION_SCHEMAS = {
   PreToolUseDecision,
+  PermissionRequestDecision,
   StopDecision,
   ContextInjection,
   NoOp,
