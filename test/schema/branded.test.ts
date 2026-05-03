@@ -26,6 +26,16 @@ describe("AbsolutePath", () => {
     const r = makeAbsolutePath("")
     expect(Either.isLeft(r)).toBe(true)
   })
+  test("rejects backslash characters", () => {
+    const r = makeAbsolutePath("/foo\\bar")
+    expect(Either.isLeft(r)).toBe(true)
+    if (Either.isLeft(r)) expect(r.left).toBeInstanceOf(BrandValidationError)
+  })
+  test("rejects NULL bytes", () => {
+    const r = makeAbsolutePath("/tmp/\0/x")
+    expect(Either.isLeft(r)).toBe(true)
+    if (Either.isLeft(r)) expect(r.left).toBeInstanceOf(BrandValidationError)
+  })
 })
 
 describe("ShellCommand", () => {

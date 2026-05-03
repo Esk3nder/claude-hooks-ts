@@ -23,10 +23,11 @@ const runGit = (args: string[], cwd?: string) =>
         new Response(proc.stderr as ReadableStream).text(),
       ])
       const exit = await proc.exited
-      if (exit !== 0)
-        throw new Error(
-          stderr.trim() || `git ${args.join(" ")} exited ${exit}`,
-        )
+      if (exit !== 0) {
+        const msg = (stderr.trim() || `git ${args.join(" ")} exited ${exit}`)
+          .slice(0, 500)
+        throw new Error(msg)
+      }
       return stdout.trim()
     },
     catch: (cause) =>

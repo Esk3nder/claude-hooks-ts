@@ -23,8 +23,11 @@ const compileRedactPatterns = (
 const DEFAULT_REDACT_PATTERNS: ReadonlyArray<RegExp> = compileRedactPatterns(
   DEFAULT_POLICY.secretValuePatterns,
 )
-const DEFAULT_CHECK_PATTERNS: ReadonlyArray<RegExp> =
-  DEFAULT_POLICY.secretValuePatterns
+// Use the same compiled patterns for detection so check and redact have
+// identical semantics (e.g. global flag stays consistent).
+const DEFAULT_CHECK_PATTERNS: ReadonlyArray<RegExp> = compileRedactPatterns(
+  DEFAULT_POLICY.secretValuePatterns,
+)
 
 const redactWith = (patterns: ReadonlyArray<RegExp>, input: string): string => {
   let out = input
@@ -58,12 +61,13 @@ export const RedactTest = (
   patterns: ReadonlyArray<RegExp> = DEFAULT_POLICY.secretValuePatterns,
 ): Layer.Layer<Redact> => {
   const redactPatterns = compileRedactPatterns(patterns)
+  const checkPatterns = compileRedactPatterns(patterns)
   return Layer.succeed(
     Redact,
     Redact.of({
       redact: (input) => Effect.sync(() => redactWith(redactPatterns, input)),
       containsSecret: (input) =>
-        Effect.sync(() => checkWith(patterns, input)),
+        Effect.sync(() => checkWith(checkPatterns, input)),
     }),
   )
 }
