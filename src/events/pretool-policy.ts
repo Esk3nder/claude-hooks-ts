@@ -129,8 +129,9 @@ const tryRewriteBashInput = (
 
 export const handlePreToolUse = (
   payload: HookPayload,
-): Effect.Effect<HookDecision> =>
-  Effect.sync(() => {
+): Effect.Effect<HookDecision> => {
+  const toolName = payload._tag === "PreToolUse" ? payload.tool_name : "<n/a>"
+  return Effect.sync(() => {
     if (payload._tag !== "PreToolUse") return SAFE_DEFAULT
     const result = evaluateForTool(payload.tool_name, payload.tool_input)
     const base = toHookDecision(result)
@@ -154,7 +155,12 @@ export const handlePreToolUse = (
         updatedInput,
       },
     }
-  })
+  }).pipe(
+    Effect.withSpan("policy.evaluate", {
+      attributes: { tool: toolName },
+    }),
+  )
+}
 
 // Re-export for tests.
 export { evaluateForTool }

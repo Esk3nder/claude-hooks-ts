@@ -8,7 +8,8 @@
   "author": "Esk3nder",
   "bin": {
     "claude-hook": "./bin/claude-hook",
-    "claude-hooks-install": "./bin/claude-hooks-install"
+    "claude-hooks-install": "./bin/claude-hooks-install",
+    "claude-hooks-tail": "./bin/claude-hooks-tail"
   },
   "scripts": {
     "typecheck": "tsc --noEmit",
@@ -18,9 +19,18 @@
     "install:apply": "bun run scripts/install.ts --apply"
   },
   "dependencies": {
-    "effect": "^3.10.0",
+    "@effect/opentelemetry": "^0.63.0",
     "@effect/platform": "^0.69.0",
     "@effect/platform-bun": "^0.49.0",
+    "@opentelemetry/api": "^1.9.1",
+    "@opentelemetry/exporter-trace-otlp-http": "^0.216.0",
+    "@opentelemetry/resources": "^2.7.1",
+    "@opentelemetry/sdk-metrics": "^1.28",
+    "@opentelemetry/sdk-trace-base": "^2.7.1",
+    "@opentelemetry/sdk-trace-node": "^2.7.1",
+    "@opentelemetry/sdk-trace-web": "^1.28",
+    "@opentelemetry/semantic-conventions": "^1.28",
+    "effect": "^3.10.0",
     "yaml": "^2.5.0"
   },
   "devDependencies": {
