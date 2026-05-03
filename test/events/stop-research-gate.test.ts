@@ -8,12 +8,11 @@ import {
 } from "../../src/services/session-state.ts"
 
 const decode = (raw: unknown) => Schema.decodeUnknownSync(HookPayload)(raw)
-const stop = (sid: string, active = false) =>
+const stop = (sid: string) =>
   decode({
     _tag: "Stop",
     session_id: sid,
     hook_event_name: "Stop",
-    stop_hook_active: active,
   })
 
 describe("handleStop (research-mode source-ledger gate, VAL-M5-001)", () => {
@@ -74,17 +73,21 @@ describe("handleStop (research-mode source-ledger gate, VAL-M5-001)", () => {
     expect(d).toEqual({})
   })
 
-  test("respects stop_hook_active to avoid loops", async () => {
+  test("loop-guard: stop_blocked_once short-circuits to NoOp even in research mode", async () => {
     const layer = SessionStateTest(
       new Map([
         [
           "r3",
-          { ...EMPTY_SESSION_STATE, last_workflow: "research.web" },
+          {
+            ...EMPTY_SESSION_STATE,
+            last_workflow: "research.web",
+            stop_blocked_once: true,
+          },
         ],
       ]),
     )
     const d = await Effect.runPromise(
-      handleStop(stop("r3", true)).pipe(Effect.provide(layer)),
+      handleStop(stop("r3")).pipe(Effect.provide(layer)),
     )
     expect(d).toEqual({})
   })

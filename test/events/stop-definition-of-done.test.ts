@@ -10,12 +10,12 @@ import {
 
 const decode = (raw: unknown) => Schema.decodeUnknownSync(HookPayload)(raw)
 
-const stop = (sid: string, active = false) =>
+const stop = (sid: string, assistant_message?: string) =>
   decode({
     _tag: "Stop",
     session_id: sid,
     hook_event_name: "Stop",
-    stop_hook_active: active,
+    ...(assistant_message === undefined ? {} : { assistant_message }),
   })
 
 describe("handleStop (definition of done)", () => {
@@ -38,7 +38,7 @@ describe("handleStop (definition of done)", () => {
     expect(out.reason ?? "").toMatch(/verification/i)
   })
 
-  test("stop_hook_active=true short-circuits to NoOp (no loop)", async () => {
+  test("loop-guard via stop_blocked_once: a session that was already blocked once short-circuits to NoOp", async () => {
     const layer = SessionStateTest(
       new Map([
         [
@@ -47,12 +47,13 @@ describe("handleStop (definition of done)", () => {
             ...EMPTY_SESSION_STATE,
             files_changed: ["/repo/a.ts"],
             verification_status: "none" as const,
+            stop_blocked_once: true,
           },
         ],
       ]),
     )
     const d = await Effect.runPromise(
-      handleStop(stop("sid-2", true)).pipe(Effect.provide(layer)),
+      handleStop(stop("sid-2")).pipe(Effect.provide(layer)),
     )
     expect(d).toEqual({})
   })
@@ -103,6 +104,14 @@ describe("handleStop (definition of done)", () => {
   test("allows stop when no files changed", async () => {
     const layer = SessionStateTest()
     const d = await Effect.runPromise(handleStop(stop("sid-5")).pipe(Effect.provide(layer)))
+    expect(d).toEqual({})
+  })
+
+  test("payload may carry assistant_message field (per official spec) — does not affect decision", async () => {
+    const layer = SessionStateTest()
+    const d = await Effect.runPromise(
+      handleStop(stop("sid-6", "the assistant said hello")).pipe(Effect.provide(layer)),
+    )
     expect(d).toEqual({})
   })
 })

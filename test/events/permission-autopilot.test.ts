@@ -18,8 +18,8 @@ const requestPayload = (toolName: string, toolInput: unknown, cwd = "/repo") =>
     tool_input: toolInput,
   })
 
-describe("VAL-M4-002 permission-autopilot", () => {
-  test("approved pattern → allow", async () => {
+describe("VAL-M4-002 permission-autopilot (M11 spec-conformant output)", () => {
+  test("approved pattern → decision.behavior=allow", async () => {
     const pattern = derivePatternKey("Bash", { command: "git status" })
     const layer = Layer.mergeAll(
       ProjectTest({ root: "/repo" }),
@@ -35,17 +35,15 @@ describe("VAL-M4-002 permission-autopilot", () => {
     expect("hookSpecificOutput" in d).toBe(true)
     if ("hookSpecificOutput" in d) {
       const out = d.hookSpecificOutput as {
-        permissionDecision: string
-        permissionDecisionReason: string
         hookEventName: string
+        decision: { behavior: string; message?: string }
       }
-      expect(out.permissionDecision).toBe("allow")
       expect(out.hookEventName).toBe("PermissionRequest")
-      expect(out.permissionDecisionReason).toContain("auto-approved")
+      expect(out.decision.behavior).toBe("allow")
     }
   })
 
-  test("denied pattern → deny", async () => {
+  test("denied pattern → decision.behavior=deny with message", async () => {
     const pattern = derivePatternKey("Bash", { command: "rm -rf" })
     const layer = Layer.mergeAll(
       ProjectTest({ root: "/repo" }),
@@ -58,22 +56,23 @@ describe("VAL-M4-002 permission-autopilot", () => {
         requestPayload("Bash", { command: "rm -rf /tmp/x" }),
       ).pipe(Effect.provide(layer)),
     )
+    expect("hookSpecificOutput" in d).toBe(true)
     if ("hookSpecificOutput" in d) {
-      const out = d.hookSpecificOutput as { permissionDecision: string }
-      expect(out.permissionDecision).toBe("deny")
+      const out = d.hookSpecificOutput as {
+        decision: { behavior: string; message?: string }
+      }
+      expect(out.decision.behavior).toBe("deny")
+      expect(out.decision.message ?? "").toContain("auto-denied")
     }
   })
 
-  test("unseen pattern → ask", async () => {
+  test("unseen pattern → SAFE_DEFAULT no-op (lets Claude Code show its dialog)", async () => {
     const layer = Layer.mergeAll(ProjectTest({ root: "/repo" }), ApprovalsTest())
     const d = await Effect.runPromise(
       handlePermissionRequest(
         requestPayload("Bash", { command: "echo hi" }),
       ).pipe(Effect.provide(layer)),
     )
-    if ("hookSpecificOutput" in d) {
-      const out = d.hookSpecificOutput as { permissionDecision: string }
-      expect(out.permissionDecision).toBe("ask")
-    }
+    expect(d).toEqual({})
   })
 })

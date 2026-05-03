@@ -37,13 +37,22 @@ const cases: Array<{ name: string; schema: Schema.Schema<unknown, unknown, never
     },
   },
   {
-    name: "PermissionRequestDecision",
+    name: "PermissionRequestDecision-allow",
     schema: PermissionRequestDecision as unknown as Schema.Schema<unknown, unknown, never>,
     value: {
       hookSpecificOutput: {
         hookEventName: "PermissionRequest",
-        permissionDecision: "allow",
-        permissionDecisionReason: "safe repeat",
+        decision: { behavior: "allow" },
+      },
+    },
+  },
+  {
+    name: "PermissionRequestDecision-deny-with-message",
+    schema: PermissionRequestDecision as unknown as Schema.Schema<unknown, unknown, never>,
+    value: {
+      hookSpecificOutput: {
+        hookEventName: "PermissionRequest",
+        decision: { behavior: "deny", message: "prior denial" },
       },
     },
   },

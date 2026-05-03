@@ -33,11 +33,15 @@ export const handlePostToolUseFailure = (
     if (payload._tag !== "PostToolUseFailure") return SAFE_DEFAULT
     const text = errorToText(payload.error)
     if (text.trim().length === 0) return SAFE_DEFAULT
+    // Per the official spec, payloads carry an `error_type` hint
+    // (e.g. "vitest", "tsc"). Prefer it as the category when present;
+    // otherwise fall back to heuristic detection in `parseFailure`.
     const parsed = parseFailure(text)
+    const category = payload.error_type ?? parsed.category
     const top = parsed.topLines.slice(0, 3).join(" | ")
     const pathInfo = parsed.likelyPath ?? "unknown location"
     const summary =
-      `Failure summary: ${parsed.category} failed in ${pathInfo} because ${top}. ` +
+      `Failure summary: ${category} failed in ${pathInfo} because ${top}. ` +
       `Next likely action: inspect ${pathInfo}.`
     const additionalContext = truncate(summary, MAX_CHARS)
     const decision: HookDecision = {

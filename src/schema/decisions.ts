@@ -9,11 +9,25 @@ export const PreToolUseDecision = Schema.Struct({
   }),
 })
 
+/**
+ * PermissionRequest output schema, per the official Claude Code spec.
+ *
+ * The shape is `{ hookSpecificOutput: { hookEventName: "PermissionRequest",
+ * decision: { behavior, message?, updatedInput?, updatedPermissions? } } }`.
+ *
+ * Note: `behavior` is "allow" | "deny" only. There is no "ask" — emitting an
+ * empty no-op (`{}`) is what causes Claude Code to fall back to its normal
+ * permission dialog (i.e. the implicit "ask").
+ */
 export const PermissionRequestDecision = Schema.Struct({
   hookSpecificOutput: Schema.Struct({
     hookEventName: Schema.Literal("PermissionRequest"),
-    permissionDecision: Schema.Literal("allow", "deny", "ask"),
-    permissionDecisionReason: Schema.String,
+    decision: Schema.Struct({
+      behavior: Schema.Literal("allow", "deny"),
+      updatedInput: Schema.optional(Schema.Unknown),
+      updatedPermissions: Schema.optional(Schema.Array(Schema.Unknown)),
+      message: Schema.optional(Schema.String),
+    }),
   }),
 })
 

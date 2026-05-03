@@ -12,38 +12,37 @@ import { lookupRole, hasEvidence } from "../policies/subagent-roles.ts";
 /**
  * Stable invocation key for a subagent run.
  *
- * Claude does not always supply a `task_id` for subagent events. The previous
- * fallback used `${session_id}:idx${state.subagent_starts.length}`, which
- * collides for parallel SubagentStarts (both observe the same length) and
- * shifts on retries. We instead derive a content hash from the payload's
- * stable identifying fields. The result is:
+ * Per the official Claude Code spec the canonical correlation token is
+ * `agent_id`. When present, we use it verbatim. Otherwise we fall back to a
+ * stable content hash of the payload (deterministic across start/stop pairs
+ * with identical payloads, distinct for parallel starts that differ).
  *
- *   - deterministic across start/stop pairs with identical payloads
- *   - distinct for parallel starts whose payloads differ in any way
- *   - independent of how many other subagents have already run
- *
- * The trade-off: when two SubagentStart payloads are byte-identical (same
- * type, same task_id, same any-other-fields), they collapse to one key and
- * only the first start "wins". That is the desired idempotent behaviour for
- * retries; truly distinct invocations always carry distinguishing context
- * from Claude (task_id, subagent_id, prompt, or timestamp metadata).
+ * For backward-compat we also honour `task_id` (older Claude Code builds and
+ * existing tests). Resolution order: agent_id > task_id > payload-hash.
  */
 const sha1Short = (input: string): string =>
   createHash("sha1").update(input).digest("hex").slice(0, 16);
 
-/**
- * Build a stable hash key from whatever identifying fields the payload
- * exposes. We intentionally include the full JSON of the payload (minus
- * the session_id, which is already a prefix) so any divergence in prompt,
- * description, or other fields produces a distinct key.
- */
 const payloadHash = (payload: Record<string, unknown>): string => {
-  // Stable key ordering for determinism.
   const keys = Object.keys(payload)
     .filter((k) => k !== "session_id")
     .sort();
   const canonical = keys.map((k) => [k, payload[k]] as const);
   return sha1Short(JSON.stringify(canonical));
+};
+
+/**
+ * Read agent_type from a payload, preferring the canonical `agent_type` field
+ * but falling back to the legacy `subagent_type` for older payloads.
+ */
+const readAgentType = (payload: Record<string, unknown>): string => {
+  if (typeof payload["agent_type"] === "string") {
+    return payload["agent_type"];
+  }
+  if (typeof payload["subagent_type"] === "string") {
+    return payload["subagent_type"];
+  }
+  return "unknown";
 };
 
 export const invocationKey = (
@@ -52,16 +51,14 @@ export const invocationKey = (
     unknown
   >,
 ): string => {
-  const subagentType =
-    typeof payload["subagent_type"] === "string"
-      ? payload["subagent_type"]
-      : "unknown";
+  const agentType = readAgentType(payload);
+  const agentId =
+    typeof payload["agent_id"] === "string" ? payload["agent_id"] : null;
   const taskId =
     typeof payload["task_id"] === "string" ? payload["task_id"] : null;
-  // When a task_id is present we trust it as the stable identity (Claude's
-  // own correlation token). Otherwise we hash the payload contents.
-  const ident = taskId ?? `h${payloadHash(payload)}`;
-  return `${payload.session_id}:${subagentType}:${ident}`;
+  // Canonical identity: agent_id > task_id > payload-hash.
+  const ident = agentId ?? taskId ?? `h${payloadHash(payload)}`;
+  return `${payload.session_id}:${agentType}:${ident}`;
 };
 
 export const handleSubagentStart = (
@@ -80,15 +77,17 @@ export const handleSubagentStart = (
       },
     );
 
-    // Idempotent: only the first start wins for a given key.
     if (!prev.subagent_starts.includes(key)) {
       yield* state
         .append(payload.session_id, "subagent_starts", key)
         .pipe(Effect.catchAll(() => Effect.succeed(undefined as void)));
     }
 
-    const role = lookupRole(payload.subagent_type);
-    const subagentLabel = payload.subagent_type ?? "subagent";
+    const agentType = readAgentType(
+      payload as unknown as Record<string, unknown>,
+    );
+    const role = lookupRole(agentType);
+    const subagentLabel = agentType === "unknown" ? "subagent" : agentType;
     const additionalContext = `Subagent ${subagentLabel} (${role.mode}): ${role.scopeRule}`;
     const decision: HookDecision = {
       hookSpecificOutput: {
@@ -123,10 +122,15 @@ export const handleSubagentStop = (
         .pipe(Effect.catchAll(() => Effect.succeed(undefined as void)));
     }
 
-    const role = lookupRole(payload.subagent_type);
+    const agentType = readAgentType(
+      payload as unknown as Record<string, unknown>,
+    );
+    const role = lookupRole(agentType);
     if (!role.investigative) return SAFE_DEFAULT;
     if (alreadyBlocked) return SAFE_DEFAULT;
-    if (hasEvidence(payload.result)) return SAFE_DEFAULT;
+    // Canonical field is `output`; older payloads may carry `result`.
+    const evidenceText = payload.output ?? payload.result;
+    if (hasEvidence(evidenceText)) return SAFE_DEFAULT;
 
     yield* state
       .append(payload.session_id, "subagent_stops", `${key}:blocked`)
