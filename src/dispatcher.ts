@@ -6,7 +6,22 @@ import { handleStub } from "./events/_stub.ts"
 import { handlePreToolUse } from "./events/pretool-policy.ts"
 import { handleConfigChange } from "./events/config-guard.ts"
 import { handleFileChanged } from "./events/filechanged-env-guard.ts"
+import { handleSessionStart } from "./events/session-start-brief.ts"
+import { handleUserPromptSubmit } from "./events/prompt-router.ts"
+import { handlePostToolUse } from "./events/post-edit-quality.ts"
+import { handlePostToolBatch } from "./events/batch-context-governor.ts"
+import { handleStop } from "./events/stop-definition-of-done.ts"
+import { handlePreCompact } from "./events/precompact-snapshot.ts"
+import { handleSessionEnd } from "./events/session-ledger.ts"
 import { StdinParseError } from "./schema/errors.ts"
+import { AppLive } from "./layers/live.ts"
+import type { FileSystem } from "./services/filesystem.ts"
+import type { Shell } from "./services/shell.ts"
+import type { Git } from "./services/git.ts"
+import type { Project } from "./services/project.ts"
+import type { SessionState } from "./services/session-state.ts"
+
+type AppServices = FileSystem | Shell | Git | Project | SessionState 
 
 const readStdin = (): Effect.Effect<string> =>
   Effect.tryPromise({
@@ -42,6 +57,36 @@ const parseJson = (raw: string): Effect.Effect<unknown, StdinParseError> =>
 
 const decodePayload = Schema.decodeUnknown(HookPayload)
 
+const dispatchPayload = (
+  action: string,
+  payload: HookPayload,
+): Effect.Effect<HookDecision, never, AppServices> => {
+  switch (payload._tag) {
+    case "PreToolUse":
+      return handlePreToolUse(payload)
+    case "ConfigChange":
+      return handleConfigChange(payload)
+    case "FileChanged":
+      return handleFileChanged(payload)
+    case "SessionStart":
+      return handleSessionStart(payload)
+    case "UserPromptSubmit":
+      return handleUserPromptSubmit(payload)
+    case "PostToolUse":
+      return handlePostToolUse(payload)
+    case "PostToolBatch":
+      return handlePostToolBatch(payload)
+    case "Stop":
+      return handleStop(payload)
+    case "PreCompact":
+      return handlePreCompact(payload)
+    case "SessionEnd":
+      return handleSessionEnd(payload)
+    default:
+      return handleStub(action, payload)
+  }
+}
+
 export const program = (argv: ReadonlyArray<string>): Effect.Effect<void> =>
   Effect.gen(function* () {
     const action = argv[2]
@@ -68,14 +113,9 @@ export const program = (argv: ReadonlyArray<string>): Effect.Effect<void> =>
       return
     }
     const payload = decodedE.right
-    const decision = yield*
-      payload._tag === "PreToolUse"
-        ? handlePreToolUse(payload)
-        : payload._tag === "ConfigChange"
-          ? handleConfigChange(payload)
-          : payload._tag === "FileChanged"
-            ? handleFileChanged(payload)
-            : handleStub(action, payload)
+    const decision = yield* dispatchPayload(action, payload).pipe(
+      Effect.provide(AppLive),
+    )
     yield* emit(decision)
   }).pipe(
     Effect.catchAllCause((cause) =>
