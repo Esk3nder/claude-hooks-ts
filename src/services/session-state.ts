@@ -1,8 +1,9 @@
-import { Context, Effect, Layer, Ref } from "effect"
+import { Context, Effect, Layer, Ref, Schema } from "effect"
 import * as fs from "node:fs/promises"
 import * as fsSync from "node:fs"
 import * as path from "node:path"
 import { FsError } from "../schema/errors.ts"
+import { SessionStateRecordSchema } from "../schema/session-state.ts"
 import { getCurrentSession } from "./session-context.ts"
 
 export type VerificationStatus = "passed" | "failed" | "none"
@@ -90,6 +91,46 @@ const isRecord = (v: unknown): v is Record<string, unknown> =>
 const isStringArray = (v: unknown): v is ReadonlyArray<string> =>
   Array.isArray(v) && v.every((x) => typeof x === "string")
 
+const decodeStrict = Schema.decodeUnknownEither(SessionStateRecordSchema)
+
+/**
+ * Strict schema-validated read. On schema mismatch:
+ *   1. write the raw bytes to a `<file>.corrupt-<ts>.bak` sibling for forensics
+ *   2. emit a stderr warning
+ *   3. return EMPTY_SESSION_STATE (callers should treat as fresh)
+ *
+ * Returns null only when the input is not even valid JSON, so the lenient
+ * fallback can take over (we keep it for back-compat with files written by
+ * older builds that allowed missing fields).
+ */
+const parseRecordStrict = (
+  raw: string,
+  filePath: string,
+  sessionId: string,
+): SessionStateRecord | null => {
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(raw)
+  } catch {
+    return null
+  }
+  const decoded = decodeStrict(parsed)
+  if (decoded._tag === "Right") {
+    return decoded.right as SessionStateRecord
+  }
+  try {
+    const bak = `${filePath}.corrupt-${Date.now()}.bak`
+    fsSync.mkdirSync(path.dirname(bak), { recursive: true })
+    fsSync.writeFileSync(bak, raw, "utf8")
+  } catch {
+    // best-effort
+  }
+  process.stderr.write(
+    `session-state: schema mismatch for ${sessionId}, resetting\n`,
+  )
+  return EMPTY_SESSION_STATE
+}
+
 const parseRecord = (raw: string): SessionStateRecord => {
   try {
     const parsed: unknown = JSON.parse(raw)
@@ -148,10 +189,9 @@ const resolveSessionId = (
           ? Effect.fail(
               new FsError({
                 op: "session-state.resolve",
-                path: "<fiber-ref>",
+                path: "<no-session>",
                 message:
-                  "no sessionId provided and currentSessionId FiberRef is unset",
-                cause: null,
+                  "no current session in FiberRef and no explicit sessionId",
               }),
             )
           : Effect.succeed(sid),
@@ -173,7 +213,10 @@ export const SessionStateLive = (
                 const file = statePath(root, sessionId)
                 try {
                   const raw = await fs.readFile(file, "utf8")
-                  return parseRecord(raw)
+                  const strict = parseRecordStrict(raw, file, sessionId)
+                  if (strict !== null) return strict
+                  // Not JSON at all → treat as empty (parity with old behaviour).
+                  return EMPTY_SESSION_STATE
                 } catch {
                   return EMPTY_SESSION_STATE
                 }

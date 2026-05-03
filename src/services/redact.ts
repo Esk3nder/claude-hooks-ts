@@ -8,35 +8,62 @@ export interface RedactApi {
 
 export class Redact extends Context.Tag("Redact")<Redact, RedactApi>() {}
 
-const makeRedactor = (patterns: ReadonlyArray<RegExp>) => (input: string) => {
+/**
+ * Precompile patterns once. For redaction we need a global flag to replace
+ * all matches; for detection we keep the original (which may not be global).
+ */
+const compileRedactPatterns = (
+  patterns: ReadonlyArray<RegExp>,
+): ReadonlyArray<RegExp> =>
+  patterns.map(
+    (p) =>
+      new RegExp(p.source, p.flags.includes("g") ? p.flags : p.flags + "g"),
+  )
+
+const DEFAULT_REDACT_PATTERNS: ReadonlyArray<RegExp> = compileRedactPatterns(
+  DEFAULT_POLICY.secretValuePatterns,
+)
+const DEFAULT_CHECK_PATTERNS: ReadonlyArray<RegExp> =
+  DEFAULT_POLICY.secretValuePatterns
+
+const redactWith = (patterns: ReadonlyArray<RegExp>, input: string): string => {
   let out = input
   for (const p of patterns) {
-    out = out.replace(new RegExp(p.source, p.flags.includes("g") ? p.flags : p.flags + "g"), "[REDACTED]")
+    // Reset stateful regexes so .replace works deterministically across calls.
+    p.lastIndex = 0
+    out = out.replace(p, "[REDACTED]")
   }
   return out
 }
 
-const makeChecker = (patterns: ReadonlyArray<RegExp>) => (input: string) =>
-  patterns.some((p) => p.test(input))
+const checkWith = (patterns: ReadonlyArray<RegExp>, input: string): boolean => {
+  for (const p of patterns) {
+    p.lastIndex = 0
+    if (p.test(input)) return true
+  }
+  return false
+}
 
 export const RedactLive = Layer.succeed(
   Redact,
   Redact.of({
     redact: (input) =>
-      Effect.sync(() => makeRedactor(DEFAULT_POLICY.secretValuePatterns)(input)),
+      Effect.sync(() => redactWith(DEFAULT_REDACT_PATTERNS, input)),
     containsSecret: (input) =>
-      Effect.sync(() => makeChecker(DEFAULT_POLICY.secretValuePatterns)(input)),
+      Effect.sync(() => checkWith(DEFAULT_CHECK_PATTERNS, input)),
   }),
 )
 
 export const RedactTest = (
   patterns: ReadonlyArray<RegExp> = DEFAULT_POLICY.secretValuePatterns,
-): Layer.Layer<Redact> =>
-  Layer.succeed(
+): Layer.Layer<Redact> => {
+  const redactPatterns = compileRedactPatterns(patterns)
+  return Layer.succeed(
     Redact,
     Redact.of({
-      redact: (input) => Effect.sync(() => makeRedactor(patterns)(input)),
+      redact: (input) => Effect.sync(() => redactWith(redactPatterns, input)),
       containsSecret: (input) =>
-        Effect.sync(() => makeChecker(patterns)(input)),
+        Effect.sync(() => checkWith(patterns, input)),
     }),
   )
+}

@@ -1,4 +1,6 @@
 import { Effect, Schema, Cause, Match, Layer } from "effect"
+import * as fsSync from "node:fs"
+import * as path from "node:path"
 import { BunRuntime } from "@effect/platform-bun"
 import { HookPayload } from "./schema/payloads.ts"
 import { SAFE_DEFAULT, type HookDecision } from "./schema/decisions.ts"
@@ -17,7 +19,9 @@ import { handlePostToolUseFailure } from "./events/failure-explainer.ts"
 import { handlePermissionRequest } from "./events/permission-autopilot.ts"
 import { handleSubagentStart, handleSubagentStop } from "./events/subagent-scope-gate.ts"
 import { handleTaskCreated, handleTaskCompleted } from "./events/task-integrity.ts"
-import type { Approvals } from "./services/approvals.ts"
+import { handleUserPromptExpansion } from "./events/user-prompt-expansion.ts"
+import { handlePostCompact } from "./events/postcompact-ledger.ts"
+import { Approvals, shouldGc } from "./services/approvals.ts"
 import { StdinParseError } from "./schema/errors.ts"
 import { AppLive } from "./layers/live.ts"
 import { TracingLive } from "./services/tracing.ts"
@@ -78,13 +82,34 @@ const parseJson = (raw: string): Effect.Effect<unknown, StdinParseError> =>
 const decodePayload = Schema.decodeUnknown(HookPayload)
 
 /**
- * Stub for events that have no dedicated handler yet (UserPromptExpansion,
- * PostCompact). Returns SAFE_DEFAULT so dispatch is total over all 18 tags.
+ * Read approvals meta `last_gc` timestamp synchronously. Returns 0 on miss
+ * so first-ever invocation always triggers gc.
  */
-const handleNoop = (
-  _payload: HookPayload,
-): Effect.Effect<HookDecision, never, AppServices> =>
-  Effect.succeed(SAFE_DEFAULT)
+const readLastGc = (cwd: string): number => {
+  const file = path.join(cwd, ".claude-hooks", "state", "approvals-meta.json")
+  try {
+    const raw = fsSync.readFileSync(file, "utf8")
+    const v = JSON.parse(raw) as { last_gc?: unknown }
+    return typeof v.last_gc === "number" ? v.last_gc : 0
+  } catch {
+    return 0
+  }
+}
+
+/**
+ * Best-effort approvals gc. Runs AFTER the decision is emitted to stdout so
+ * it never delays the hook response. Any failure is swallowed.
+ */
+const maybeGcApprovals = (
+  cwd: string,
+): Effect.Effect<void, never, Approvals> =>
+  Effect.gen(function* () {
+    const now = Date.now()
+    const last = readLastGc(cwd)
+    if (!shouldGc(now, last)) return
+    const approvals = yield* Approvals
+    yield* approvals.gc(cwd, now).pipe(Effect.catchAll(() => Effect.succeed(undefined)))
+  })
 
 /**
  * Total dispatch via Match.tag.exhaustive — TS will fail compile if any
@@ -110,8 +135,8 @@ const routeByTag = (
     Match.tag("TaskCompleted", (p) => handleTaskCompleted(p)),
     Match.tag("ConfigChange", (p) => handleConfigChange(p)),
     Match.tag("FileChanged", (p) => handleFileChanged(p)),
-    Match.tag("UserPromptExpansion", (p) => handleNoop(p)),
-    Match.tag("PostCompact", (p) => handleNoop(p)),
+    Match.tag("UserPromptExpansion", (p) => handleUserPromptExpansion(p)),
+    Match.tag("PostCompact", (p) => handlePostCompact(p)),
     Match.exhaustive,
   )
 
@@ -170,13 +195,21 @@ export const program = (argv: ReadonlyArray<string>): Effect.Effect<void> =>
       return
     }
     const payload = decodedE.right
+    const layer = Layer.mergeAll(AppLive, TracingLive)
     const decision = yield* withSession(
       payload.session_id,
-      dispatchPayload(action, payload).pipe(
-        Effect.provide(Layer.mergeAll(AppLive, TracingLive)),
-      ),
+      dispatchPayload(action, payload).pipe(Effect.provide(layer)),
     )
     yield* emit(decision)
+    // Best-effort post-emit gc — never blocks or affects the response.
+    const cwd =
+      (typeof payload.cwd === "string" && payload.cwd.length > 0
+        ? payload.cwd
+        : process.cwd())
+    yield* maybeGcApprovals(cwd).pipe(
+      Effect.provide(layer),
+      Effect.catchAll(() => Effect.succeed(undefined)),
+    )
   }).pipe(
     Effect.catchAllCause((cause) =>
       Effect.gen(function* () {
