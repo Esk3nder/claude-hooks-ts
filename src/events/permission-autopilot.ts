@@ -6,6 +6,24 @@ import { Approvals } from "../services/approvals.ts"
 import { Project } from "../services/project.ts"
 import { derivePatternKey } from "../policies/permission-patterns.ts"
 
+/**
+ * PermissionRequest autopilot.
+ *
+ * Output shape conforms to the official Claude Code hook spec:
+ *
+ *   { hookSpecificOutput: {
+ *       hookEventName: "PermissionRequest",
+ *       decision: { behavior: "allow" | "deny", message?: string, ... }
+ *   } }
+ *
+ * - "allow"  emitted on a prior recorded approval for the pattern.
+ * - "deny"   emitted on a prior recorded denial for the pattern (with reason
+ *            in `message`).
+ * - SAFE_DEFAULT (`{}`) emitted for unseen / pending patterns: this is what
+ *            causes Claude Code to show its built-in permission dialog
+ *            (the implicit "ask" — there is no explicit "ask" behavior in
+ *            the official spec).
+ */
 export const handlePermissionRequest = (
   payload: HookPayload,
 ): Effect.Effect<HookDecision, never, Approvals | Project> =>
@@ -26,30 +44,34 @@ export const handlePermissionRequest = (
         ? lookup
         : null
 
-    const decisionKind: "allow" | "deny" | "ask" =
-      resolved === null ? "ask" : resolved.status === "approved" ? "allow" : "deny"
-
-    const reason =
-      decisionKind === "allow"
-        ? `auto-approved by autopilot (prior approval for pattern ${pattern})`
-        : decisionKind === "deny"
-          ? `auto-denied by autopilot (prior denial for pattern ${pattern})`
-          : `no prior decision for pattern ${pattern}; asking user`
-
-    if (decisionKind === "ask") {
-      // Record the ask as pending so downstream tooling (CLI / future
-      // post-decision events) can resolve the same pattern key. This is what
-      // makes the ledger actually populated rather than dead state.
+    if (resolved === null) {
+      // No prior decision — record a "pending" stub so downstream tooling can
+      // resolve the same pattern key, and emit the safe default to defer to
+      // Claude Code's normal permission dialog.
       yield* approvals
         .record({ cwd, pattern, status: "pending", recordedAt: Date.now() })
         .pipe(Effect.catchAll(() => Effect.succeed(undefined as void)))
+      return SAFE_DEFAULT
     }
 
+    if (resolved.status === "approved") {
+      const decision: HookDecision = {
+        hookSpecificOutput: {
+          hookEventName: "PermissionRequest",
+          decision: { behavior: "allow" },
+        },
+      }
+      return decision
+    }
+
+    // denied
     const decision: HookDecision = {
       hookSpecificOutput: {
         hookEventName: "PermissionRequest",
-        permissionDecision: decisionKind,
-        permissionDecisionReason: reason,
+        decision: {
+          behavior: "deny",
+          message: `auto-denied by claude-hooks-ts (prior denial for pattern ${pattern})`,
+        },
       },
     }
     return decision

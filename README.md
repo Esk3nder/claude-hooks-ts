@@ -39,6 +39,10 @@ before any write.
 | `SubagentStart`/`Stop` | `subagent-scope-gate` | Enforce read-only scope + evidence requirement. |
 | `TaskCreated`/`Completed` | `task-integrity` | Acceptance criteria + evidence. |
 
+See [`docs/HOOK-EVENTS.md`](./docs/HOOK-EVENTS.md) for the full coverage table
+across all 29 official Claude Code hook events (input/output schemas,
+implementation status, quirks).
+
 ## Configuration
 
 Project-level YAML lives under `.claude-hooks/`:

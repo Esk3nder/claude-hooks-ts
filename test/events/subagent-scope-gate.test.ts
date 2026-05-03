@@ -9,23 +9,24 @@ import { SessionStateTest } from "../../src/services/session-state.ts"
 
 const decode = (raw: unknown) => Schema.decodeUnknownSync(HookPayload)(raw)
 
-const startPayload = (subagent_type: string) =>
+const startPayload = (agent_type: string) =>
   decode({
     _tag: "SubagentStart",
     session_id: "s",
     hook_event_name: "SubagentStart",
-    subagent_type,
-    task_id: "t1",
+    agent_type,
+    agent_id: "a1",
+    prompt: "do the thing",
   })
 
-const stopPayload = (subagent_type: string, result: string | undefined) =>
+const stopPayload = (agent_type: string, output: string | undefined) =>
   decode({
     _tag: "SubagentStop",
     session_id: "s",
     hook_event_name: "SubagentStop",
-    subagent_type,
-    task_id: "t1",
-    ...(result === undefined ? {} : { result }),
+    agent_type,
+    agent_id: "a1",
+    ...(output === undefined ? {} : { output }),
   })
 
 describe("VAL-M4-003 subagent-scope-gate", () => {
@@ -86,7 +87,7 @@ describe("VAL-M4-003 subagent-scope-gate", () => {
     expect(d).toEqual({})
   })
 
-  test("missing result → block for investigative role", async () => {
+  test("missing output → block for investigative role", async () => {
     const d = await Effect.runPromise(
       handleSubagentStop(stopPayload("Explore", undefined)).pipe(
         Effect.provide(SessionStateTest()),
@@ -96,26 +97,80 @@ describe("VAL-M4-003 subagent-scope-gate", () => {
       expect(d.decision).toBe("block")
     }
   })
+
+  test("legacy subagent_type / result fields still work (backward compat)", async () => {
+    const d = await Effect.runPromise(
+      handleSubagentStop(
+        decode({
+          _tag: "SubagentStop",
+          session_id: "s-legacy",
+          hook_event_name: "SubagentStop",
+          subagent_type: "Explore",
+          task_id: "t-legacy",
+          result: "found bug at src/foo.ts:42 — confidence: high",
+        }),
+      ).pipe(Effect.provide(SessionStateTest())),
+    )
+    expect(d).toEqual({})
+  })
 })
 
-describe("M6 invocation key — content hash fallback", () => {
-  test("two parallel SubagentStarts without task_id produce distinct keys", async () => {
-    // Same session and subagent type, but the payloads carry different
-    // optional fields (here: distinct cwd values stand in for distinct
-    // prompt/description content). Each must be tracked separately.
-    const decodeNoTask = (raw: unknown) => decode(raw)
-    const p1 = decodeNoTask({
+describe("M11 invocation key — agent_id is canonical", () => {
+  test("agent_id is used verbatim as the identity", async () => {
+    const p = decode({
+      _tag: "SubagentStart",
+      session_id: "s1",
+      hook_event_name: "SubagentStart",
+      agent_type: "Explore",
+      agent_id: "agent-42",
+      cwd: "/repo",
+    })
+    const { invocationKey } = await import(
+      "../../src/events/subagent-scope-gate.ts"
+    )
+    const k = invocationKey(
+      p as unknown as Record<string, unknown> & {
+        _tag: string
+        session_id: string
+      },
+    )
+    expect(k).toBe("s1:Explore:agent-42")
+  })
+
+  test("legacy task_id is honoured when agent_id is absent", async () => {
+    const p = decode({
       _tag: "SubagentStart",
       session_id: "s1",
       hook_event_name: "SubagentStart",
       subagent_type: "Explore",
+      task_id: "task-42",
+      cwd: "/repo",
+    })
+    const { invocationKey } = await import(
+      "../../src/events/subagent-scope-gate.ts"
+    )
+    const k = invocationKey(
+      p as unknown as Record<string, unknown> & {
+        _tag: string
+        session_id: string
+      },
+    )
+    expect(k).toBe("s1:Explore:task-42")
+  })
+
+  test("two parallel SubagentStarts without agent_id/task_id produce distinct keys", async () => {
+    const p1 = decode({
+      _tag: "SubagentStart",
+      session_id: "s1",
+      hook_event_name: "SubagentStart",
+      agent_type: "Explore",
       cwd: "/repo/a",
     })
-    const p2 = decodeNoTask({
+    const p2 = decode({
       _tag: "SubagentStart",
       session_id: "s1",
       hook_event_name: "SubagentStart",
-      subagent_type: "Explore",
+      agent_type: "Explore",
       cwd: "/repo/b",
     })
     const { invocationKey } = await import(
@@ -144,7 +199,7 @@ describe("M6 invocation key — content hash fallback", () => {
         _tag: "SubagentStart",
         session_id: "s1",
         hook_event_name: "SubagentStart",
-        subagent_type: "Explore",
+        agent_type: "Explore",
         cwd: "/repo",
       })
     const { invocationKey } = await import(
@@ -163,26 +218,5 @@ describe("M6 invocation key — content hash fallback", () => {
       },
     )
     expect(a).toBe(b)
-  })
-
-  test("when task_id is present it is used verbatim as the identity", async () => {
-    const p = decode({
-      _tag: "SubagentStart",
-      session_id: "s1",
-      hook_event_name: "SubagentStart",
-      subagent_type: "Explore",
-      task_id: "task-42",
-      cwd: "/repo",
-    })
-    const { invocationKey } = await import(
-      "../../src/events/subagent-scope-gate.ts"
-    )
-    const k = invocationKey(
-      p as unknown as Record<string, unknown> & {
-        _tag: string
-        session_id: string
-      },
-    )
-    expect(k).toBe("s1:Explore:task-42")
   })
 })

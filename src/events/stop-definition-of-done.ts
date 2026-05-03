@@ -10,17 +10,26 @@ const BLOCK_REASON =
 const RESEARCH_BLOCK_REASON =
   "Research answer is not ready: source ledger has unsupported claims. Reconcile claims to sources and state uncertainties before final response."
 
+/**
+ * Stop handler.
+ *
+ * Loop-protection note: the official Claude Code Stop event payload does NOT
+ * carry a `stop_hook_active` field (despite earlier docs/community examples).
+ * We instead rely on `SessionState.stop_blocked_once` — once a session has
+ * blocked one Stop, the next Stop in that session is allowed through to
+ * avoid an infinite block loop.
+ */
 export const handleStop = (
   payload: HookPayload,
 ): Effect.Effect<HookDecision, never, SessionState> =>
   Effect.gen(function* () {
     if (payload._tag !== "Stop") return SAFE_DEFAULT
-    if (payload.stop_hook_active === true) return SAFE_DEFAULT
     const state = yield* SessionState
     const record = yield* state
       .get(payload.session_id)
       .pipe(Effect.catchAll(() => Effect.succeed(null)))
     if (record === null) return SAFE_DEFAULT
+    // Local loop-guard: never block twice in the same session.
     if (record.stop_blocked_once) return SAFE_DEFAULT
 
     // Research-mode source-ledger gate
