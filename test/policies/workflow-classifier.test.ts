@@ -34,6 +34,15 @@ const cases: ReadonlyArray<{ readonly prompt: string; readonly expected: Workflo
   { prompt: "Ship a release tonight", expected: "ops.deploy" },
   { prompt: "Run the schema migration on the orders table", expected: "ops.migration" },
   { prompt: "Backfill the new column", expected: "ops.migration" },
+  // M6: ops.deploy false-positive cases — must NOT classify as deploy
+  { prompt: "write release notes for v2.3", expected: "writing.doc" },
+  { prompt: "draft the changelog", expected: "writing.doc" },
+  { prompt: "update the release notes", expected: "writing.doc" },
+  { prompt: "document our release history", expected: "writing.doc" },
+  // M6: ops.deploy true-positive cases — must classify as deploy
+  { prompt: "deploy to staging", expected: "ops.deploy" },
+  { prompt: "ship the v2.3 release", expected: "ops.deploy" },
+  { prompt: "release v2.3 to production", expected: "ops.deploy" },
   { prompt: "blah blah random sentence with no signal", expected: "unknown" },
   { prompt: "", expected: "unknown" },
 ]

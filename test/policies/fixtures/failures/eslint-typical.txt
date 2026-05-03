@@ -1,0 +1,18 @@
+
+/Users/dev/proj/src/components/Button.tsx
+   3:1   error    'React' is defined but never used                @typescript-eslint/no-unused-vars
+  10:7   warning  Unexpected any. Specify a different type         @typescript-eslint/no-explicit-any
+  18:5   error    Unexpected console statement                     no-console
+  22:9   error    'handleClick' is assigned a value but never used @typescript-eslint/no-unused-vars
+
+/Users/dev/proj/src/utils/log.ts
+   5:3   error    Missing return type on function                  @typescript-eslint/explicit-module-boundary-types
+  12:11  error    Forbidden non-null assertion                     @typescript-eslint/no-non-null-assertion
+
+/Users/dev/proj/src/index.ts
+   1:1   error    Expected indentation of 2 spaces but found 4     indent
+
+✖ 7 problems (6 errors, 1 warning)
+  4 errors and 0 warnings potentially fixable with the `--fix` option.
+
+ELIFECYCLE  Command failed with exit code 1.

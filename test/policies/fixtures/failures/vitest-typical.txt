@@ -1,0 +1,34 @@
+ RUN  v1.6.0 /Users/dev/proj
+
+ ✓ src/utils/format.test.ts (4 tests) 12ms
+ ❯ src/services/billing.test.ts (3 tests | 1 failed) 45ms
+   ✓ Billing > computes tax correctly
+   ✗ Billing > applies discount
+     → expected 90 to be 80 // Object.is equality
+   ✓ Billing > rounds to cents
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯ Failed Tests 1 ⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  src/services/billing.test.ts > Billing > applies discount
+AssertionError: expected 90 to be 80 // Object.is equality
+
+- Expected
++ Received
+
+- 80
++ 90
+
+ ❯ src/services/billing.test.ts:22:24
+     20|   it("applies discount", () => {
+     21|     const total = applyDiscount(100, 0.2)
+     22|     expect(total).toBe(80)
+       |                        ^
+     23|   })
+     24| })
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯
+
+ Test Files  1 failed | 1 passed (2)
+      Tests  1 failed | 6 passed (7)
+   Start at  10:32:11
+   Duration  812ms

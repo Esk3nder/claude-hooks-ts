@@ -1,0 +1,18 @@
+============================= test session starts ==============================
+platform darwin -- Python 3.12.0, pytest-8.0.0, pluggy-1.4.0
+collected 3 items
+
+tests/test_math.py ..F                                                   [100%]
+
+=================================== FAILURES ===================================
+___________________________________ test_add ___________________________________
+
+    def test_add():
+        result = add(2, 3)
+>       assert result == 6
+E       assert 5 == 6
+
+tests/test_math.py:14: AssertionError
+=========================== short test summary info ============================
+FAILED tests/test_math.py::test_add - assert 5 == 6
+========================= 1 failed, 2 passed in 0.04s ==========================

@@ -97,3 +97,92 @@ describe("VAL-M4-003 subagent-scope-gate", () => {
     }
   })
 })
+
+describe("M6 invocation key — content hash fallback", () => {
+  test("two parallel SubagentStarts without task_id produce distinct keys", async () => {
+    // Same session and subagent type, but the payloads carry different
+    // optional fields (here: distinct cwd values stand in for distinct
+    // prompt/description content). Each must be tracked separately.
+    const decodeNoTask = (raw: unknown) => decode(raw)
+    const p1 = decodeNoTask({
+      _tag: "SubagentStart",
+      session_id: "s1",
+      hook_event_name: "SubagentStart",
+      subagent_type: "Explore",
+      cwd: "/repo/a",
+    })
+    const p2 = decodeNoTask({
+      _tag: "SubagentStart",
+      session_id: "s1",
+      hook_event_name: "SubagentStart",
+      subagent_type: "Explore",
+      cwd: "/repo/b",
+    })
+    const { invocationKey } = await import(
+      "../../src/events/subagent-scope-gate.ts"
+    )
+    const k1 = invocationKey(
+      p1 as unknown as Record<string, unknown> & {
+        _tag: string
+        session_id: string
+      },
+    )
+    const k2 = invocationKey(
+      p2 as unknown as Record<string, unknown> & {
+        _tag: string
+        session_id: string
+      },
+    )
+    expect(k1).not.toBe(k2)
+    expect(k1.startsWith("s1:Explore:")).toBe(true)
+    expect(k2.startsWith("s1:Explore:")).toBe(true)
+  })
+
+  test("identical payloads collapse to the same key (idempotent)", async () => {
+    const make = () =>
+      decode({
+        _tag: "SubagentStart",
+        session_id: "s1",
+        hook_event_name: "SubagentStart",
+        subagent_type: "Explore",
+        cwd: "/repo",
+      })
+    const { invocationKey } = await import(
+      "../../src/events/subagent-scope-gate.ts"
+    )
+    const a = invocationKey(
+      make() as unknown as Record<string, unknown> & {
+        _tag: string
+        session_id: string
+      },
+    )
+    const b = invocationKey(
+      make() as unknown as Record<string, unknown> & {
+        _tag: string
+        session_id: string
+      },
+    )
+    expect(a).toBe(b)
+  })
+
+  test("when task_id is present it is used verbatim as the identity", async () => {
+    const p = decode({
+      _tag: "SubagentStart",
+      session_id: "s1",
+      hook_event_name: "SubagentStart",
+      subagent_type: "Explore",
+      task_id: "task-42",
+      cwd: "/repo",
+    })
+    const { invocationKey } = await import(
+      "../../src/events/subagent-scope-gate.ts"
+    )
+    const k = invocationKey(
+      p as unknown as Record<string, unknown> & {
+        _tag: string
+        session_id: string
+      },
+    )
+    expect(k).toBe("s1:Explore:task-42")
+  })
+})

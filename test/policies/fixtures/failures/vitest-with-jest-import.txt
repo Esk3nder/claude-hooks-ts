@@ -1,0 +1,40 @@
+ RUN  v1.6.0 /Users/dev/migrating-from-jest
+
+stderr | src/legacy.test.ts
+Note: this project was migrated from jest to vitest; some helpers still reference "jest" globals.
+The compatibility shim maps jest.fn() to vi.fn() during the transition.
+
+ ❯ src/legacy.test.ts (2 tests | 1 failed) 18ms
+   ✗ legacy > behaves like the old jest version
+     → expected "spy" to be called with arguments: [ 1, 2 ]
+   ✓ legacy > new vitest assertions
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯ Failed Tests 1 ⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  src/legacy.test.ts > legacy > behaves like the old jest version
+AssertionError: expected "spy" to be called with arguments: [ 1, 2 ]
+
+Received:
+
+  1st spy call:
+
+  [
+-   1,
+-   2,
++   3,
++   4,
+  ]
+
+ ❯ src/legacy.test.ts:14:18
+     12|     const spy = vi.fn()
+     13|     spy(3, 4)
+     14|     expect(spy).toHaveBeenCalledWith(1, 2)
+       |                  ^
+     15|   })
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯
+
+ Test Files  1 failed (1)
+      Tests  1 failed | 1 passed (2)
+   Start at  09:01:04
+   Duration  654ms
