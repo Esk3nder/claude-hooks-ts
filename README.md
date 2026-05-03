@@ -20,6 +20,16 @@ preserving existing unrelated hooks and other settings keys. Existing entries th
 dispatcher are replaced idempotently; the prior file is backed up to `<target>.bak.<timestamp>`
 before any write.
 
+## Verifying install
+
+```bash
+claude-hooks-doctor
+```
+
+Runs end-to-end checks: bun on PATH, settings.json parseable, every wired hook command
+resolves and is executable, state dir writable, synthetic dispatcher round-trip. Exits non-zero
+on any problem. Use `--verbose` for details, `--json` for machine output.
+
 ## Hook coverage
 
 | Event | Handler | Behaviour |
