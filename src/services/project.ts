@@ -40,7 +40,6 @@ const pickScript = (
   if (!scripts) return null
   for (const name of candidates) {
     if (scripts[name]) {
-      // Detect bun via bunfig/bun.lock; fall back to npm
       return `npm run ${name}`
     }
   }
@@ -63,32 +62,62 @@ const pickScriptWithRunner = (
   return null
 }
 
-export const ProjectLive = Layer.succeed(
-  Project,
-  Project.of({
-    root: () => Effect.sync(() => findRoot(process.cwd())),
-    typecheckCommand: () =>
-      Effect.sync(() => {
-        const root = findRoot(process.cwd())
-        const pkg = readPkg(root)
-        return pickScriptWithRunner(root, pkg.scripts, ["typecheck", "tsc"])
-      }),
-    lintCommand: () =>
-      Effect.sync(() => {
-        const root = findRoot(process.cwd())
-        const pkg = readPkg(root)
-        return pickScriptWithRunner(root, pkg.scripts, ["lint"])
-      }),
+/**
+ * Live Project layer with `Effect.cached` on each hot read.
+ *
+ * Each command query (typecheck/lint/test) reads the project's package.json
+ * from disk; on a long-running dispatcher process, that's O(N hooks) of
+ * redundant disk traffic. We cache for the lifetime of the layer.
+ *
+ * Note: `testCommand` takes a scope param, so we cache per-scope.
+ */
+const makeLive = Effect.gen(function* () {
+  const rawRoot = Effect.sync(() => findRoot(process.cwd()))
+  const cachedRoot = yield* Effect.cached(rawRoot)
+
+  const rawTypecheck = Effect.sync(() => {
+    const root = findRoot(process.cwd())
+    const pkg = readPkg(root)
+    return pickScriptWithRunner(root, pkg.scripts, ["typecheck", "tsc"])
+  })
+  const cachedTypecheck = yield* Effect.cached(rawTypecheck)
+
+  const rawLint = Effect.sync(() => {
+    const root = findRoot(process.cwd())
+    const pkg = readPkg(root)
+    return pickScriptWithRunner(root, pkg.scripts, ["lint"])
+  })
+  const cachedLint = yield* Effect.cached(rawLint)
+
+  const rawTestTargeted = Effect.sync(() => {
+    const root = findRoot(process.cwd())
+    const pkg = readPkg(root)
+    return pickScriptWithRunner(root, pkg.scripts, [
+      "test:changed",
+      "test:unit",
+      "test",
+    ])
+  })
+  const cachedTestTargeted = yield* Effect.cached(rawTestTargeted)
+
+  const rawTestFull = Effect.sync(() => {
+    const root = findRoot(process.cwd())
+    const pkg = readPkg(root)
+    return pickScriptWithRunner(root, pkg.scripts, ["test"])
+  })
+  const cachedTestFull = yield* Effect.cached(rawTestFull)
+
+  return Project.of({
+    root: () => cachedRoot,
+    typecheckCommand: () => cachedTypecheck,
+    lintCommand: () => cachedLint,
     testCommand: (scope) =>
-      Effect.sync(() => {
-        const root = findRoot(process.cwd())
-        const pkg = readPkg(root)
-        const candidates =
-          scope === "targeted" ? ["test:changed", "test:unit", "test"] : ["test"]
-        return pickScriptWithRunner(root, pkg.scripts, candidates)
-      }),
-  }),
-)
+      scope === "targeted" ? cachedTestTargeted : cachedTestFull,
+  })
+})
+
+export const ProjectLive = Layer.effect(Project, makeLive)
+
 // Silence unused warning from older variant
 void pickScript
 
@@ -110,5 +139,33 @@ export const ProjectTest = (overrides: {
             ? overrides.test?.targeted
             : overrides.test?.full) ?? null,
         ),
+    }),
+  )
+
+/**
+ * Test helper: build a Live-style Project from caller-supplied loaders so
+ * tests can confirm the underlying read happens once across many calls.
+ */
+export const ProjectCachedFromLoaders = (loaders: {
+  root: Effect.Effect<string>
+  typecheck: Effect.Effect<string | null>
+  lint: Effect.Effect<string | null>
+  testTargeted: Effect.Effect<string | null>
+  testFull: Effect.Effect<string | null>
+}): Layer.Layer<Project> =>
+  Layer.effect(
+    Project,
+    Effect.gen(function* () {
+      const cRoot = yield* Effect.cached(loaders.root)
+      const cTc = yield* Effect.cached(loaders.typecheck)
+      const cLint = yield* Effect.cached(loaders.lint)
+      const cTt = yield* Effect.cached(loaders.testTargeted)
+      const cTf = yield* Effect.cached(loaders.testFull)
+      return Project.of({
+        root: () => cRoot,
+        typecheckCommand: () => cTc,
+        lintCommand: () => cLint,
+        testCommand: (scope) => (scope === "targeted" ? cTt : cTf),
+      })
     }),
   )

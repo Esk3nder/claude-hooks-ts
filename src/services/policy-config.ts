@@ -68,12 +68,20 @@ export const DEFAULT_POLICY: PolicyConfigData = {
   ],
 }
 
-export const PolicyConfigLive = Layer.succeed(
-  PolicyConfig,
-  PolicyConfig.of({
-    load: () => Effect.succeed(DEFAULT_POLICY),
-  }),
-)
+/**
+ * `Effect.cached` memoises the underlying read for the lifetime of the Live
+ * Layer (i.e. the dispatcher process). Subsequent `load()` calls return the
+ * already-resolved value without re-running the (eventually) YAML+disk reads.
+ */
+const makeLive = Effect.gen(function* () {
+  const rawLoad: Effect.Effect<PolicyConfigData> = Effect.sync(() => DEFAULT_POLICY)
+  const cachedLoad = yield* Effect.cached(rawLoad)
+  return PolicyConfig.of({
+    load: () => cachedLoad,
+  })
+})
+
+export const PolicyConfigLive = Layer.effect(PolicyConfig, makeLive)
 
 export const PolicyConfigTest = (
   override: Partial<PolicyConfigData> = {},
@@ -82,5 +90,20 @@ export const PolicyConfigTest = (
     PolicyConfig,
     PolicyConfig.of({
       load: () => Effect.succeed({ ...DEFAULT_POLICY, ...override }),
+    }),
+  )
+
+/**
+ * Test helper for cached-read tests: build a Live-style PolicyConfig where
+ * the underlying loader is a counter-mock supplied by the caller.
+ */
+export const PolicyConfigCachedFromLoader = (
+  loader: Effect.Effect<PolicyConfigData>,
+): Layer.Layer<PolicyConfig> =>
+  Layer.effect(
+    PolicyConfig,
+    Effect.gen(function* () {
+      const cached = yield* Effect.cached(loader)
+      return PolicyConfig.of({ load: () => cached })
     }),
   )

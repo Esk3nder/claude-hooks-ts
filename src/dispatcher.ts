@@ -1,4 +1,4 @@
-import { Effect, Schema, Cause } from "effect"
+import { Effect, Schema, Cause, Match, Layer } from "effect"
 import { BunRuntime } from "@effect/platform-bun"
 import { HookPayload } from "./schema/payloads.ts"
 import { SAFE_DEFAULT, type HookDecision } from "./schema/decisions.ts"
@@ -20,6 +20,8 @@ import { handleTaskCreated, handleTaskCompleted } from "./events/task-integrity.
 import type { Approvals } from "./services/approvals.ts"
 import { StdinParseError } from "./schema/errors.ts"
 import { AppLive } from "./layers/live.ts"
+import { TracingLive } from "./services/tracing.ts"
+import { withSession } from "./services/session-context.ts"
 import type { FileSystem } from "./services/filesystem.ts"
 import type { Shell } from "./services/shell.ts"
 import type { Git } from "./services/git.ts"
@@ -27,6 +29,19 @@ import type { Project } from "./services/project.ts"
 import type { SessionState } from "./services/session-state.ts"
 
 type AppServices = FileSystem | Shell | Git | Project | SessionState | Approvals
+
+/**
+ * Test-only override: replace one event handler with an arbitrary Effect.
+ * Used by `test/dispatcher-timeout.test.ts` to inject a slow handler so the
+ * Effect.timeout cap can be observed.
+ *
+ * Activated only when `CLAUDE_HOOKS_TEST_HANG_EVENT` is set; otherwise has no
+ * runtime effect.
+ */
+const testHangEvent = (): string | null => {
+  const v = process.env["CLAUDE_HOOKS_TEST_HANG_EVENT"]
+  return typeof v === "string" && v.length > 0 ? v : null
+}
 
 const readStdin = (): Effect.Effect<string> =>
   Effect.tryPromise({
@@ -62,46 +77,71 @@ const parseJson = (raw: string): Effect.Effect<unknown, StdinParseError> =>
 
 const decodePayload = Schema.decodeUnknown(HookPayload)
 
+/**
+ * Stub for events that have no dedicated handler yet (UserPromptExpansion,
+ * PostCompact). Returns SAFE_DEFAULT so dispatch is total over all 18 tags.
+ */
+const handleNoop = (
+  _payload: HookPayload,
+): Effect.Effect<HookDecision, never, AppServices> =>
+  Effect.succeed(SAFE_DEFAULT)
+
+/**
+ * Total dispatch via Match.tag.exhaustive — TS will fail compile if any
+ * HookPayload variant is unhandled.
+ */
+const routeByTag = (
+  payload: HookPayload,
+): Effect.Effect<HookDecision, never, AppServices> =>
+  Match.value(payload).pipe(
+    Match.tag("PreToolUse", (p) => handlePreToolUse(p)),
+    Match.tag("Stop", (p) => handleStop(p)),
+    Match.tag("PostToolBatch", (p) => handlePostToolBatch(p)),
+    Match.tag("SessionStart", (p) => handleSessionStart(p)),
+    Match.tag("UserPromptSubmit", (p) => handleUserPromptSubmit(p)),
+    Match.tag("PostToolUse", (p) => handlePostToolUse(p)),
+    Match.tag("PreCompact", (p) => handlePreCompact(p)),
+    Match.tag("SessionEnd", (p) => handleSessionEnd(p)),
+    Match.tag("PostToolUseFailure", (p) => handlePostToolUseFailure(p)),
+    Match.tag("PermissionRequest", (p) => handlePermissionRequest(p)),
+    Match.tag("SubagentStart", (p) => handleSubagentStart(p)),
+    Match.tag("SubagentStop", (p) => handleSubagentStop(p)),
+    Match.tag("TaskCreated", (p) => handleTaskCreated(p)),
+    Match.tag("TaskCompleted", (p) => handleTaskCompleted(p)),
+    Match.tag("ConfigChange", (p) => handleConfigChange(p)),
+    Match.tag("FileChanged", (p) => handleFileChanged(p)),
+    Match.tag("UserPromptExpansion", (p) => handleNoop(p)),
+    Match.tag("PostCompact", (p) => handleNoop(p)),
+    Match.exhaustive,
+  )
+
 const dispatchPayload = (
-  action: string,
+  _action: string,
   payload: HookPayload,
 ): Effect.Effect<HookDecision, never, AppServices> => {
-  switch (payload._tag) {
-    case "PreToolUse":
-      return handlePreToolUse(payload)
-    case "ConfigChange":
-      return handleConfigChange(payload)
-    case "FileChanged":
-      return handleFileChanged(payload)
-    case "SessionStart":
-      return handleSessionStart(payload)
-    case "UserPromptSubmit":
-      return handleUserPromptSubmit(payload)
-    case "PostToolUse":
-      return handlePostToolUse(payload)
-    case "PostToolBatch":
-      return handlePostToolBatch(payload)
-    case "Stop":
-      return handleStop(payload)
-    case "PreCompact":
-      return handlePreCompact(payload)
-    case "SessionEnd":
-      return handleSessionEnd(payload)
-    case "PostToolUseFailure":
-      return handlePostToolUseFailure(payload)
-    case "PermissionRequest":
-      return handlePermissionRequest(payload)
-    case "SubagentStart":
-      return handleSubagentStart(payload)
-    case "SubagentStop":
-      return handleSubagentStop(payload)
-    case "TaskCreated":
-      return handleTaskCreated(payload)
-    case "TaskCompleted":
-      return handleTaskCompleted(payload)
-    default:
-      return handleStub(action, payload)
-  }
+  const hang = testHangEvent()
+  const baseHandler: Effect.Effect<HookDecision, never, AppServices> =
+    hang !== null && hang === payload._tag
+      ? Effect.sleep("5 seconds").pipe(Effect.as(SAFE_DEFAULT))
+      : routeByTag(payload)
+
+  // Per-handler 4s cap → on timeout, fall back to safe default ({}).
+  const guarded = baseHandler.pipe(
+    Effect.withSpan(`handler.${payload._tag}`),
+    Effect.timeout("4 seconds"),
+    Effect.catchTag("TimeoutException", () =>
+      Effect.succeed(SAFE_DEFAULT),
+    ),
+  ) as Effect.Effect<HookDecision, never, AppServices>
+
+  return guarded.pipe(
+    Effect.withSpan("dispatch", {
+      attributes: { event: payload._tag },
+    }),
+  ) as Effect.Effect<HookDecision, never, AppServices>
+
+  // _stub kept reachable for non-tag-shaped fallback; not used post-Match.
+  void handleStub
 }
 
 export const program = (argv: ReadonlyArray<string>): Effect.Effect<void> =>
@@ -130,8 +170,11 @@ export const program = (argv: ReadonlyArray<string>): Effect.Effect<void> =>
       return
     }
     const payload = decodedE.right
-    const decision = yield* dispatchPayload(action, payload).pipe(
-      Effect.provide(AppLive),
+    const decision = yield* withSession(
+      payload.session_id,
+      dispatchPayload(action, payload).pipe(
+        Effect.provide(Layer.mergeAll(AppLive, TracingLive)),
+      ),
     )
     yield* emit(decision)
   }).pipe(

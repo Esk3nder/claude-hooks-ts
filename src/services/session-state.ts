@@ -3,6 +3,7 @@ import * as fs from "node:fs/promises"
 import * as fsSync from "node:fs"
 import * as path from "node:path"
 import { FsError } from "../schema/errors.ts"
+import { getCurrentSession } from "./session-context.ts"
 
 export type VerificationStatus = "passed" | "failed" | "none"
 
@@ -46,17 +47,33 @@ export type AppendableKey =
   | "subagent_starts"
   | "subagent_stops"
 
+/**
+ * SessionState API. Each method has two forms:
+ *   1. Explicit `sessionId: string` — for direct test use / when the caller
+ *      already has the id in scope.
+ *   2. Omitted — reads the current session from the {@link currentSessionId}
+ *      FiberRef set by `withSession` at the dispatcher entry point.
+ */
 export interface SessionStateApi {
-  readonly get: (sessionId: string) => Effect.Effect<SessionStateRecord, FsError>
-  readonly update: (
-    sessionId: string,
-    patch: Partial<SessionStateRecord>,
-  ) => Effect.Effect<void, FsError>
-  readonly append: (
-    sessionId: string,
-    key: AppendableKey,
-    value: string,
-  ) => Effect.Effect<void, FsError>
+  readonly get: {
+    (sessionId: string): Effect.Effect<SessionStateRecord, FsError>
+    (): Effect.Effect<SessionStateRecord, FsError>
+  }
+  readonly update: {
+    (
+      sessionId: string,
+      patch: Partial<SessionStateRecord>,
+    ): Effect.Effect<void, FsError>
+    (patch: Partial<SessionStateRecord>): Effect.Effect<void, FsError>
+  }
+  readonly append: {
+    (
+      sessionId: string,
+      key: AppendableKey,
+      value: string,
+    ): Effect.Effect<void, FsError>
+    (key: AppendableKey, value: string): Effect.Effect<void, FsError>
+  }
 }
 
 export class SessionState extends Context.Tag("SessionState")<
@@ -117,75 +134,128 @@ const mergePatch = (
   ...patch,
 })
 
+/**
+ * Resolve a sessionId from either an explicit argument or the
+ * `currentSessionId` FiberRef. Fails with `FsError` if neither is available.
+ */
+const resolveSessionId = (
+  explicit: string | undefined,
+): Effect.Effect<string, FsError> =>
+  explicit !== undefined
+    ? Effect.succeed(explicit)
+    : Effect.flatMap(getCurrentSession(), (sid) =>
+        sid === null
+          ? Effect.fail(
+              new FsError({
+                op: "session-state.resolve",
+                path: "<fiber-ref>",
+                message:
+                  "no sessionId provided and currentSessionId FiberRef is unset",
+                cause: null,
+              }),
+            )
+          : Effect.succeed(sid),
+      )
+
 export const SessionStateLive = (
   root: string = process.cwd(),
 ): Layer.Layer<SessionState> =>
   Layer.succeed(
     SessionState,
     SessionState.of({
-      get: (sessionId) =>
-        Effect.tryPromise({
-          try: async () => {
-            const file = statePath(root, sessionId)
-            try {
-              const raw = await fs.readFile(file, "utf8")
-              return parseRecord(raw)
-            } catch {
-              return EMPTY_SESSION_STATE
-            }
-          },
-          catch: (cause) =>
-            new FsError({
-              op: "session-state.get",
-              path: statePath(root, sessionId),
-              message: String(cause),
-              cause,
+      get: ((...args: ReadonlyArray<unknown>) => {
+        const explicit =
+          typeof args[0] === "string" ? (args[0] as string) : undefined
+        return resolveSessionId(explicit).pipe(
+          Effect.flatMap((sessionId) =>
+            Effect.tryPromise({
+              try: async () => {
+                const file = statePath(root, sessionId)
+                try {
+                  const raw = await fs.readFile(file, "utf8")
+                  return parseRecord(raw)
+                } catch {
+                  return EMPTY_SESSION_STATE
+                }
+              },
+              catch: (cause) =>
+                new FsError({
+                  op: "session-state.get",
+                  path: statePath(root, sessionId),
+                  message: String(cause),
+                  cause,
+                }),
             }),
-        }),
-      update: (sessionId, patch) =>
-        Effect.tryPromise({
-          try: async () => {
-            const file = statePath(root, sessionId)
-            await fs.mkdir(path.dirname(file), { recursive: true })
-            let prev: SessionStateRecord = EMPTY_SESSION_STATE
-            if (fsSync.existsSync(file)) {
-              const raw = await fs.readFile(file, "utf8")
-              prev = parseRecord(raw)
-            }
-            const next = mergePatch(prev, patch)
-            await fs.writeFile(file, JSON.stringify(next, null, 2), "utf8")
-          },
-          catch: (cause) =>
-            new FsError({
-              op: "session-state.update",
-              path: statePath(root, sessionId),
-              message: String(cause),
-              cause,
+          ),
+        )
+      }) as SessionStateApi["get"],
+      update: ((...args: ReadonlyArray<unknown>) => {
+        const explicit =
+          typeof args[0] === "string" ? (args[0] as string) : undefined
+        const patch = (explicit !== undefined
+          ? args[1]
+          : args[0]) as Partial<SessionStateRecord>
+        return resolveSessionId(explicit).pipe(
+          Effect.flatMap((sessionId) =>
+            Effect.tryPromise({
+              try: async () => {
+                const file = statePath(root, sessionId)
+                await fs.mkdir(path.dirname(file), { recursive: true })
+                let prev: SessionStateRecord = EMPTY_SESSION_STATE
+                if (fsSync.existsSync(file)) {
+                  const raw = await fs.readFile(file, "utf8")
+                  prev = parseRecord(raw)
+                }
+                const next = mergePatch(prev, patch)
+                await fs.writeFile(file, JSON.stringify(next, null, 2), "utf8")
+              },
+              catch: (cause) =>
+                new FsError({
+                  op: "session-state.update",
+                  path: statePath(root, sessionId),
+                  message: String(cause),
+                  cause,
+                }),
             }),
-        }),
-      append: (sessionId, key, value) =>
-        Effect.tryPromise({
-          try: async () => {
-            const file = statePath(root, sessionId)
-            await fs.mkdir(path.dirname(file), { recursive: true })
-            let prev: SessionStateRecord = EMPTY_SESSION_STATE
-            if (fsSync.existsSync(file)) {
-              const raw = await fs.readFile(file, "utf8")
-              prev = parseRecord(raw)
-            }
-            const arr = prev[key]
-            const nextArr = arr.includes(value) ? arr : [...arr, value]
-            const next: SessionStateRecord = { ...prev, [key]: nextArr }
-            await fs.writeFile(file, JSON.stringify(next, null, 2), "utf8")
-          },
-          catch: (cause) =>
-            new FsError({
-              op: "session-state.append",
-              path: statePath(root, sessionId),
-              message: String(cause),
-              cause,
+          ),
+        )
+      }) as SessionStateApi["update"],
+      append: ((...args: ReadonlyArray<unknown>) => {
+        const explicit =
+          typeof args[0] === "string" && args.length === 3
+            ? (args[0] as string)
+            : undefined
+        const key = (explicit !== undefined
+          ? args[1]
+          : args[0]) as AppendableKey
+        const value = (explicit !== undefined ? args[2] : args[1]) as string
+        return resolveSessionId(explicit).pipe(
+          Effect.flatMap((sessionId) =>
+            Effect.tryPromise({
+              try: async () => {
+                const file = statePath(root, sessionId)
+                await fs.mkdir(path.dirname(file), { recursive: true })
+                let prev: SessionStateRecord = EMPTY_SESSION_STATE
+                if (fsSync.existsSync(file)) {
+                  const raw = await fs.readFile(file, "utf8")
+                  prev = parseRecord(raw)
+                }
+                const arr = prev[key]
+                const nextArr = arr.includes(value) ? arr : [...arr, value]
+                const next: SessionStateRecord = { ...prev, [key]: nextArr }
+                await fs.writeFile(file, JSON.stringify(next, null, 2), "utf8")
+              },
+              catch: (cause) =>
+                new FsError({
+                  op: "session-state.append",
+                  path: statePath(root, sessionId),
+                  message: String(cause),
+                  cause,
+                }),
             }),
-        }),
+          ),
+        )
+      }) as SessionStateApi["append"],
     }),
   )
 
@@ -199,28 +269,58 @@ export const SessionStateTest = (
         new Map(initial),
       )
       return SessionState.of({
-        get: (sessionId) =>
-          Ref.get(ref).pipe(
-            Effect.map((m) => m.get(sessionId) ?? EMPTY_SESSION_STATE),
-          ),
-        update: (sessionId, patch) =>
-          Ref.update(ref, (m) => {
-            const prev = m.get(sessionId) ?? EMPTY_SESSION_STATE
-            const next = mergePatch(prev, patch)
-            const out = new Map(m)
-            out.set(sessionId, next)
-            return out
-          }),
-        append: (sessionId, key, value) =>
-          Ref.update(ref, (m) => {
-            const prev = m.get(sessionId) ?? EMPTY_SESSION_STATE
-            const arr = prev[key]
-            const nextArr = arr.includes(value) ? arr : [...arr, value]
-            const next: SessionStateRecord = { ...prev, [key]: nextArr }
-            const out = new Map(m)
-            out.set(sessionId, next)
-            return out
-          }),
+        get: ((...args: ReadonlyArray<unknown>) => {
+          const explicit =
+            typeof args[0] === "string" ? (args[0] as string) : undefined
+          return resolveSessionId(explicit).pipe(
+            Effect.flatMap((sessionId) =>
+              Ref.get(ref).pipe(
+                Effect.map((m) => m.get(sessionId) ?? EMPTY_SESSION_STATE),
+              ),
+            ),
+          )
+        }) as SessionStateApi["get"],
+        update: ((...args: ReadonlyArray<unknown>) => {
+          const explicit =
+            typeof args[0] === "string" ? (args[0] as string) : undefined
+          const patch = (explicit !== undefined
+            ? args[1]
+            : args[0]) as Partial<SessionStateRecord>
+          return resolveSessionId(explicit).pipe(
+            Effect.flatMap((sessionId) =>
+              Ref.update(ref, (m) => {
+                const prev = m.get(sessionId) ?? EMPTY_SESSION_STATE
+                const next = mergePatch(prev, patch)
+                const out = new Map(m)
+                out.set(sessionId, next)
+                return out
+              }),
+            ),
+          )
+        }) as SessionStateApi["update"],
+        append: ((...args: ReadonlyArray<unknown>) => {
+          const explicit =
+            typeof args[0] === "string" && args.length === 3
+              ? (args[0] as string)
+              : undefined
+          const key = (explicit !== undefined
+            ? args[1]
+            : args[0]) as AppendableKey
+          const value = (explicit !== undefined ? args[2] : args[1]) as string
+          return resolveSessionId(explicit).pipe(
+            Effect.flatMap((sessionId) =>
+              Ref.update(ref, (m) => {
+                const prev = m.get(sessionId) ?? EMPTY_SESSION_STATE
+                const arr = prev[key]
+                const nextArr = arr.includes(value) ? arr : [...arr, value]
+                const next: SessionStateRecord = { ...prev, [key]: nextArr }
+                const out = new Map(m)
+                out.set(sessionId, next)
+                return out
+              }),
+            ),
+          )
+        }) as SessionStateApi["append"],
       })
     }),
   )
