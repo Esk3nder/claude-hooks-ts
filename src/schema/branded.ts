@@ -18,6 +18,24 @@ export const makeAbsolutePath = (
       }),
     )
   }
+  if (input.includes("\\")) {
+    return Either.left(
+      new BrandValidationError({
+        brand: "AbsolutePath",
+        input,
+        reason: "must not contain backslash characters",
+      }),
+    )
+  }
+  if (/\0/.test(input)) {
+    return Either.left(
+      new BrandValidationError({
+        brand: "AbsolutePath",
+        input,
+        reason: "must not contain NULL bytes",
+      }),
+    )
+  }
   if (!input.startsWith("/")) {
     return Either.left(
       new BrandValidationError({

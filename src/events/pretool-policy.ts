@@ -52,6 +52,7 @@ const collectPathPolicies = (
 const evaluateBash = (input: unknown): PolicyDecision => {
   const decoded = Schema.decodeUnknownEither(BashInput)(input)
   if (decoded._tag === "Left") {
+    process.stderr.write("pretool-policy: bash input schema mismatch\n")
     return {
       kind: "ask",
       reason: "Bash input did not match expected schema; confirming for safety.",
@@ -94,7 +95,6 @@ const evaluateForTool = (
     case "Edit":
     case "Write":
     case "MultiEdit":
-    case "Update":
       return evaluateEditOrWrite(toolInput)
     default:
       return { kind: "passthrough" }

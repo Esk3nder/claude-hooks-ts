@@ -72,39 +72,38 @@ const pickScriptWithRunner = (
  * Note: `testCommand` takes a scope param, so we cache per-scope.
  */
 const makeLive = Effect.gen(function* () {
-  const rawRoot = Effect.sync(() => findRoot(process.cwd()))
+  // Compute the project root and read package.json exactly once per layer
+  // instantiation. Previously each cached command Effect re-ran findRoot +
+  // readPkg on first execution; though Effect.cached prevented repeated runs
+  // per command, root resolution still happened up to 5x.
+  const root = findRoot(process.cwd())
+  const pkg = readPkg(root)
+
+  const rawRoot = Effect.sync(() => root)
   const cachedRoot = yield* Effect.cached(rawRoot)
 
-  const rawTypecheck = Effect.sync(() => {
-    const root = findRoot(process.cwd())
-    const pkg = readPkg(root)
-    return pickScriptWithRunner(root, pkg.scripts, ["typecheck", "tsc"])
-  })
+  const rawTypecheck = Effect.sync(() =>
+    pickScriptWithRunner(root, pkg.scripts, ["typecheck", "tsc"]),
+  )
   const cachedTypecheck = yield* Effect.cached(rawTypecheck)
 
-  const rawLint = Effect.sync(() => {
-    const root = findRoot(process.cwd())
-    const pkg = readPkg(root)
-    return pickScriptWithRunner(root, pkg.scripts, ["lint"])
-  })
+  const rawLint = Effect.sync(() =>
+    pickScriptWithRunner(root, pkg.scripts, ["lint"]),
+  )
   const cachedLint = yield* Effect.cached(rawLint)
 
-  const rawTestTargeted = Effect.sync(() => {
-    const root = findRoot(process.cwd())
-    const pkg = readPkg(root)
-    return pickScriptWithRunner(root, pkg.scripts, [
+  const rawTestTargeted = Effect.sync(() =>
+    pickScriptWithRunner(root, pkg.scripts, [
       "test:changed",
       "test:unit",
       "test",
-    ])
-  })
+    ]),
+  )
   const cachedTestTargeted = yield* Effect.cached(rawTestTargeted)
 
-  const rawTestFull = Effect.sync(() => {
-    const root = findRoot(process.cwd())
-    const pkg = readPkg(root)
-    return pickScriptWithRunner(root, pkg.scripts, ["test"])
-  })
+  const rawTestFull = Effect.sync(() =>
+    pickScriptWithRunner(root, pkg.scripts, ["test"]),
+  )
   const cachedTestFull = yield* Effect.cached(rawTestFull)
 
   return Project.of({

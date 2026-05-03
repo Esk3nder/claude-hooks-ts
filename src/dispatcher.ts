@@ -104,7 +104,10 @@ const parseJson = (raw: string): Effect.Effect<unknown, StdinParseError> =>
   Effect.try({
     try: () => JSON.parse(raw) as unknown,
     catch: (cause) =>
-      new StdinParseError({ message: "stdin is not valid JSON", cause }),
+      new StdinParseError({
+        message: `stdin not valid JSON: ${raw.slice(0, 80)}`,
+        cause,
+      }),
   })
 
 const decodePayload = Schema.decodeUnknown(HookPayload)
@@ -136,7 +139,16 @@ const maybeGcApprovals = (
     const last = readLastGc(cwd)
     if (!shouldGc(now, last)) return
     const approvals = yield* Approvals
-    yield* approvals.gc(cwd, now).pipe(Effect.catchAll(() => Effect.succeed(undefined)))
+    yield* approvals.gc(cwd, now).pipe(
+      Effect.tapError((err) =>
+        Effect.sync(() => {
+          process.stderr.write(
+            `dispatcher: approvals.gc failed: ${String(err)}\n`,
+          )
+        }),
+      ),
+      Effect.catchAll(() => Effect.succeed(undefined)),
+    )
   })
 
 /**
@@ -219,6 +231,7 @@ export const program = (argv: ReadonlyArray<string>): Effect.Effect<void> =>
     }
     const raw = yield* readStdin()
     if (raw.trim().length === 0) {
+      yield* Effect.sync(() => { process.stderr.write("dispatcher: stdin was empty\n") })
       yield* emit(SAFE_DEFAULT)
       return
     }

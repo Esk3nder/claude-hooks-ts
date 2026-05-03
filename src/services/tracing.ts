@@ -20,8 +20,19 @@ const buildOtelLayer = Effect.gen(function* () {
   })) as unknown as Layer.Layer<never>
 })
 
+const buildOtelLayerSafe = buildOtelLayer.pipe(
+  Effect.catchAll((err) =>
+    Effect.sync(() => {
+      process.stderr.write(
+        `tracing: failed to load OTel deps: ${String(err)}\n`,
+      )
+      return Layer.empty as Layer.Layer<never>
+    }),
+  ),
+)
+
 export const TracingLive: Layer.Layer<never> = enabled()
-  ? Layer.unwrapEffect(buildOtelLayer)
+  ? Layer.unwrapEffect(buildOtelLayerSafe)
   : Layer.empty
 
 export const tracingLayerWith = (processor: unknown): Layer.Layer<never> =>
