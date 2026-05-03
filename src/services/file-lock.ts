@@ -1,4 +1,5 @@
 import * as fs from "node:fs";
+import * as path from "node:path";
 
 const STALE_LOCK_MS = 30_000;
 const RETRY_INITIAL_MS = 50;
@@ -15,6 +16,9 @@ export interface LockOptions {
  * sentinel file is created via O_CREAT|O_EXCL), run `fn`, and always release
  * the lock. On contention, retries with exponential backoff up to `timeoutMs`.
  * Stale locks (mtime older than `staleMs`) are force-removed and retried.
+ *
+ * Ensures the lockfile's parent directory exists (mkdir -p) before attempting
+ * acquisition so callers don't have to.
  */
 export const withFileLock = async <T>(
   targetPath: string,
@@ -25,6 +29,13 @@ export const withFileLock = async <T>(
   const stale = opts.staleMs ?? STALE_LOCK_MS;
   const timeout = opts.timeoutMs ?? RETRY_TIMEOUT_MS;
   const deadline = Date.now() + timeout;
+
+  // Ensure parent dir exists so O_CREAT can succeed.
+  try {
+    fs.mkdirSync(path.dirname(lockPath), { recursive: true });
+  } catch {
+    // best-effort — if mkdir fails, openSync will fail and surface the error
+  }
 
   let backoff = RETRY_INITIAL_MS;
   while (true) {

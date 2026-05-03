@@ -186,6 +186,11 @@ export const ApprovalsLive: Layer.Layer<Approvals> = Layer.succeed(
       Effect.tryPromise({
         try: async () => {
           const file = ledgerPath(cwd);
+          // No ledger → nothing to gc; just record the gc timestamp.
+          if (!fsSync.existsSync(file)) {
+            await writeMeta(metaPath(cwd), now);
+            return;
+          }
           await withFileLock(file, async () => {
             const all = await readAllRecords(file);
             const cutoff = now - maxAgeMs;
