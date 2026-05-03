@@ -72,7 +72,15 @@ export const handlePostCompact = (
         JSON.stringify(entry) +
         "\n"
       yield* fs.writeFile(ledgerPath, next)
-    }).pipe(Effect.catchAll(() => Effect.succeed(undefined)))
+    }).pipe(
+      Effect.catchAll((cause: unknown) => {
+        const msg = String(cause).slice(0, 120)
+        process.stderr.write(
+          `postcompact-ledger: write failed: ${msg}\n`,
+        )
+        return Effect.succeed(undefined)
+      }),
+    )
 
     return SAFE_DEFAULT
   })

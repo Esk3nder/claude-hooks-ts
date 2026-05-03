@@ -75,6 +75,15 @@ export interface SessionStateApi {
     ): Effect.Effect<void, FsError>
     (key: AppendableKey, value: string): Effect.Effect<void, FsError>
   }
+  readonly appendBatch: {
+    (
+      sessionId: string,
+      entries: ReadonlyArray<{ readonly key: AppendableKey; readonly value: string }>,
+    ): Effect.Effect<void, FsError>
+    (
+      entries: ReadonlyArray<{ readonly key: AppendableKey; readonly value: string }>,
+    ): Effect.Effect<void, FsError>
+  }
 }
 
 export class SessionState extends Context.Tag("SessionState")<
@@ -272,35 +281,65 @@ export const SessionStateLive = (
           ? args[1]
           : args[0]) as AppendableKey
         const value = (explicit !== undefined ? args[2] : args[1]) as string
+        const entries = [{ key, value }] as const
         return resolveSessionId(explicit).pipe(
           Effect.flatMap((sessionId) =>
-            Effect.tryPromise({
-              try: async () => {
-                const file = statePath(root, sessionId)
-                await fs.mkdir(path.dirname(file), { recursive: true })
-                let prev: SessionStateRecord = EMPTY_SESSION_STATE
-                if (fsSync.existsSync(file)) {
-                  const raw = await fs.readFile(file, "utf8")
-                  prev = parseRecord(raw)
-                }
-                const arr = prev[key]
-                const nextArr = arr.includes(value) ? arr : [...arr, value]
-                const next: SessionStateRecord = { ...prev, [key]: nextArr }
-                await fs.writeFile(file, JSON.stringify(next, null, 2), "utf8")
-              },
-              catch: (cause) =>
-                new FsError({
-                  op: "session-state.append",
-                  path: statePath(root, sessionId),
-                  message: String(cause),
-                  cause,
-                }),
-            }),
+            appendBatchLive(root, sessionId, entries),
           ),
         )
       }) as SessionStateApi["append"],
+      appendBatch: ((...args: ReadonlyArray<unknown>) => {
+        const explicit =
+          typeof args[0] === "string" && args.length === 2
+            ? (args[0] as string)
+            : undefined
+        const entries = (explicit !== undefined
+          ? args[1]
+          : args[0]) as ReadonlyArray<{
+          readonly key: AppendableKey
+          readonly value: string
+        }>
+        return resolveSessionId(explicit).pipe(
+          Effect.flatMap((sessionId) =>
+            appendBatchLive(root, sessionId, entries),
+          ),
+        )
+      }) as SessionStateApi["appendBatch"],
     }),
   )
+
+const appendBatchLive = (
+  root: string,
+  sessionId: string,
+  entries: ReadonlyArray<{ readonly key: AppendableKey; readonly value: string }>,
+): Effect.Effect<void, FsError> =>
+  Effect.tryPromise({
+    try: async () => {
+      if (entries.length === 0) return
+      const file = statePath(root, sessionId)
+      await fs.mkdir(path.dirname(file), { recursive: true })
+      let prev: SessionStateRecord = EMPTY_SESSION_STATE
+      if (fsSync.existsSync(file)) {
+        const raw = await fs.readFile(file, "utf8")
+        prev = parseRecord(raw)
+      }
+      let next: SessionStateRecord = prev
+      for (const { key, value } of entries) {
+        const arr = next[key]
+        if (arr.includes(value)) continue
+        next = { ...next, [key]: [...arr, value] }
+      }
+      if (next === prev) return
+      await fs.writeFile(file, JSON.stringify(next, null, 2), "utf8")
+    },
+    catch: (cause) =>
+      new FsError({
+        op: "session-state.appendBatch",
+        path: statePath(root, sessionId),
+        message: String(cause),
+        cause,
+      }),
+  })
 
 export const SessionStateTest = (
   initial: ReadonlyMap<string, SessionStateRecord> = new Map(),
@@ -364,6 +403,33 @@ export const SessionStateTest = (
             ),
           )
         }) as SessionStateApi["append"],
+        appendBatch: ((...args: ReadonlyArray<unknown>) => {
+          const explicit =
+            typeof args[0] === "string" && args.length === 2
+              ? (args[0] as string)
+              : undefined
+          const entries = (explicit !== undefined
+            ? args[1]
+            : args[0]) as ReadonlyArray<{
+            readonly key: AppendableKey
+            readonly value: string
+          }>
+          return resolveSessionId(explicit).pipe(
+            Effect.flatMap((sessionId) =>
+              Ref.update(ref, (m) => {
+                let next = m.get(sessionId) ?? EMPTY_SESSION_STATE
+                for (const { key, value } of entries) {
+                  const arr = next[key]
+                  if (arr.includes(value)) continue
+                  next = { ...next, [key]: [...arr, value] }
+                }
+                const out = new Map(m)
+                out.set(sessionId, next)
+                return out
+              }),
+            ),
+          )
+        }) as SessionStateApi["appendBatch"],
       })
     }),
   )

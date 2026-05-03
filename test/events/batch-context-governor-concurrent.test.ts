@@ -12,8 +12,8 @@ const decode = (raw: unknown) => Schema.decodeUnknownSync(HookPayload)(raw)
 
 interface Counter {
   readonly appendCount: Ref.Ref<number>
-  readonly inFlight: Ref.Ref<number>
-  readonly maxInFlight: Ref.Ref<number>
+  readonly batchCount: Ref.Ref<number>
+  readonly lastBatchSize: Ref.Ref<number>
 }
 
 const SlowSessionStateLayer = (
@@ -29,60 +29,64 @@ const SlowSessionStateLayer = (
         append: () =>
           Effect.gen(function* () {
             yield* Ref.update(counter.appendCount, (n) => n + 1)
-            const cur = yield* Ref.updateAndGet(counter.inFlight, (n) => n + 1)
-            yield* Ref.update(counter.maxInFlight, (m) => (cur > m ? cur : m))
             yield* Effect.sleep(`${delayMs} millis`)
-            yield* Ref.update(counter.inFlight, (n) => n - 1)
           }),
+        appendBatch: ((...args: ReadonlyArray<unknown>) => {
+          const entries = (typeof args[0] === "string"
+            ? args[1]
+            : args[0]) as ReadonlyArray<{ key: string; value: string }>
+          return Effect.gen(function* () {
+            yield* Ref.update(counter.batchCount, (n) => n + 1)
+            yield* Ref.set(counter.lastBatchSize, entries.length)
+            yield* Ref.update(counter.appendCount, (n) => n + entries.length)
+            yield* Effect.sleep(`${delayMs} millis`)
+          })
+        }) as SessionStateApi["appendBatch"],
       }
       return SessionState.of(api)
     }),
   )
 
-describe("handlePostToolBatch — concurrent fan-out", () => {
-  test("all branches run concurrently; elapsed < serial sum", async () => {
+describe("handlePostToolBatch — coalesced appendBatch", () => {
+  test("multiple per-tool entries collapse into a single appendBatch call", async () => {
     const counter: Counter = {
       appendCount: Effect.runSync(Ref.make(0)),
-      inFlight: Effect.runSync(Ref.make(0)),
-      maxInFlight: Effect.runSync(Ref.make(0)),
+      batchCount: Effect.runSync(Ref.make(0)),
+      lastBatchSize: Effect.runSync(Ref.make(0)),
     }
     const N = 8
-    const delayPerBranch = 50 // ms
     const tools = Array.from({ length: N }, (_, i) => ({
       tool_name: "Edit" as const,
       tool_input: { file_path: `/repo/file-${i}.ts` },
     }))
     const payload = decode({
       _tag: "PostToolBatch",
-      session_id: "sid-concurrent",
+      session_id: "sid-batch",
       hook_event_name: "PostToolBatch",
       tools,
     })
 
-    const layer = SlowSessionStateLayer(delayPerBranch, counter)
-    const start = Date.now()
+    const layer = SlowSessionStateLayer(10, counter)
     await Effect.runPromise(
       handlePostToolBatch(payload).pipe(Effect.provide(layer)),
     )
-    const elapsed = Date.now() - start
 
-    const appendCount = await Effect.runPromise(Ref.get(counter.appendCount))
-    const maxInFlight = await Effect.runPromise(Ref.get(counter.maxInFlight))
+    const batchCount = await Effect.runPromise(Ref.get(counter.batchCount))
+    const lastBatchSize = await Effect.runPromise(
+      Ref.get(counter.lastBatchSize),
+    )
 
-    expect(appendCount).toBe(N)
-    // Concurrency proof: total elapsed must be much less than serial sum
-    expect(elapsed).toBeLessThan(N * delayPerBranch)
-    // And we should have observed multiple in-flight at once
-    expect(maxInFlight).toBeGreaterThan(1)
+    expect(batchCount).toBe(1)
+    expect(lastBatchSize).toBe(N)
   })
 
-  test("a single slow branch is bounded by 500ms timeout (orElseSucceed null)", async () => {
+  test("a slow appendBatch is bounded by 500ms timeout (orElseSucceed undefined)", async () => {
     const counter: Counter = {
       appendCount: Effect.runSync(Ref.make(0)),
-      inFlight: Effect.runSync(Ref.make(0)),
-      maxInFlight: Effect.runSync(Ref.make(0)),
+      batchCount: Effect.runSync(Ref.make(0)),
+      lastBatchSize: Effect.runSync(Ref.make(0)),
     }
-    // 2 second per-append delay — must be cut off by the 500ms timeout.
+    // 2 second appendBatch delay — must be cut off by the 500ms timeout.
     const layer = SlowSessionStateLayer(2000, counter)
     const payload = decode({
       _tag: "PostToolBatch",

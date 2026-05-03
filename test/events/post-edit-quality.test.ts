@@ -3,7 +3,8 @@ import { Effect, Layer, Schema } from "effect"
 import { handlePostToolUse } from "../../src/events/post-edit-quality.ts"
 import { HookPayload } from "../../src/schema/payloads.ts"
 import { ProjectTest } from "../../src/services/project.ts"
-import { ShellTest } from "../../src/services/shell.ts"
+import { Shell, ShellTest } from "../../src/services/shell.ts"
+import { ShellError } from "../../src/schema/errors.ts"
 
 const decode = (raw: unknown) => Schema.decodeUnknownSync(HookPayload)(raw)
 
@@ -103,5 +104,47 @@ describe("handlePostToolUse (post-edit-quality)", () => {
       handlePostToolUse(editPayload("/repo/src/foo.ts")).pipe(Effect.provide(layer)),
     )
     expect(d).toEqual({})
+  })
+})
+
+
+describe("handlePostToolUse — silent failure logging (M9 fix #2)", () => {
+  test("emits stderr warning when shell errors on probe", async () => {
+    const captured: string[] = []
+    const origWrite = process.stderr.write.bind(process.stderr)
+    ;(process.stderr.write as unknown) = (
+      chunk: string | Uint8Array,
+    ): boolean => {
+      const s = typeof chunk === "string" ? chunk : new TextDecoder().decode(chunk)
+      captured.push(s)
+      return true
+    }
+    try {
+      const failingShell = Layer.succeed(
+        Shell,
+        Shell.of({
+          run: () =>
+            Effect.fail(
+              new ShellError({
+                command: "sh -c 'command -v prettier >/dev/null 2>&1'",
+                exitCode: -1,
+                stderr: "permission denied opening exec",
+                message: "EACCES: permission denied",
+              }),
+            ),
+        }),
+      )
+      const layer = Layer.mergeAll(ProjectTest(), failingShell)
+      const d = await Effect.runPromise(
+        handlePostToolUse(editPayload("/repo/src/foo.ts")).pipe(Effect.provide(layer)),
+      )
+      expect(d).toEqual({})
+      const joined = captured.join("")
+      expect(joined).toContain("post-edit-quality:")
+      expect(joined).toContain("failed silently:")
+      expect(joined).toContain("sh")
+    } finally {
+      ;(process.stderr.write as unknown) = origWrite
+    }
   })
 })

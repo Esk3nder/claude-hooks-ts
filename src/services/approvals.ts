@@ -172,7 +172,9 @@ export const ApprovalsLive: Layer.Layer<Approvals> = Layer.succeed(
           const file = ledgerPath(cwd)
           const all = await readAllRecords(file)
           const cutoff = now - maxAgeMs
-          const kept = all.filter((r) => r.recordedAt >= cutoff)
+          const kept = all.filter(
+            (r) => r.cwd !== cwd || r.recordedAt >= cutoff,
+          )
           if (kept.length !== all.length) {
             await fs.mkdir(path.dirname(file), { recursive: true })
             const body = kept.map((r) => JSON.stringify(r)).join("\n")

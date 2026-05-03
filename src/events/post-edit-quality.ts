@@ -83,9 +83,13 @@ export const handlePostToolUse = (
     const probe = yield* shell
       .run(probeCmdE.right, { timeoutMs: 1500 })
       .pipe(
-        Effect.catchAll(() =>
-          Effect.succeed({ stdout: "", stderr: "", exitCode: -1 }),
-        ),
+        Effect.catchAll((cause: unknown) => {
+          const msg = String(cause).slice(0, 120)
+          process.stderr.write(
+            `post-edit-quality: ${fmt.probe.cmd} failed silently: ${msg}\n`,
+          )
+          return Effect.succeed({ stdout: "", stderr: "", exitCode: -1 })
+        }),
       )
     if (probe.exitCode !== 0) return SAFE_DEFAULT
 
@@ -95,9 +99,13 @@ export const handlePostToolUse = (
     yield* shell
       .run(runCmdE.right, { timeoutMs: 5000 })
       .pipe(
-        Effect.catchAll(() =>
-          Effect.succeed({ stdout: "", stderr: "", exitCode: -1 }),
-        ),
+        Effect.catchAll((cause: unknown) => {
+          const msg = String(cause).slice(0, 120)
+          process.stderr.write(
+            `post-edit-quality: ${fmt.run.cmd} failed silently: ${msg}\n`,
+          )
+          return Effect.succeed({ stdout: "", stderr: "", exitCode: -1 })
+        }),
       )
     return SAFE_DEFAULT
   })
