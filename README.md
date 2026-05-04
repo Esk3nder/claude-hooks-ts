@@ -1,150 +1,121 @@
 # claude-hooks-ts
 
-A type-safe, Effect-based dispatcher for [Claude Code](https://docs.claude.com/claude-code) hooks.
-Replaces ad-hoc per-hook shell scripts with a single TypeScript binary that decodes hook payloads
-through `effect/Schema`, runs them through declarative policies, and emits the structured JSON
-Claude Code expects. Built around a deterministic event-driven control plane: safety, quality,
-token efficiency, CI-style verification, research workflows.
+A type-safe dispatcher for [Claude Code](https://docs.claude.com/claude-code) hooks.
 
-## Quick install
+Replaces ad-hoc per-hook shell scripts with a single binary that decodes hook payloads through a strict schema, runs them through declarative policies, and emits the structured JSON Claude Code expects. One control plane for safety, quality, token efficiency, verification gates, and audit.
+
+---
+
+## What it does
+
+Claude Code fires a hook event (e.g. `PreToolUse`, `Stop`, `PostToolBatch`) for every meaningful step in an agent session. Each event is a chance to inject context, deny dangerous actions, rewrite tool inputs, or block premature stops. claude-hooks-ts wires a single dispatcher into all 29 events and routes each one through purpose-built handlers.
+
+A few things it does out of the box:
+
+- **Denies secret reads** (`.env`, private keys, credential files) and destructive commands (`rm -rf`, `git reset --hard`, `terraform destroy`)
+- **Asks before** editing lockfiles, settings, migrations
+- **Blocks `Stop`** when files were changed without a verification command being run
+- **Auto-replays** prior `PermissionRequest` decisions and MCP `Elicitation` answers
+- **Surfaces recent failures** (`rate_limit`, `auth`) at session start so the agent plans around them
+- **Resets session state** when you `cd` into a different project (no cross-project bleed)
+- **Mirrors your `.claude-hooks/` config into worktrees** so policies follow you
+- **Archives ledgers** before worktree removal so audit history isn't lost
+
+Every decision is recorded to a per-session JSONL ledger. Optional OpenTelemetry export for spans. Cross-process file locks so parallel Claude Code sessions can't corrupt state.
+
+See [`docs/HOOK-EVENTS.md`](./docs/HOOK-EVENTS.md) for the full per-event reference (input/output schemas, behavior, quirks).
+
+---
+
+## Install
+
+Requires [Bun](https://bun.sh).
 
 ```bash
 bun add -g github:Esk3nder/claude-hooks-ts
-claude-hooks-install --dry-run                        # preview the merge
-claude-hooks-install --apply                          # write atomically with backup
-claude-hooks-install --uninstall --apply              # cleanly remove our entries
+claude-hooks-install --dry-run                  # preview the merge first
+claude-hooks-install --apply                    # write atomically with .bak backup
 ```
 
-The installer merges 16 hook entries into `~/.claude/settings.json` (or any `--target` path),
-preserving existing unrelated hooks and other settings keys. Existing entries that point at our
-dispatcher are replaced idempotently; the prior file is backed up to `<target>.bak.<timestamp>`
-before any write.
+The installer merges hook entries into `~/.claude/settings.json` (or `--target <path>`), preserving unrelated keys. The previous file is backed up to `<target>.bak.<ISO-timestamp>` before any write. Install is idempotent — re-running replaces only our entries.
 
-### Compiled binary mode (Linux, ~3x cold-start win)
+To uninstall:
+```bash
+claude-hooks-install --uninstall --apply
+```
 
-The dispatcher can be compiled to a single ~60MB binary with `bun build --compile`,
-cutting cold-start from ~145ms (bun runtime + transpile + module resolution) to ~40-60ms.
-This savings is paid on **every tool call** your agent makes, so it compounds quickly.
+### Faster cold start (Linux)
+
+By default, hooks run via `bun run`. On Linux you can compile to a single binary instead — cuts dispatcher cold-start by ~3x, paid on every tool call:
 
 ```bash
-bun run build:bin                       # produces dist/claude-hook-<platform>-<arch>
-claude-hooks-install --apply            # auto-detects the binary, wires it instead of bun-run
+bun run build:bin                      # produces dist/claude-hook-<platform>-<arch>
+claude-hooks-install --apply           # auto-detects the binary, wires it directly
 ```
 
-If you want to force the bun-run path (e.g. for development), pass `--no-binary`:
-```bash
-claude-hooks-install --apply --no-binary
-```
+Force the bun-run path with `--no-binary`. macOS automatically falls back since unsigned compiled binaries are killed by Gatekeeper without a paid Apple Developer ID.
 
-**macOS limitation:** Apple's sandbox kills unsigned compiled binaries (exit 137, no output).
-Without a paid Apple Developer ID + notarization, the install script automatically falls
-back to bun-run mode on `darwin`. Linux users get the perf win out of the box.
+---
 
-## Verifying install
+## Verify it works
 
 ```bash
 claude-hooks-doctor
 ```
 
-Runs end-to-end checks: bun on PATH, settings.json parseable, every wired hook command
-resolves and is executable, state dir writable, synthetic dispatcher round-trip. Exits non-zero
-on any problem. Use `--verbose` for details, `--json` for machine output.
+End-to-end checks: bun on PATH, settings.json parseable, every wired hook command resolves and is executable, state dir writable, dispatcher round-trip succeeds. Exits non-zero on any problem. Use `--verbose` for details, `--json` for machine output.
 
-## Hook coverage
+---
 
-| Event | Handler | Behaviour |
-|---|---|---|
-| `SessionStart` | `session-start-brief` | Inject branch, dirty files, verify commands. |
-| `UserPromptSubmit` | `prompt-router` | Classify into 15 workflow tags; persist `last_workflow`. |
-| `PreToolUse` | `pretool-policy` | Deny secrets/destructive; ask lockfiles/settings; rewrite test commands to failure-only output. |
-| `PostToolUse` (Edit\|Write\|MultiEdit) | `post-edit-quality` | Targeted formatter/lint per file type. |
-| `PostToolBatch` | `batch-context-governor` | Persist ledger; extract URLs from `WebFetch`/`WebSearch`; inject compact summary. |
-| `PostToolUseFailure` | `failure-explainer` | Parse error → next-action hint. |
-| `Stop` | `stop-definition-of-done` | Block if files changed without verification, or if research workflow lacks source ledger. |
-| `PreCompact` | `precompact-snapshot` | Preserve goal, plan, files changed, sources to disk. |
-| `SessionEnd` | `session-ledger` | Append-only audit trace. |
-| `PermissionRequest` | `permission-autopilot` | Auto-approve safe repeats. |
-| `ConfigChange` | `config-guard` | Detect weakened permissions/hooks. |
-| `FileChanged` | `filechanged-env-guard` | Watch `.env`, lockfiles, manifests. |
-| `SubagentStart`/`Stop` | `subagent-scope-gate` | Enforce read-only scope + evidence requirement. |
-| `TaskCreated`/`Completed` | `task-integrity` | Acceptance criteria + evidence. |
+## Configure
 
-See [`docs/HOOK-EVENTS.md`](./docs/HOOK-EVENTS.md) for the full coverage table
-across all 29 official Claude Code hook events (input/output schemas,
-implementation status, quirks).
-
-## Configuration
-
-Project-level YAML lives under `.claude-hooks/`:
+Project-local config lives at `<project>/.claude-hooks/`:
 
 ```
 .claude-hooks/
-  protected-paths.yaml      # paths that cannot be edited without ask
-  generated-files.yaml      # paths that cannot be edited at all
-  test-map.yaml             # mapping from changed file -> smallest verify command
+  protected-paths.yaml      # paths requiring confirmation before edit
+  generated-files.yaml      # paths that cannot be edited
+  test-map.yaml             # changed-file → smallest verify command
   research-domains.yaml     # whitelisted research source roots
   state/                    # per-session ledgers (managed by hooks)
-  state/compact-snapshots/  # PreCompact preservation snapshots
 ```
 
-Defaults are baked in; override only what you need. Policies fall back to safe defaults when YAML
-is missing.
+Defaults are baked in. YAML files are optional — when missing, policies fall back to safe defaults. Override only what you need.
 
-## Troubleshooting
+---
 
-- **Cold-start latency.** A Bun-spawned dispatcher invocation has a `p50 ~ 130-160ms` on a warm
-  filesystem; the first invocation after `bun install` may spike to 300ms. The benchmark in
-  `test/perf/cold-start.test.ts` enforces a 300ms p50 budget locally and 350ms in CI (chosen to absorb spawn jitter when run in parallel with the full suite; the median in isolation sits near 140ms). The
-  original design budget of <100ms proved unrealistic - Bun startup alone is ~120ms - so we
-  measure against a more honest bound.
-- **Bun fallback.** If `bun` is not on `PATH`, the `bin/claude-hook` shim fails; install Bun
-  first (`curl -fsSL https://bun.sh/install | bash`). A `tsx`-based fallback is on the roadmap.
-- **Settings backup location.** The installer always copies the existing settings.json to
-  `<target>.bak.<ISO-timestamp>` before writing.
+## Debug
 
-## Development
+Tail the per-session ledger live:
+
+```bash
+claude-hooks-tail                        # follow every session under cwd
+claude-hooks-tail --session <id>         # filter to one session
+claude-hooks-tail --since 2026-01-01     # only events after timestamp
+claude-hooks-tail --cwd /other/project   # tail another project's ledger
+```
+
+Output: `[<iso>] <event> <session>: <summary>`. ANSI colors on a TTY. SIGINT exits cleanly.
+
+For traces, set `OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318/v1/traces` before launching Claude Code. Spans flow through the Effect tracer to your OTel collector. Without the env var, tracing is fully no-op (zero import cost).
+
+---
+
+## Contributing
 
 ```bash
 bun install
-bun test                                    # 291 tests
-bun run typecheck                           # tsc --noEmit
-bun test test/redteam/                      # full red-team suite (10/10)
-bun test test/perf/cold-start.test.ts       # cold-start budget
+bun run typecheck
+bun test
 ```
 
-Pull requests welcome. Please keep:
-
+Conventions:
 - No `any`, no `// @ts-ignore`, no skipped tests.
-- All hooks pure-Effect; side effects through services in `src/services/`.
-- Policies pure functions in `src/policies/`.
+- Side effects through services in `src/services/`.
+- Policies as pure functions in `src/policies/`.
+
+---
 
 ## License
 
-MIT (c) 2026 Esk3nder
-
-## Debugging — `claude-hooks-tail`
-
-Stream the per-session ledger like `tail -f`:
-
-```bash
-# Follow every session's ledger under the current cwd
-bun run scripts/tail.ts
-
-# Or via the bin shim once installed
-claude-hooks-tail
-
-# Filter to one session
-claude-hooks-tail --session abc123
-
-# Only events from a given ISO time
-claude-hooks-tail --since 2026-05-02T00:00:00Z
-
-# Run against a different project
-claude-hooks-tail --cwd /path/to/repo
-```
-
-Reads `<cwd>/.claude-hooks/state/<session>/ledger.jsonl` (or globs every
-`ledger.jsonl` under the state dir when `--session` is omitted), tails new
-appends every 200ms, and pretty-prints each entry as
-`[<iso>] <event> <session-short>: <summary>`. ANSI color when stdout is a TTY.
-SIGINT exits cleanly.
+MIT
