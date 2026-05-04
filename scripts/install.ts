@@ -72,10 +72,37 @@ const HOOK_EVENTS: ReadonlyArray<HookEvent> = [
   "TaskCompleted",
 ];
 
+/**
+ * Resolve the hook command path. Prefer the compiled single-binary at
+ * `<installRoot>/dist/claude-hook-<platform>-<arch>` for ~3x cold-start win.
+ * Fall back to the bun-run shim at `<installRoot>/bin/claude-hook` when the
+ * binary is missing OR when --no-binary is set OR on macOS where unsigned
+ * compiled binaries are killed by the OS sandbox.
+ */
+const resolveDispatcherPath = (
+  installRoot: string,
+  noBinary: boolean,
+): string => {
+  if (noBinary || process.platform === "darwin") {
+    return path.join(installRoot, "bin", "claude-hook");
+  }
+  const archMap: Record<string, string> = { x64: "x64", arm64: "arm64" };
+  const arch = archMap[process.arch] ?? process.arch;
+  const platform = process.platform === "linux" ? "linux" : process.platform;
+  const binary = path.join(installRoot, "dist", `claude-hook-${platform}-${arch}`);
+  try {
+    fs.accessSync(binary, fs.constants.X_OK);
+    return binary;
+  } catch {
+    return path.join(installRoot, "bin", "claude-hook");
+  }
+};
+
 const buildEntries = (
   installRoot: string,
+  noBinary: boolean = false,
 ): Record<HookEvent, HookMatcher[]> => {
-  const dispatcher = path.join(installRoot, "bin", "claude-hook");
+  const dispatcher = resolveDispatcherPath(installRoot, noBinary);
   const out: Record<HookEvent, HookMatcher[]> = {};
   for (const ev of HOOK_EVENTS) {
     out[ev] = [
@@ -183,6 +210,7 @@ interface CliArgs {
   uninstall: boolean;
   target: string;
   installRoot: string;
+  noBinary: boolean;
 }
 
 const parseArgs = (argv: ReadonlyArray<string>): CliArgs => {
@@ -190,11 +218,13 @@ const parseArgs = (argv: ReadonlyArray<string>): CliArgs => {
   let uninstall = false;
   let target = DEFAULT_TARGET;
   let installRoot = path.resolve(__dirname, "..");
+  let noBinary = false;
   for (let i = 0; i < argv.length; i += 1) {
     const a = argv[i];
     if (a === "--apply") apply = true;
     else if (a === "--dry-run") apply = false;
     else if (a === "--uninstall") uninstall = true;
+    else if (a === "--no-binary") noBinary = true;
     else if (a === "--target" && i + 1 < argv.length) {
       target = argv[i + 1]!;
       i += 1;
@@ -203,7 +233,7 @@ const parseArgs = (argv: ReadonlyArray<string>): CliArgs => {
       i += 1;
     }
   }
-  return { apply, uninstall, target, installRoot };
+  return { apply, uninstall, target, installRoot, noBinary };
 };
 
 interface InstallResult {
@@ -221,7 +251,7 @@ export const runInstallDetailed = (
 ): InstallResult => {
   const args = parseArgs(argv);
   const existing = readJsonOr<SettingsShape>(args.target, {});
-  const ours = buildEntries(args.installRoot);
+  const ours = buildEntries(args.installRoot, args.noBinary);
   const merged = mergeHooks(
     existing,
     ours,

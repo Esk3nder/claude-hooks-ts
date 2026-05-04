@@ -17,7 +17,8 @@
     "test": "bun test",
     "dispatch": "bun run src/dispatcher.ts",
     "install:dry": "bun run scripts/install.ts --dry-run",
-    "install:apply": "bun run scripts/install.ts --apply"
+    "install:apply": "bun run scripts/install.ts --apply",
+    "build:bin": "bun run scripts/build.ts"
   },
   "dependencies": {
     "@effect/opentelemetry": "^0.63.0",
