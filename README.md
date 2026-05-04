@@ -20,6 +20,26 @@ preserving existing unrelated hooks and other settings keys. Existing entries th
 dispatcher are replaced idempotently; the prior file is backed up to `<target>.bak.<timestamp>`
 before any write.
 
+### Compiled binary mode (Linux, ~3x cold-start win)
+
+The dispatcher can be compiled to a single ~60MB binary with `bun build --compile`,
+cutting cold-start from ~145ms (bun runtime + transpile + module resolution) to ~40-60ms.
+This savings is paid on **every tool call** your agent makes, so it compounds quickly.
+
+```bash
+bun run build:bin                       # produces dist/claude-hook-<platform>-<arch>
+claude-hooks-install --apply            # auto-detects the binary, wires it instead of bun-run
+```
+
+If you want to force the bun-run path (e.g. for development), pass `--no-binary`:
+```bash
+claude-hooks-install --apply --no-binary
+```
+
+**macOS limitation:** Apple's sandbox kills unsigned compiled binaries (exit 137, no output).
+Without a paid Apple Developer ID + notarization, the install script automatically falls
+back to bun-run mode on `darwin`. Linux users get the perf win out of the box.
+
 ## Verifying install
 
 ```bash

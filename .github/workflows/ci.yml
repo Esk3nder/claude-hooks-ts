@@ -45,3 +45,36 @@ jobs:
           assert n > 0, "no hook entries"
           print(f"OK: {n} hook entries wired")
           PY
+
+  build-binary:
+    runs-on: ${{ matrix.os }}
+    needs: build
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+      - name: Build binary
+        run: bun run build:bin
+      - name: Smoke test (linux only — macOS sandbox kills unsigned compiled binaries)
+        if: runner.os == 'Linux'
+        run: |
+          BIN=$(ls dist/claude-hook-*)
+          chmod +x "$BIN"
+          du -h "$BIN"
+          echo '{"hook_event_name":"SessionStart","session_id":"ci","transcript_path":"/tmp/t","cwd":"/tmp","source":"startup","model":"opus"}' | "$BIN" SessionStart
+      - name: Note macOS
+        if: runner.os == 'macOS'
+        run: |
+          BIN=$(ls dist/claude-hook-*)
+          du -h "$BIN"
+          echo "macOS: built but not smoke-tested — unsigned binaries are killed by Gatekeeper. macOS users should install with --no-binary."
+      - uses: actions/upload-artifact@v4
+        with:
+          name: claude-hook-${{ matrix.os }}
+          path: dist/claude-hook-*
