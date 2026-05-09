@@ -1,17 +1,17 @@
 /**
- * Recent-conversation context extractor — PORTED VERBATIM from PAI's
+ * Recent-conversation context extractor — PORTED VERBATIM from the spec's
  * `getRecentContext` (PromptProcessing.hook.ts lines 774-809).
  *
  * Why this exists: the classifier rubric's "single-word approval" rule
  * (Algorithm v6.3.0 line 749, replicated in CLASSIFIER_SYSTEM_PROMPT) only
- * fires when Sonnet can see the prior turn. PAI feeds the last N turns into
+ * fires when Sonnet can see the prior turn. the upstream spec feeds the last N turns into
  * the user prompt as `CONTEXT:\n${context}\n\nCURRENT MESSAGE:\n${cleanPrompt}`.
  * Without this, "yes" after a multi-step proposal classifies MINIMAL — the
  * exact failure mode the doctrine was written to prevent.
  *
  * The `transcript_path` is a JSONL file Claude Code writes to per-session.
- * Each line is `{type: "user"|"assistant"|..., message?: {content}}`. PAI
- * defaults to last 6 turns. `includeAssistant` was a PAI-internal toggle
+ * Each line is `{type: "user"|"assistant"|..., message?: {content}}`. the upstream spec
+ * defaults to last 6 turns. `includeAssistant` was a the upstream spec-internal toggle
  * for session-naming purposes (excluded for the first prompt to avoid
  * Algorithm scaffolding contamination); for classification we always include
  * assistant turns because that's where the "multi-step proposal" lives.
@@ -19,7 +19,7 @@
 
 import { existsSync, readFileSync } from "node:fs"
 
-/** PAI line 774 default. */
+/** the upstream classifier default. */
 const DEFAULT_MAX_TURNS = 6
 
 interface Turn {
@@ -32,9 +32,9 @@ interface Turn {
  * "Role: text" joined by newlines. Returns "" on any error or if the file
  * doesn't exist or contains no usable turns.
  *
- * Faithful port of PAI lines 774-808 — same try/catch envelopes, same 200-char
+ * Faithful port of the upstream classifier — same try/catch envelopes, same 200-char
  * user / 150-char assistant slicing, same SUMMARY-line extraction for
- * assistant turns (PAI line 800 — captures the assistant's compressed
+ * assistant turns (the upstream classifier — captures the assistant's compressed
  * conclusion when present).
  */
 export const getRecentContext = (
@@ -101,7 +101,7 @@ export const getRecentContext = (
                     .join(" ")
                 : ""
           if (text) {
-            // PAI line 799-801: prefer SUMMARY: line if present.
+            // the upstream classifier: prefer SUMMARY: line if present.
             const summaryMatch = text.match(/SUMMARY:\s*([^\n]+)/i)
             const summarySnippet = summaryMatch?.[1]
             turns.push({
@@ -111,7 +111,7 @@ export const getRecentContext = (
           }
         }
       } catch {
-        // Per-line parse error — skip and continue (PAI line 803).
+        // Per-line parse error — skip and continue.
       }
     }
 

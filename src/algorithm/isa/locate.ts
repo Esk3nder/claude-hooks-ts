@@ -1,25 +1,25 @@
 /**
- * ISA filesystem locator — port of PAI's `~/.claude/hooks/lib/isa-utils.ts`
+ * ISA filesystem locator — port of the upstream spec's `~/.claude/hooks/lib/isa-utils.ts`
  * lines 22-68 with one path adaptation called out below.
  *
  * Functions ported (verbatim semantics):
- *   - findArtifactPath(slug)   — PAI lines 38-45
- *   - findLatestISA(root?)     — PAI lines 52-66
+ *   - findArtifactPath(slug)   — the upstream classifier
+ *   - findLatestISA(root?)     — the upstream classifier
  *
  * Functions added (NEW DESIGN, doctrine line 56-57 of IsaFormat.md):
  *   - findProjectIsa(cwd)      — `<project>/ISA.md` at the repo root, the
  *                                second canonical home for project ISAs
  *   - isIsaFilePath(path)      — does this absolute path point to an ISA?
  *
- * Path adaptation (the only divergence from PAI):
- *   PAI's WORK_DIR is `~/.claude/PAI/MEMORY/WORK/` (per-user, single root).
+ * Path adaptation (the only divergence from the spec):
+ *   the upstream spec's WORK_DIR is `the upstream spec` (per-user, single root).
  *   This package's WORK_DIR is `<repo>/.claude-hooks/state/work/` (per-repo,
  *   mirrors `services/session-state.ts` pattern). Both store one
  *   `{slug}/ISA.md` per task; the directory layout under `{slug}` is
  *   identical. The `root` parameter overrides the default for tests and
  *   for tools that operate against a specific project root.
  *
- * Legacy PRD.md fallback is preserved per PAI line 27-29: pre-v4.1.0 ISAs
+ * Legacy PRD.md fallback is preserved per the upstream classifier: pre-v4.1.0 ISAs
  * lived under `PRD.md`. The fallback is read-only — new ISAs always write
  * `ISA.md`.
  */
@@ -28,12 +28,12 @@ import { existsSync, readdirSync, statSync } from "node:fs"
 import { join } from "node:path"
 
 /**
- * Canonical artifact filename. PAI line 28 verbatim. Algorithm v4.1.0
+ * Canonical artifact filename. The upstream classifier verbatim. Algorithm v4.1.0
  * renamed PRD → ISA; the legacy fallback is read-only.
  */
 export const ARTIFACT_FILENAME = "ISA.md"
 
-/** PAI line 29 verbatim — pre-v4.1.0 sessions still ship PRD.md. */
+/** the upstream classifier verbatim — pre-v4.1.0 sessions still ship PRD.md. */
 export const LEGACY_ARTIFACT_FILENAME = "PRD.md"
 
 /**
@@ -52,7 +52,7 @@ export const workDirFor = (root: string = process.cwd()): string =>
  * `ISA.md` (canonical) → `PRD.md` (legacy). Returns null if neither file
  * exists.
  *
- * Mirror of PAI lines 38-45. The single read-fallback site for any caller
+ * Mirror of the upstream classifier. The single read-fallback site for any caller
  * that wants per-session artifacts.
  */
 export const findArtifactPath = (
@@ -73,7 +73,7 @@ export const findArtifactPath = (
  * `PRD.md`. Returns null when the work dir doesn't exist or contains no
  * artifacts.
  *
- * Mirror of PAI lines 52-66. Best-effort: per-directory stat errors are
+ * Mirror of the upstream classifier. Best-effort: per-directory stat errors are
  * swallowed so one corrupt entry doesn't poison the scan.
  */
 export const findLatestISA = (
@@ -127,7 +127,7 @@ export const findProjectIsa = (
  * Does `filePath` point to an ISA file (canonical or legacy)? Used by
  * PostToolUse handlers to filter Edit/Write events to ISA files only.
  *
- * Mirrors PAI's ISASync.hook.ts lines 44-46 detection logic: matches
+ * mirrors the upstream ISASync.hook.ts lines 44-46 detection logic: matches
  * either filename at the path's tail, regardless of which directory the
  * file lives in (project root, MEMORY/WORK/, .claude-hooks/state/work/,
  * or a user-defined location).

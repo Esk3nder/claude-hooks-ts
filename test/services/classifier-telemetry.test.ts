@@ -12,14 +12,14 @@ import {
 } from "../../src/services/classifier-telemetry.ts"
 
 describe("buildPromptExcerpt", () => {
-  test("matches PAI prompt.slice(0, 120)", () => {
+  test("matches the upstream prompt.slice(0, 120)", () => {
     expect(buildPromptExcerpt("hello")).toBe("hello")
     expect(buildPromptExcerpt("x".repeat(200)).length).toBe(120)
   })
 })
 
 describe("buildRecord", () => {
-  test("produces PAI-shaped record", () => {
+  test("produces upstream-shaped record", () => {
     const r = buildRecord({
       sessionId: "sid",
       prompt: "implement OAuth refresh flow",

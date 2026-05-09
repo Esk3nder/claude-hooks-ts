@@ -345,7 +345,7 @@ describe("Stop ISA gate — completeness check on phase: complete", () => {
     }
   })
 
-  test("phase value is case-insensitive (PAI tolerance)", async () => {
+  test("phase value is case-insensitive (upstream tolerance)", async () => {
     const { root, cleanup } = stage()
     try {
       writeProjectIsa(

@@ -1,13 +1,13 @@
 /**
  * ISC checkpoint — auto git commit on every ISC `[ ]`→`[x]` transition.
  *
- * Faithful port of PAI's `~/.claude/hooks/CheckpointPerISC.hook.ts` (lines
+ * Faithful port of the upstream spec's `~/.claude/hooks/CheckpointPerISC.hook.ts` (lines
  * 26-200). One path adaptation called out below; everything else (commit
  * subject form, idempotency via sidecar state, allowlist semantics, fail-
  * closed error policy, --no-verify --no-gpg-sign flags, 5000ms git timeout)
- * mirrors PAI byte-for-byte.
+ * mirrors the upstream spec byte-for-byte.
  *
- * SAFETY POSTURE (verbatim from PAI line 18-19): "Fails closed — any error
+ * SAFETY POSTURE (verbatim from the upstream classifier): "Fails closed — any error
  * path logs to stderr and emits `{continue:true}` with exit 0; never crashes
  * the session, never commits without an allowlist, never executes any
  * destructive git op (no reset/revert/checkout/branch -D/clean -fd/
@@ -18,8 +18,8 @@
  * deliberate — auto-commit on a public package without explicit opt-in
  * would be a footgun.
  *
- * PATH ADAPTATION (the only divergence from PAI):
- *   PAI allowlist: `~/.claude/checkpoint-repos.txt` (per-user, single file).
+ * PATH ADAPTATION (the only divergence from the spec):
+ *   the upstream spec allowlist: `~/.claude/checkpoint-repos.txt` (per-user, single file).
  *   This package:  `<repo>/.claude-hooks/checkpoint-repos.txt` (per-repo,
  *                  mirrors `services/session-state.ts` `.claude-hooks/state/`
  *                  convention). Each project opts in its own repos. Tilde
@@ -37,7 +37,7 @@ import { homedir } from "node:os"
 import { parseCriteriaList, type CriterionEntry } from "./criteria.ts"
 import { parseFrontmatter } from "./frontmatter.ts"
 
-/** PAI line 34 — git command timeout. */
+/** the upstream classifier — git command timeout. */
 export const GIT_TIMEOUT_MS = 5000
 
 /**
@@ -58,7 +58,7 @@ export interface CheckpointState {
   readonly last_commit_sha: Readonly<Record<string, string>>
 }
 
-/** PAI lines 41-48 — expand `~` and `$HOME` prefixes in allowlist entries. */
+/** the upstream classifier — expand `~` and `$HOME` prefixes in allowlist entries. */
 export const expandPath = (p: string): string => {
   let s = p.trim()
   if (!s) return s
@@ -68,7 +68,7 @@ export const expandPath = (p: string): string => {
   return s
 }
 
-/** PAI lines 50-62 — read allowlist, ignore comments/blanks, expand prefixes. */
+/** the upstream classifier — read allowlist, ignore comments/blanks, expand prefixes. */
 export const loadAllowlist = (
   root: string = process.cwd(),
 ): ReadonlyArray<string> => {
@@ -88,7 +88,7 @@ export const loadAllowlist = (
   }
 }
 
-/** PAI lines 64-76 — load idempotency state from sidecar JSON. */
+/** the upstream classifier — load idempotency state from sidecar JSON. */
 export const loadState = (stateFile: string): CheckpointState => {
   if (!existsSync(stateFile)) {
     return { committed_iscs: [], last_commit_sha: {} }
@@ -118,7 +118,7 @@ export const loadState = (stateFile: string): CheckpointState => {
   }
 }
 
-/** PAI lines 78-84 — best-effort state write; failures logged not thrown. */
+/** the upstream classifier — best-effort state write; failures logged not thrown. */
 export const saveState = (
   stateFile: string,
   state: CheckpointState,
@@ -132,7 +132,7 @@ export const saveState = (
   }
 }
 
-/** PAI lines 86-92 — synchronous git invocation via execFileSync. */
+/** the upstream classifier — synchronous git invocation via execFileSync. */
 const gitRun = (repo: string, args: ReadonlyArray<string>): string =>
   execFileSync("git", ["-C", repo, ...args], {
     encoding: "utf-8",
@@ -140,7 +140,7 @@ const gitRun = (repo: string, args: ReadonlyArray<string>): string =>
     stdio: ["ignore", "pipe", "pipe"],
   })
 
-/** PAI lines 94-101. */
+/** the upstream classifier. */
 export const isGitRepo = (repo: string): boolean => {
   try {
     gitRun(repo, ["rev-parse", "--git-dir"])
@@ -150,7 +150,7 @@ export const isGitRepo = (repo: string): boolean => {
   }
 }
 
-/** PAI lines 103-109 — `git status --porcelain` truthiness. */
+/** the upstream classifier — `git status --porcelain` truthiness. */
 export const hasChanges = (repo: string): boolean => {
   try {
     return gitRun(repo, ["status", "--porcelain"]).trim().length > 0
@@ -159,12 +159,12 @@ export const hasChanges = (repo: string): boolean => {
   }
 }
 
-/** PAI lines 111-113 — single-line, length-capped, backtick/`$` stripped. */
+/** the upstream classifier — single-line, length-capped, backtick/`$` stripped. */
 export const sanitizeMessage = (s: string): string =>
   s.replace(/\s+/g, " ").replace(/[`$]/g, "").trim().slice(0, 200)
 
 /**
- * PAI lines 115-132 — commit one ISC transition in one repo. Subject form:
+ * the upstream classifier — commit one ISC transition in one repo. Subject form:
  *   "<ISC-id> (<slug>): <sanitized description>"
  * `--no-verify` skips husky/pre-commit hooks; `--no-gpg-sign` avoids GPG
  * passphrase prompts that would block the session on stdin.
@@ -217,7 +217,7 @@ export const newlyCompletedISCs = (
 }
 
 /**
- * Top-level orchestrator. Mirrors PAI's main() (lines 146-193) — given the
+ * Top-level orchestrator. mirrors the upstream main() (lines 146-193) — given the
  * absolute path to a just-edited ISA file, parses it, computes the ISC
  * transitions since last invocation, and creates one git commit per
  * allowlisted repo per newly-completed ISC. Returns a summary so callers

@@ -72,7 +72,7 @@ const c = (
   type: "criterion",
 })
 
-describe("expandPath — PAI lines 41-48 mirror", () => {
+describe("expandPath — the upstream classifier mirror", () => {
   const home = process.env["HOME"] ?? ""
   test("expands ~/foo to $HOME/foo", () => {
     expect(expandPath("~/foo/bar")).toBe(join(home, "foo/bar"))
@@ -98,7 +98,7 @@ describe("expandPath — PAI lines 41-48 mirror", () => {
   })
 })
 
-describe("loadAllowlist — PAI lines 50-62 mirror", () => {
+describe("loadAllowlist — the upstream classifier mirror", () => {
   test("returns [] when allowlist file absent (default install)", () => {
     const { root, cleanup } = stage()
     try {
@@ -147,7 +147,7 @@ describe("loadAllowlist — PAI lines 50-62 mirror", () => {
   })
 })
 
-describe("sanitizeMessage — PAI lines 111-113", () => {
+describe("sanitizeMessage — the upstream classifier", () => {
   test("collapses whitespace, strips backticks/$, trims, caps at 200", () => {
     expect(sanitizeMessage("  hello   world  ")).toBe("hello world")
     expect(sanitizeMessage("`evil` and $injection")).toBe("evil and injection")
@@ -254,7 +254,7 @@ describe("newlyCompletedISCs — pure planner", () => {
   })
 })
 
-describe("isGitRepo / hasChanges — PAI lines 94-109", () => {
+describe("isGitRepo / hasChanges — the upstream classifier", () => {
   test("isGitRepo true on initialized repo", () => {
     const { root, cleanup } = stage()
     try {

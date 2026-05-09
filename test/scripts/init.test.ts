@@ -183,7 +183,7 @@ describe("claude-hooks-init", () => {
     try {
       const r = await runInit(root, ["--install-skills", "--into-root", "--print"])
       // For any skill that already exists in the real $HOME ~/.claude/skills/
-      // (likely on PAI users), expect a `skip` line, not an `overwrite` action.
+      // (likely on users of the upstream Life OS), expect a `skip` line, not an `overwrite` action.
       // The literal action keyword for an overwrite would be `[print] overwrite`;
       // the word "overwrite" CAN appear inside skip-message help text (it
       // tells you to pass --force).

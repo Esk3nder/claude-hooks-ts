@@ -212,7 +212,7 @@ const routeByTag = (
  * Per-tag handler timeout in milliseconds. Most events stay on the historical
  * 4s cap because their handlers are local file I/O and finish in <100ms. The
  * UserPromptSubmit cap is raised to accommodate the mode-classifier subprocess
- * (Sonnet via `claude --print`, p95 ~7s, p99 ~12s) PLUS PAI's 25s inference
+ * (Sonnet via `claude --print`, p95 ~7s, p99 ~12s) PLUS the upstream spec's 25s inference
  * timeout (PromptProcessing.hook.ts:939). The 30s envelope = 25s classifier
  * timeout + 5s overhead headroom (transcript read, JSONL telemetry, etc.).
  *

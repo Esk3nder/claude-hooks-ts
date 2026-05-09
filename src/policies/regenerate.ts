@@ -2,7 +2,7 @@
  * Doc-integrity regen — declarative "when source files changed, run a
  * command" rules read from `<repo>/.claude-hooks/regenerate.yaml`.
  *
- * NEW DESIGN. PAI has `DocIntegrity.hook.ts` that hardcodes its own regen
+ * NEW DESIGN. the upstream spec has `DocIntegrity.hook.ts` that hardcodes its own regen
  * targets (e.g. `RebuildArchSummary`); this package generalizes the idea
  * via a user-declared YAML file so any project can wire derived-doc regen.
  *

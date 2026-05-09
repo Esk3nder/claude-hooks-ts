@@ -19,21 +19,21 @@ import {
 
 /**
  * UserPromptSubmit handler — TWO classifiers, layered (B4) — with the full
- * PAI feature set: transcript context, telemetry, prompt sanitization,
+ * the upstream spec feature set: transcript context, telemetry, prompt sanitization,
  * system-text short-circuit.
  *
- * Order of operations (mirrors PAI PromptProcessing.hook.ts main flow):
+ * Order of operations (mirrors the upstream spec PromptProcessing.hook.ts main flow):
  *
- *   1. System-text short-circuit (PAI line 900-903). If the prompt is a
+ *   1. System-text short-circuit. If the prompt is a
  *      `<system-reminder>`, `<task-notification>`, or other system-injected
  *      string, emit NO additionalContext, no telemetry — just SAFE_DEFAULT.
- *      PAI does this with `process.exit(0)`; we return.
+ *      the upstream spec does this with `process.exit(0)`; we return.
  *
  *   2. Regex `workflow-classifier` (cheap, sync). Owns `last_workflow` in
  *      SessionState — the research-mode Stop gate reads it. Emits
  *      "Detected workflow: X. <playbook>" as the FIRST additionalContext line.
  *
- *   3. Read transcript context (PAI line 930). Last 6 turns including
+ *   3. Read transcript context. Last 6 turns including
  *      assistant. This is what makes the "single-word approval" doctrine
  *      rule fireable — Sonnet needs prior turns to disambiguate.
  *
@@ -42,7 +42,7 @@ import {
  *      cleanPrompt + CONTEXT/CURRENT MESSAGE framing. Emits the canonical
  *      "MODE: ... | TIER: ... | REASON: ... | SOURCE: ..." as the SECOND line.
  *
- *   5. Telemetry (PAI line 67-74, 875-879, 1018-1024). Append the
+ *   5. Telemetry (the upstream classifier, 875-879, 1018-1024). Append the
  *      classification record to mode-classifier.jsonl for weekly audit:
  *      classifier-vs-fail-safe ratio, average latency, downstream override
  *      rate.
@@ -57,7 +57,7 @@ export const handleUserPromptSubmit = (
   Effect.gen(function* () {
     if (payload._tag !== "UserPromptSubmit") return SAFE_DEFAULT
 
-    // Step 1 — system-text short-circuit (PAI line 900).
+    // Step 1 — system-text short-circuit.
     if (isSystemTextPrompt(payload.prompt)) {
       return SAFE_DEFAULT
     }
@@ -69,7 +69,7 @@ export const handleUserPromptSubmit = (
       .update(payload.session_id, { last_workflow: workflow })
       .pipe(Effect.catchAll(() => Effect.succeed(undefined)))
 
-    // Step 3 — transcript context (PAI line 930). Effectful because it
+    // Step 3 — transcript context. Effectful because it
     // reads from disk; isolated to a sync helper so failure is silent.
     const context = getRecentContext(payload.transcript_path)
 

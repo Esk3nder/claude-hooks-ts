@@ -2,14 +2,14 @@
  * ID-stability validator for ISC IDs across an ISA edit.
  *
  * NEW DESIGN (this package — not a port). The doctrine rule lives in
- * `~/.claude/PAI/DOCUMENTATION/IsaFormat.md` line 207-209:
+ * `the upstream spec` line 207-209:
  *
  *   "ID-Stability Rule (NEW v2.7): ISC IDs never re-number on edit. Splits
  *    become `ISC-N.M` (parent preserved); drops become tombstones
  *    (`- [ ] ISC-N: [DROPPED — see Decisions]`). Reconcile depends on this;
  *    renumbering breaks ephemeral feature reconciliation silently."
  *
- * PAI states the rule but does not ship a hook-side validator for it. This
+ * the upstream spec states the rule but does not ship a hook-side validator for it. This
  * module is the doctrinal-rule-as-code: given an ISA's criteria before and
  * after an edit, return the set of IDs that were illegally renumbered.
  *

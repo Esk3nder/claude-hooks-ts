@@ -1,37 +1,41 @@
 /**
- * Inference service — Sonnet classifier mirroring PAI's PromptProcessing.hook.ts
- * TASK 3 doctrine (file: ~/.claude/hooks/PromptProcessing.hook.ts, lines 734-766).
+ * Inference service — Sonnet classifier implementing TASK 3 of the
+ * Algorithm v6.3.0 classifier doctrine.
  *
- * Faithful port of PAI source of truth. Three deliberate adaptations from the
- * PAI hook are documented inline (and only there):
- *   1. PAI's hook does TASK 1 (tab title) + TASK 2 (session name) + TASK 3
- *      (mode/tier) in one inference call. This package only needs TASK 3, so
- *      the rubric below contains TASK 3 verbatim and drops TASK 1/2.
- *   2. PAI's hook resolves principal/assistant names via getPrincipal/getIdentity.
- *      This package is identity-free (CLAUDE-HOOKS-TS scope), so the rubric
- *      uses the literal placeholder "the user" / "the assistant". The classifier
- *      decisions don't depend on the names.
- *   3. PAI's `inference()` helper wraps the chokepoint and parses JSON. This
- *      package wires the same shape via `ClaudeSubprocess.spawn` + JSON parse.
+ * Faithful port of the Algorithm spec. Three deliberate adaptations from
+ * the upstream classifier doctrine are documented inline (and only there):
+ *   1. The upstream hook does TASK 1 (tab title) + TASK 2 (session name) +
+ *      TASK 3 (mode/tier) in one inference call. This package only needs
+ *      TASK 3, so the rubric below contains TASK 3 verbatim and drops
+ *      TASK 1/2.
+ *   2. The upstream hook resolves principal/assistant names via
+ *      getPrincipal/getIdentity. This package is identity-free
+ *      (CLAUDE-HOOKS-TS scope), so the rubric uses the literal placeholder
+ *      "the user" / "the assistant". Classifier decisions don't depend on
+ *      the names.
+ *   3. The upstream `inference()` helper wraps the chokepoint and parses
+ *      JSON. This package wires the same shape via `ClaudeSubprocess.spawn`
+ *      + JSON parse.
  *
- * Everything else — model tier (Sonnet), classifier prompt body, JSON output
- * schema, fail-safe behavior, env scrubs, --exclude-dynamic-system-prompt-sections
- * cache flag, 25s timeout, cleanPrompt sanitization, image-args branch,
- * CONTEXT/CURRENT MESSAGE framing — mirrors PAI exactly.
+ * Everything else — model tier (Sonnet), classifier prompt body, JSON
+ * output schema, fail-safe behavior, env scrubs,
+ * --exclude-dynamic-system-prompt-sections cache flag, 25s timeout,
+ * cleanPrompt sanitization, image-args branch, CONTEXT/CURRENT MESSAGE
+ * framing — mirrors the upstream behavior exactly.
  */
 
 import { Context, Effect, Layer } from "effect"
 import { ClaudeSubprocess } from "./claude-subprocess.ts"
 
 export type Mode = "MINIMAL" | "NATIVE" | "ALGORITHM"
-/** Numeric tiers 1-5 internally — mirrors PAI's InferenceResult.tier shape.
+/** Numeric tiers 1-5 internally — mirrors the upstream InferenceResult.tier shape.
  *  The `E${tier}` prefix is applied only at additionalContext emission. */
 export type Tier = 1 | 2 | 3 | 4 | 5
 /**
- * Three-valued source. PAI distinguishes "fast-path" (deterministic gate
- * hit) from "classifier" (Sonnet subprocess) in telemetry (PAI line 877-879
+ * Three-valued source. the upstream spec distinguishes "fast-path" (deterministic gate
+ * hit) from "classifier" (Sonnet subprocess) in telemetry (the upstream classifier
  * vs line 1023). The additionalContext line itself only ever shows
- * "classifier" or "fail-safe" (PAI line 60 hardcodes "classifier" for both
+ * "classifier" or "fail-safe" (the upstream classifier hardcodes "classifier" for both
  * fast-path and subprocess paths) — see renderClassificationLine.
  */
 export type ClassificationSource = "classifier" | "fast-path" | "fail-safe"
@@ -52,12 +56,12 @@ export const FAIL_SAFE: Omit<Classification, "latencyMs" | "reason"> = {
 }
 
 /**
- * Classifier rubric — PORTED VERBATIM from PAI's
- * ~/.claude/hooks/PromptProcessing.hook.ts buildContextPrompt() TASK 3
- * (lines 734-766). Re-port required if PAI's TASK 3 changes; doctrine version
+ * Classifier rubric — PORTED VERBATIM from the spec's
+ * the upstream classifier doctrine, TASK 3
+ * (lines 734-766). Re-port required if TASK 3 of the classifier doctrine changes; doctrine version
  * pinned to Algorithm v6.3.0.
  *
- * Editing this string outside of a "re-port from PAI" PR is a doctrine
+ * Editing this string outside of a "re-port from the spec" PR is a doctrine
  * violation. Tests in inference.test.ts pin every doctrine clause.
  */
 export const CLASSIFIER_SYSTEM_PROMPT = `You analyze user messages to extract what response mode is required. The user is the only one sending prompts. The AI assistant responds.
@@ -95,7 +99,7 @@ OUTPUT FORMAT (JSON only, single object on one line, no prose, no markdown):
 }`
 
 /**
- * Default subprocess timeout — mirrors PAI line 939 (`timeout: 25000`).
+ * Default subprocess timeout — mirrors the upstream classifier (`timeout: 25000`).
  * The dispatcher's UserPromptSubmit cap (30s) gives 5s of overhead headroom.
  */
 const DEFAULT_TIMEOUT_MS = 25_000
@@ -104,7 +108,7 @@ const MODES: ReadonlySet<Mode> = new Set(["MINIMAL", "NATIVE", "ALGORITHM"])
 const VALID_TIERS: ReadonlySet<number> = new Set([1, 2, 3, 4, 5])
 
 /**
- * cleanPrompt — PORTED VERBATIM from PAI line 926.
+ * cleanPrompt — PORTED VERBATIM from the upstream classifier.
  * Strips HTML/tag-shaped tokens, normalizes whitespace, caps at 1000 chars
  * before sending to the classifier. Prevents `<system-reminder>` blocks and
  * other injected markup from contaminating Sonnet's input.
@@ -113,7 +117,7 @@ export const cleanPrompt = (prompt: string): string =>
   prompt.replace(/<[^>]*>/g, " ").replace(/\s+/g, " ").trim().slice(0, 1000)
 
 /**
- * Build the user prompt sent to the classifier. PAI line 931 framing:
+ * Build the user prompt sent to the classifier. The upstream classifier framing:
  *   `CONTEXT:\n${context}\n\nCURRENT MESSAGE:\n${cleanPrompt}`
  * Without context, just the cleaned prompt.
  */
@@ -140,7 +144,7 @@ interface ParseFailure {
 }
 
 /**
- * Parse the classifier's JSON response. Mirrors PAI lines 943-1024 — extracts
+ * Parse the classifier's JSON response. mirrors the upstream classifier — extracts
  * `mode`, `tier`, `mode_reason`. Tolerates leading/trailing prose and code
  * fences (some Sonnet runs wrap the JSON despite the rubric).
  */
@@ -194,12 +198,12 @@ export const parseClassifierResponse = (
 
 export interface ClassifyOptions {
   readonly timeoutMs?: number
-  /** Recent conversation context (PAI getRecentContext output). When present,
+  /** Recent conversation context (getRecentContext output). When present,
    *  prepended as `CONTEXT:\n${context}\n\nCURRENT MESSAGE:\n${cleanPrompt}`.
    *  This is what makes the doctrine rule "single-word approvals NEVER
    *  MINIMAL" actually fire — Sonnet needs the prior turn to disambiguate. */
   readonly context?: string
-  /** Optional image file paths. Mirrors PAI Inference.ts:73-74 — when present,
+  /** Optional image file paths. Mirrors the upstream classifier — when present,
    *  Read tool is enabled and `@path` references are prepended. The classifier
    *  does not currently take images, but this is a faithful port. */
   readonly imagePaths?: ReadonlyArray<string>
@@ -222,7 +226,7 @@ export class Inference extends Context.Tag("Inference")<
 >() {}
 
 /**
- * Build CLI args. Mirrors PAI Inference.ts:120-128 exactly, including the
+ * Build CLI args. Mirrors the upstream classifier exactly, including the
  * image-args branch that swaps `--tools ''` for `--allowedTools Read`.
  * `--model sonnet` because Algorithm v6.3.0 line 73 specifies a Sonnet
  * classifier.
@@ -242,7 +246,7 @@ const buildArgs = (hasImages: boolean): ReadonlyArray<string> => [
 ]
 
 /**
- * Build the stdin payload. PAI Inference.ts:130-132 prepends @-references
+ * Build the stdin payload. The upstream classifier prepends @-references
  * for image inputs; otherwise just the user prompt (already CONTEXT-framed
  * and cleaned by buildUserPrompt).
  */

@@ -13,7 +13,7 @@ const writeTranscript = (
   return file
 }
 
-describe("getRecentContext — PAI lines 774-808 verbatim port", () => {
+describe("getRecentContext — the upstream classifier verbatim port", () => {
   test("returns '' when transcript_path is undefined", () => {
     expect(getRecentContext(undefined)).toBe("")
   })
@@ -53,7 +53,7 @@ describe("getRecentContext — PAI lines 774-808 verbatim port", () => {
     }
   })
 
-  test("includes assistant turns by default (changed from PAI default)", () => {
+  test("includes assistant turns by default (changed from the upstream default)", () => {
     const root = mkdtempSync(join(tmpdir(), "ctx-"))
     try {
       const file = writeTranscript(root, [
@@ -88,7 +88,7 @@ describe("getRecentContext — PAI lines 774-808 verbatim port", () => {
     }
   })
 
-  test("user content sliced to 200 chars (PAI line 790)", () => {
+  test("user content sliced to 200 chars", () => {
     const root = mkdtempSync(join(tmpdir(), "ctx-"))
     try {
       const file = writeTranscript(root, [
@@ -112,7 +112,7 @@ describe("getRecentContext — PAI lines 774-808 verbatim port", () => {
         },
       ])
       const out = getRecentContext(file)
-      // PAI captures `[^\n]+` after `SUMMARY:\s*` → trimmed snippet (PAI line 799-800).
+      // the spec captures `[^\n]+` after `SUMMARY:\s*` → trimmed snippet.
       expect(out).toBe("Assistant: did the thing")
     } finally {
       rmSync(root, { recursive: true, force: true })

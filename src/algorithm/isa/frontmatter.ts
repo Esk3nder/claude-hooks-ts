@@ -1,13 +1,13 @@
 /**
- * ISA frontmatter parser — PORTED VERBATIM from PAI's
+ * ISA frontmatter parser — PORTED VERBATIM from the spec's
  * ~/.claude/hooks/lib/isa-utils.ts lines 70-93.
  *
- * Naive line-by-line YAML — does NOT use a YAML library. PAI's choice is
+ * Naive line-by-line YAML — does NOT use a YAML library. the upstream spec's choice is
  * deliberate: ISA frontmatter is a flat key:value map (8 required fields, a
  * handful of optional ones) and pulling in a YAML lib would diverge from
- * PAI's parse semantics around quoting and value normalization.
+ * the upstream spec's parse semantics around quoting and value normalization.
  *
- * Spec: ~/.claude/PAI/DOCUMENTATION/IsaFormat.md lines 64-168 (frontmatter
+ * Spec: the upstream spec lines 64-168 (frontmatter
  * field rules). This module covers the on-disk read/write surface only —
  * field validation lives in `completeness.ts`.
  */
@@ -16,9 +16,9 @@
  * Extract YAML frontmatter to a flat string map. Returns null when the file
  * has no `---\n…\n---` opening block.
  *
- * Mirror of PAI line 70-80. Quoted values are unwrapped (PAI's
+ * Mirror of the upstream classifier. Quoted values are unwrapped (the upstream spec's
  * `.replace(/^["']|["']$/g, '')`). Multi-line values, nested objects, lists,
- * and arrays are NOT supported — same as PAI.
+ * and arrays are NOT supported — same as the upstream spec.
  */
 export const parseFrontmatter = (
   content: string,
@@ -42,8 +42,8 @@ export const parseFrontmatter = (
  * Update a single frontmatter field, in place. Returns the modified content
  * unchanged if the file has no frontmatter block.
  *
- * Mirror of PAI line 81-93. If the field doesn't exist, it's appended to the
- * end of the frontmatter block (PAI's behavior).
+ * Mirror of the upstream classifier. If the field doesn't exist, it's appended to the
+ * end of the frontmatter block (the upstream spec's behavior).
  */
 export const writeFrontmatterField = (
   content: string,

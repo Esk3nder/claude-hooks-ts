@@ -1,10 +1,10 @@
 /**
  * 12-section walker for ISA v2.7 / Algorithm v6.2.0+.
  *
- * NEW DESIGN (this package — not a port). PAI's `hooks/lib/isa-utils.ts`
+ * NEW DESIGN (this package — not a port). the upstream spec's `hooks/lib/isa-utils.ts`
  * parses only the Criteria section and ad-hoc Intent/Context/Problem Space
  * snippets. The 12-section walker is called out as a forthcoming patch in
- * `~/.claude/PAI/DOCUMENTATION/IsaFormat.md` line 213:
+ * `the upstream spec` line 213:
  *
  *   "(v6.2.x: the per-section schema may be pulled into this file directly
  *    when there's a need for a hook-readable single source of truth.)"

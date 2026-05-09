@@ -31,7 +31,7 @@ const algorithmT4: Classification = {
   latencyMs: 5000,
 }
 
-describe("tryFastPath — PAI pre-inference gates (verbatim)", () => {
+describe("tryFastPath — the upstream spec pre-inference gates (verbatim)", () => {
   test("isExplicitRating: '8' → MINIMAL", () => {
     expect(tryFastPath("8")?.mode).toBe("MINIMAL")
   })
@@ -39,11 +39,11 @@ describe("tryFastPath — PAI pre-inference gates (verbatim)", () => {
     expect(tryFastPath("10")?.mode).toBe("MINIMAL")
   })
   test("isExplicitRating: '8/10' → MINIMAL (no exclusion)", () => {
-    // PAI's regex allows trailing /10 because afterNumber starts with `/`
+    // the upstream regex allows trailing /10 because afterNumber starts with `/`
     // which is in the exclusion regex `[/.\dA-Za-z]` → NOT a rating.
-    // Wait — re-read PAI: excludes if afterNumber matches /^[/.\dA-Za-z]/
+    // Wait — re-read the upstream spec: excludes if afterNumber matches /^[/.\dA-Za-z]/
     // so "8/10" → afterNumber is "/10", first char "/" matches → NOT a rating.
-    // PAI treats "8/10" as NOT-rating (goes to inference). Mirror that.
+    // the spec treats "8/10" as NOT-rating (goes to inference). Mirror that.
     expect(tryFastPath("8/10")).toBeNull()
   })
   test("isExplicitRating: '8 things to fix' → NOT a rating (sentence starter)", () => {
@@ -68,7 +68,7 @@ describe("tryFastPath — PAI pre-inference gates (verbatim)", () => {
   })
 
   test("system text → NOT a tryFastPath case (handled by router pre-classify)", () => {
-    // PAI line 901-902: system text exits without emission. The router
+    // the upstream classifier: system text exits without emission. The router
     // checks isSystemTextPrompt() BEFORE invoking classify, so tryFastPath
     // does not see those prompts in normal flow. If they did slip through,
     // they would fall to inference and Sonnet would classify them.
@@ -87,10 +87,10 @@ describe("tryFastPath — PAI pre-inference gates (verbatim)", () => {
     expect(tryFastPath("yes")).toBeNull()
   })
 
-  // Length-gate behavior: PAI Gate 4 (short prompt < 3 chars) wins for
+  // Length-gate behavior: Gate 4 (short prompt < 3 chars) wins for
   // very-short tokens BEFORE the doctrine's "single-word approval" rule
   // can fire. The doctrine applies inside the Sonnet classifier; the gate
-  // is a pre-classifier filter. Mirror PAI's CODE (line 905), not the
+  // is a pre-classifier filter. Mirror the spec's CODE (line 905), not the
   // doctrine prose (which describes classifier behavior, not the gate).
   test("'ok' (2 chars) → MINIMAL via short-prompt gate", () => {
     const r = tryFastPath("ok")
@@ -103,14 +103,14 @@ describe("tryFastPath — PAI pre-inference gates (verbatim)", () => {
   test("'yes' (3 chars, not < MIN_PROMPT_LENGTH) → NOT fast-path → inference", () => {
     expect(tryFastPath("yes")).toBeNull()
   })
-  test("'thanks' (6 chars, not in PAI praise set) → NOT fast-path → inference", () => {
-    // PAI's POSITIVE_PRAISE_WORDS does NOT include "thanks". The doctrine
+  test("'thanks' (6 chars, not in upstream praise set) → NOT fast-path → inference", () => {
+    // the upstream POSITIVE_PRAISE_WORDS does NOT include "thanks". The doctrine
     // example "thanks → MINIMAL" is decided by the Sonnet classifier, not
     // the fast-path. Mirror: "thanks" → null → inference.
     expect(tryFastPath("thanks")).toBeNull()
   })
 
-  // PAI doctrine: /eN is executor-side, NOT classifier fast-path
+  // Algorithm doctrine: /eN is executor-side, NOT classifier fast-path
   test("'/e3' → NOT fast-path (executor-side per Algorithm v6.3.0)", () => {
     expect(tryFastPath("/e3")).toBeNull()
   })
@@ -126,7 +126,7 @@ describe("tryFastPath — PAI pre-inference gates (verbatim)", () => {
 })
 
 describe("classify (fast-path → Inference)", () => {
-  test("PAI fast-path hit short-circuits Inference", async () => {
+  test("upstream fast-path hit short-circuits Inference", async () => {
     let inferenceCalls = 0
     const layer = InferenceTest((p) => {
       inferenceCalls++
@@ -143,7 +143,7 @@ describe("classify (fast-path → Inference)", () => {
     // B2 fix: fast-path classifications carry source: "fast-path" in the
     // Classification object. The additionalContext line still shows
     // "SOURCE: classifier" (renderClassificationLine collapses), but
-    // telemetry preserves the fast-path distinction (PAI line 877-879).
+    // telemetry preserves the fast-path distinction.
     expect(c.source).toBe("fast-path")
     expect(inferenceCalls).toBe(0)
   })
@@ -192,7 +192,7 @@ describe("CLAUDE_HOOKS_DISABLE_CLASSIFIER env-var bypass", () => {
     }
   })
 
-  test("PAI fast-path still wins over the bypass", async () => {
+  test("upstream fast-path still wins over the bypass", async () => {
     process.env["CLAUDE_HOOKS_DISABLE_CLASSIFIER"] = "1"
     try {
       const c = await Effect.runPromise(
@@ -210,7 +210,7 @@ describe("CLAUDE_HOOKS_DISABLE_CLASSIFIER env-var bypass", () => {
   })
 })
 
-describe("renderClassificationLine — mirrors PAI emitAdditionalContext (line 58-64)", () => {
+describe("renderClassificationLine — mirrors the upstream spec emitAdditionalContext (line 58-64)", () => {
   test("ALGORITHM line includes E-prefixed TIER", () => {
     const line = renderClassificationLine({
       mode: "ALGORITHM",

@@ -32,7 +32,7 @@ const runClassify = async (
   )
 }
 
-describe("parseClassifierResponse (PAI JSON protocol)", () => {
+describe("parseClassifierResponse (the upstream spec JSON protocol)", () => {
   test("parses canonical ALGORITHM JSON", () => {
     const r = parseClassifierResponse(
       `{"mode":"ALGORITHM","tier":3,"mode_reason":"multi-file refactor"}`,
@@ -209,7 +209,7 @@ describe("Inference.classify (with ClaudeSubprocessTest layer)", () => {
     expect(c.tier).toBe(null)
   })
 
-  test("subprocess called with sonnet + cache flag + verbatim PAI rubric", async () => {
+  test("subprocess called with sonnet + cache flag + verbatim the rubric", async () => {
     let capturedArgs: ReadonlyArray<string> = []
     let capturedStdin = ""
     const layer = ClaudeSubprocessTest((args, opts) => {
@@ -231,9 +231,9 @@ describe("Inference.classify (with ClaudeSubprocessTest layer)", () => {
       program.pipe(Effect.provide(InferenceLive), Effect.provide(layer)),
     )
     expect(capturedArgs).toContain("--print")
-    // PAI uses Sonnet for the classifier (Algorithm v6.3.0 line 73).
+    // the spec uses Sonnet for the classifier (Algorithm v6.3.0 line 73).
     expect(capturedArgs).toContain("sonnet")
-    // PAI cache-friendly flag.
+    // the upstream cache-friendly flag.
     expect(capturedArgs).toContain("--exclude-dynamic-system-prompt-sections")
     const sysIdx = capturedArgs.indexOf("--system-prompt")
     expect(sysIdx).toBeGreaterThan(-1)
@@ -243,8 +243,8 @@ describe("Inference.classify (with ClaudeSubprocessTest layer)", () => {
   })
 })
 
-describe("CLASSIFIER_SYSTEM_PROMPT — PAI doctrine pin", () => {
-  test("contains PAI's TASK 3 header verbatim", () => {
+describe("CLASSIFIER_SYSTEM_PROMPT — Algorithm doctrine pin", () => {
+  test("contains TASK 3 of the classifier doctrine header verbatim", () => {
     expect(CLASSIFIER_SYSTEM_PROMPT).toContain("## TASK 3: MODE + TIER CLASSIFICATION")
   })
   test("contains the single-word-approval doctrine rule", () => {

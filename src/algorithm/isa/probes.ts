@@ -2,7 +2,7 @@
  * ISC probe registry — hot-loadable user code that verifies ISCs after
  * tool calls finish.
  *
- * NEW DESIGN — no PAI parallel. PAI's CheckpointPerISC.hook.ts only watches
+ * NEW DESIGN — no the upstream spec parallel. the upstream spec's CheckpointPerISC.hook.ts only watches
  * for `[ ]→[x]` transitions written by the model; this module lets users
  * declare programmatic verifications that flip the checkbox automatically
  * when the test passes. The two systems compose: a probe-flipped checkbox

@@ -74,7 +74,7 @@ describe("parseRegenerateYaml", () => {
     if (r._tag === "ok") expect(r.rules.length).toBe(2)
   })
 
-  test("strips surrounding quotes (PAI quirk parity)", () => {
+  test("strips surrounding quotes (upstream quirk parity)", () => {
     const r = parseRegenerateYaml(`rules:
   - source: "a b c.md"
     derived: 'd e f.md'

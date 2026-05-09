@@ -8,7 +8,7 @@ import {
   parseCriteriaList,
 } from "../../../src/algorithm/isa/criteria.ts"
 
-describe("CRITERIA_HEADING_RE — PAI line 108 verbatim", () => {
+describe("CRITERIA_HEADING_RE — the upstream classifier verbatim", () => {
   test("matches `## Criteria`", () => {
     expect(CRITERIA_HEADING_RE.test("## Criteria")).toBe(true)
   })
@@ -31,7 +31,7 @@ describe("CRITERIA_HEADING_RE — PAI line 108 verbatim", () => {
   })
 })
 
-describe("extractCriteriaSection — PAI line 118 mirror", () => {
+describe("extractCriteriaSection — the upstream classifier mirror", () => {
   test("returns body up to next H2", () => {
     const doc = `## ISC Criteria
 - [ ] ISC-1: a
@@ -79,7 +79,7 @@ trailer
   })
 })
 
-describe("countCriteria — PAI line 129 mirror", () => {
+describe("countCriteria — the upstream classifier mirror", () => {
   test("counts checked vs total", () => {
     const doc = `## Criteria
 - [ ] ISC-1: a
@@ -105,7 +105,7 @@ more prose
   })
 })
 
-describe("parseCriteriaList — PAI line 209-256 mirror", () => {
+describe("parseCriteriaList — the upstream classifier mirror", () => {
   test("primary v5.5.0+ format with Anti: prefix", () => {
     const doc = `## Criteria
 - [ ] ISC-1: build the thing
@@ -172,10 +172,10 @@ describe("parseCriteriaList — PAI line 209-256 mirror", () => {
     const doc = `## Criteria
 - [ ] ISC-CLI-3: CLI behavior criterion
 `
-    // PAI's `id.includes('-A-')` would falsely match ISC-CLI-3 too — wait,
+    // the upstream's `id.includes('-A-')` would falsely match ISC-CLI-3 too — wait,
     // actually ISC-CLI-3 contains '-C-' not '-A-'. Domain prefix safe.
     // Test the safer case: a domain prefix that COULD include '-A-' would
-    // match — that's a known PAI faithfulness limit. Test the common case.
+    // match — that's a known upstream-faithfulness limit. Test the common case.
     const out = parseCriteriaList(doc)
     expect(out[0]?.type).toBe("criterion")
   })
@@ -196,7 +196,7 @@ not a checkbox
   })
 })
 
-describe("diagnoseCriteria — PAI line 309 mirror", () => {
+describe("diagnoseCriteria — the upstream classifier mirror", () => {
   test("missing-section when no Criteria heading", () => {
     expect(diagnoseCriteria("# no criteria here")).toBe("missing-section")
   })

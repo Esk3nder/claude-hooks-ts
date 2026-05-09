@@ -1,17 +1,17 @@
 /**
  * FeedbackMemoryConsult built-in — capability listed in Algorithm v6.3.0
- * line 45 / `~/.claude/PAI/ALGORITHM/capabilities.md` line 13.
+ * line 45 / `the upstream spec` line 13.
  *
  * Doctrine summary: "First step of PLAN at Extended+. Before committing to
  * approach, grep ~/.claude/projects/${HARNESS_USER_DIR}/memory/feedback_*.md
  * by task keywords. Prevents repeating mistakes already documented. Turns
  * the memory system from write-only diary into active guardrail."
  *
- * PAI invokes this via `Bash('rg -l "KEYWORDS" ...')` — model-side. This
+ * the upstream spec invokes this via `Bash('rg -l "KEYWORDS" ...')` — model-side. This
  * module is the in-process equivalent: scan a feedback directory for
  * memos whose body matches the supplied keywords, return ranked excerpts.
  *
- * Path adaptation: PAI uses `~/.claude/projects/${HARNESS_USER_DIR}/memory/`
+ * Path adaptation: the spec uses `~/.claude/projects/${HARNESS_USER_DIR}/memory/`
  * — a per-user, harness-injected directory. This package uses
  * `<repo>/.claude-hooks/feedback/` — per-repo, mirrors the established
  * `.claude-hooks/` convention used by checkpoint allowlist, probes, and

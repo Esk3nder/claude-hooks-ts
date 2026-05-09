@@ -1,24 +1,24 @@
 /**
- * ISC criteria parser — PORTED VERBATIM from PAI's
+ * ISC criteria parser — PORTED VERBATIM from the spec's
  * ~/.claude/hooks/lib/isa-utils.ts lines 95-317.
  *
- * Surface mirrors PAI exactly:
- *   - CRITERIA_HEADING_RE          (PAI line 108)
- *   - CANONICAL_CRITERIA_HEADING   (PAI line 113)
- *   - extractCriteriaSection       (PAI line 118)
- *   - countCriteria                (PAI line 129)
- *   - CriterionEntry               (PAI line 184)
- *   - VALID_CATEGORIES             (PAI line 207)
- *   - parseCriteriaList            (PAI line 209)
- *   - CriteriaParseWarning         (PAI line 303)
- *   - diagnoseCriteria             (PAI line 309)
+ * Surface mirrors the upstream behavior exactly:
+ *   - CRITERIA_HEADING_RE         
+ *   - CANONICAL_CRITERIA_HEADING  
+ *   - extractCriteriaSection      
+ *   - countCriteria               
+ *   - CriterionEntry              
+ *   - VALID_CATEGORIES            
+ *   - parseCriteriaList           
+ *   - CriteriaParseWarning        
+ *   - diagnoseCriteria            
  *
  * Backward-compat preserved: legacy bracketed category tags
  * (`[F]/[S]/[B]/[N]/[E]/[A]`) from pre-v5.3.0 ISAs and `ISC-A-N` numbering
- * from v5.3.0–v5.4.0 ISAs. Documented in PAI lines 199-207, 244-246.
+ * from v5.3.0–v5.4.0 ISAs. Documented in the upstream classifier, 244-246.
  */
 
-// ── Heading detection (PAI lines 95-126) ──────────────────────────────────
+// ── Heading detection ──────────────────────────────────
 
 /**
  * One canonical regex matching every historical Criteria heading variant:
@@ -28,17 +28,17 @@
  *   `### Criteria` (sub-heading inside an IDEAL STATE block)
  * Case-insensitive. Section ends at the next `## ` (H2), `---`, or EOF.
  *
- * Verbatim from PAI line 108.
+ * Verbatim from the upstream classifier.
  */
 export const CRITERIA_HEADING_RE: RegExp =
   /^(?:##\s+(?:ISC\s+)?Criteria\b[^\n]*|##\s+IDEAL\s+STATE\s+CRITERIA\b[^\n]*|###\s+Criteria\b[^\n]*)$/im
 
-/** PAI line 113 — canonical heading new ISAs emit and migrations target. */
+/** the upstream classifier — canonical heading new ISAs emit and migrations target. */
 export const CANONICAL_CRITERIA_HEADING = "## ISC Criteria"
 
 /**
  * Returns the criteria-section body (without the heading line), or null if no
- * recognized heading is found. Mirror of PAI line 118-127.
+ * recognized heading is found. Mirror of the upstream classifier.
  */
 export const extractCriteriaSection = (content: string): string | null => {
   const headingMatch = CRITERIA_HEADING_RE.exec(content)
@@ -51,7 +51,7 @@ export const extractCriteriaSection = (content: string): string | null => {
   return body
 }
 
-/** Mirror of PAI line 129-135. */
+/** Mirror of the upstream classifier. */
 export const countCriteria = (
   content: string,
 ): { readonly checked: number; readonly total: number } => {
@@ -62,7 +62,7 @@ export const countCriteria = (
   return { checked, total: lines.length }
 }
 
-// ── Entry shape (PAI lines 184-197) ───────────────────────────────────────
+// ── Entry shape ───────────────────────────────────────
 
 export interface CriterionEntry {
   readonly id: string
@@ -79,7 +79,7 @@ export interface CriterionEntry {
 }
 
 /**
- * Legacy category whitelist (PAI line 207). Used to distinguish real
+ * Legacy category whitelist. Used to distinguish real
  * pre-v5.3.0 category brackets (`[F]`) from ad-hoc status brackets
  * (`[COMPLETE]`, `[WIP]`) which we strip rather than capture.
  */
@@ -92,10 +92,10 @@ const VALID_CATEGORIES: ReadonlySet<string> = new Set([
   "A",
 ])
 
-// ── List parser (PAI lines 209-256) ───────────────────────────────────────
+// ── List parser ───────────────────────────────────────
 
 /**
- * Parse the criteria section into typed entries. Mirror of PAI line 209-256.
+ * Parse the criteria section into typed entries. Mirror of the upstream classifier.
  *
  * Three regex shapes accepted, in order:
  *   1. Primary (v5.3.0+):     `- [x] ISC-1: description`
@@ -104,7 +104,7 @@ const VALID_CATEGORIES: ReadonlySet<string> = new Set([
  *   2. Loose fallback:        `- [x] ISC-1 description` (no colon)
  *      Strips any non-category bracket tokens from the loose-form text.
  *
- * Anti-criterion detection (PAI line 246):
+ * Anti-criterion detection:
  *   - `Anti:` prose prefix on description (v5.5.0+)
  *   - `id.includes('-A-')` (v5.3.0–v5.4.0 backward-compat)
  *
@@ -156,10 +156,10 @@ export const parseCriteriaList = (content: string): ReadonlyArray<CriterionEntry
   return out
 }
 
-// ── Diagnose (PAI lines 295-317) ──────────────────────────────────────────
+// ── Diagnose ──────────────────────────────────────────
 
 /**
- * Loud-fail signal for non-parseable ISAs (PAI line 303-307):
+ * Loud-fail signal for non-parseable ISAs:
  *   'missing-section'   — no recognized Criteria heading at all
  *   'empty-section'     — heading present, zero `- [ ]` checkbox lines
  *   'all-dropped'       — checkbox lines present, ALL failed regex parse
@@ -171,7 +171,7 @@ export type CriteriaParseWarning =
   | "all-dropped"
   | null
 
-/** Mirror of PAI line 309-317. */
+/** Mirror of the upstream classifier. */
 export const diagnoseCriteria = (content: string): CriteriaParseWarning => {
   const body = extractCriteriaSection(content)
   if (body === null) return "missing-section"

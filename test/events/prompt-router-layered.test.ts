@@ -64,14 +64,14 @@ describe("UserPromptSubmit emits BOTH layered classifier lines (B4)", () => {
     )
     expect(workflowLine).toContain("Detected workflow:")
     expect(workflowLine).toContain("coding.feature")
-    // SOURCE: classifier (not "fast-path") — mirrors PAI line 60.
+    // SOURCE: classifier (not "fast-path") — mirrors the upstream classifier.
     expect(modeLine).toBe(
       "MODE: ALGORITHM | TIER: E3 | REASON: multi-file work | SOURCE: classifier",
     )
     expect(inferenceCalls).toBe(1)
   })
 
-  test("PAI fast-path (praise 'excellent') → MINIMAL line, Inference NOT called, SOURCE: classifier", async () => {
+  test("upstream fast-path (praise 'excellent') → MINIMAL line, Inference NOT called, SOURCE: classifier", async () => {
     const { workflowLine, modeLine, inferenceCalls } = await runHandler(
       "excellent",
       baseAlgoT3, // would lie; must not be reached
@@ -79,29 +79,29 @@ describe("UserPromptSubmit emits BOTH layered classifier lines (B4)", () => {
     expect(workflowLine).toContain("Detected workflow:")
     expect(modeLine).toContain("MODE: MINIMAL")
     expect(modeLine).not.toContain("TIER:")
-    // PAI hardcodes SOURCE: classifier in additionalContext (line 60), even on fast-path.
+    // the spec hardcodes SOURCE: classifier in additionalContext (line 60), even on fast-path.
     expect(modeLine).toContain("SOURCE: classifier")
     expect(inferenceCalls).toBe(0)
   })
 
-  test("PAI system-text → NO additionalContext at all (mirrors PAI process.exit)", async () => {
+  test("upstream system-text → NO additionalContext at all (mirrors the upstream spec process.exit)", async () => {
     const { raw, inferenceCalls } = await runHandler(
       "<system-reminder>injected text</system-reminder>",
       baseAlgoT3,
     )
-    // PAI line 901-902: process.exit(0) without emission. We return
+    // the upstream classifier: process.exit(0) without emission. We return
     // SAFE_DEFAULT (empty {}), so additionalContext is undefined → raw is "".
     expect(raw).toBe("")
     expect(inferenceCalls).toBe(0)
   })
 
-  test("PAI fast-path (rating '8') → MINIMAL line, Inference NOT called", async () => {
+  test("upstream fast-path (rating '8') → MINIMAL line, Inference NOT called", async () => {
     const { modeLine, inferenceCalls } = await runHandler("8", baseAlgoT3)
     expect(modeLine).toContain("MODE: MINIMAL")
     expect(inferenceCalls).toBe(0)
   })
 
-  test("'thanks' is NOT fast-path — Inference IS called (PAI doctrine)", async () => {
+  test("'thanks' is NOT fast-path — Inference IS called (Algorithm doctrine)", async () => {
     const { modeLine, inferenceCalls } = await runHandler("thanks", {
       mode: "MINIMAL",
       tier: null,

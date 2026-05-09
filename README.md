@@ -1,6 +1,6 @@
 # claude-hooks-ts
 
-A type-safe dispatcher for [Claude Code](https://docs.claude.com/claude-code) hooks — **with the PAI Algorithm primitive wired in.**
+A type-safe dispatcher for [Claude Code](https://docs.claude.com/claude-code) hooks — **with the Algorithm primitive wired in.**
 
 Replaces ad-hoc per-hook shell scripts with a single binary that decodes hook payloads through a strict schema, runs them through declarative policies, and emits the structured JSON Claude Code expects. One control plane for safety, quality, token efficiency, verification gates, audit, **plus mode classification, ISA tracking, capability auditing, and Stop-time completeness gates** that turn an LLM session into a verifiable Algorithm run.
 
@@ -28,7 +28,7 @@ A few things it does out of the box:
 
 ### Algorithm layer (1.0.0)
 
-The PAI Algorithm primitive — ported faithfully from `~/.claude/PAI/ALGORITHM/v6.3.0.md`:
+The Algorithm primitive — ported faithfully from the Algorithm v6.3.0 spec:
 
 - **Mode classifier on every prompt.** A Sonnet subprocess (via `claude --print`, OAuth-billed) decides `MINIMAL | NATIVE | ALGORITHM` and a tier `E1`-`E5`. Result emitted as `additionalContext` so the model enters the right cognitive depth automatically. Conservative fail-safe to ALGORITHM E3 on any error.
 - **ISA primitive.** 12-section spec from `IsaFormat.md`, with parsers for frontmatter, criteria (with v5.3-era backward-compat), section walker, ID-stability validator, and tier-completeness gate.
@@ -143,9 +143,9 @@ When set, the dispatcher skips the Sonnet subprocess and returns deterministic A
 
 ## The Algorithm — what's the point?
 
-The original PAI Algorithm makes a session a **verifiable transition from current state to ideal state.** Done is testable, not declared. The mode classifier picks the right cognitive depth so trivial prompts don't cost an Algorithm run AND substantial work doesn't get a one-shot answer. The ISA records the ideal state as ISCs (one binary tool probe each), the checkpoint records progress as git commits, the probes auto-verify what they can, and the Stop gate refuses to let the model claim "complete" without the receipts.
+The Algorithm makes a session a **verifiable transition from current state to ideal state.** Done is testable, not declared. The mode classifier picks the right cognitive depth so trivial prompts don't cost an Algorithm run AND substantial work doesn't get a one-shot answer. The ISA records the ideal state as ISCs (one binary tool probe each), the checkpoint records progress as git commits, the probes auto-verify what they can, and the Stop gate refuses to let the model claim "complete" without the receipts.
 
-This package ports that primitive into a generic hook runtime so any Claude Code project gets it for free — no PAI install required. PAI users get the same primitive plus their full skill content.
+This package ports that primitive into a generic hook runtime so any Claude Code project gets it for free — no upstream Life OS install required. Users of the upstream Life OS get the same primitive plus their full skill content.
 
 ---
 
@@ -184,7 +184,7 @@ Conventions:
 - Side effects through services in `src/services/`.
 - Policies as pure functions in `src/policies/`.
 - All `claude` subprocesses MUST go through `src/services/claude-subprocess.ts` (env scrubbing). The CI guard refuses to build otherwise.
-- Algorithm-aware code lives under `src/algorithm/`; per-PAI-source citations in code comments where applicable.
+- Algorithm-aware code lives under `src/algorithm/`; per-source citations in code comments where applicable.
 
 ---
 

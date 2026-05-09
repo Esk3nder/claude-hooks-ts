@@ -1,7 +1,7 @@
 /**
  * Tier completeness gate for ISA v2.7 / Algorithm v6.2.0+.
  *
- * NEW DESIGN (this package — not a port). PAI's `skills/ISA/Workflows/CheckCompleteness.md`
+ * NEW DESIGN (this package — not a port). the upstream spec's `skills/ISA/Workflows/CheckCompleteness.md`
  * describes the gate as a model-side workflow. This module is the
  * hook-readable version called out in IsaFormat.md line 213 as a forthcoming
  * patch. Required-section table is verbatim from IsaFormat.md lines 191-201:

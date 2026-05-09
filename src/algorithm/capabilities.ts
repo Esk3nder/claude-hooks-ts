@@ -1,9 +1,9 @@
 /**
  * Closed enumeration of THINKING capabilities + phantom-audit validator.
  *
- * Verbatim port of PAI's Algorithm v6.3.0 closed-enum doctrine (the bullet
- * list at `~/.claude/PAI/ALGORITHM/v6.3.0.md` lines 41-62) and capabilities
- * reference (`~/.claude/PAI/ALGORITHM/capabilities.md`).
+ * Verbatim port of the Algorithm v6.3.0 closed-enum doctrine (the bullet
+ * list at `Algorithm v6.3.0 spec` lines 41-62) and capabilities
+ * reference (`the upstream spec`).
  *
  * From v6.3.0 doctrine:
  *   "The thinking-capability vocabulary is a CLOSED ENUMERATION. Selection
@@ -19,12 +19,12 @@
  *    thinking name appears verbatim in the closed list above. Any miss is
  *    a phantom — split, replace from the list, or remove."
  *
- * Wiring note (HONEST disclosure): PAI's audit is MODEL-side. The model
+ * Wiring note (HONEST disclosure): the upstream spec's audit is MODEL-side. The model
  * prints `🏹 CAPABILITIES SELECTED` in its response text; hooks cannot
  * intercept text output. This module exposes the validator as a pure
  * function so any caller (a future ISA `## Decisions` parser, an in-process
  * skill, ad-hoc tooling, the Stop gate) can apply the rule. We do NOT wire
- * it into a hook this slice — model-side use mirrors PAI behavior.
+ * it into a hook this slice — model-side use mirrors upstream behavior.
  */
 
 /**
@@ -34,8 +34,8 @@
  * last).
  *
  * Editing this list requires:
- *   1. A corresponding edit to PAI Algorithm doctrine.
- *   2. A version bump (PAI's doctrine is currently v6.3.0).
+ *   1. A corresponding edit to the Algorithm doctrine.
+ *   2. A version bump (Algorithm doctrine is currently v6.3.0).
  *   3. The pin tests in `capabilities.test.ts` will fail until updated.
  */
 export const THINKING_CAPABILITIES: ReadonlyArray<string> = [

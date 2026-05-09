@@ -1,14 +1,14 @@
 /**
  * ReReadCheck built-in — VERIFY→LEARN final gate per Algorithm v6.3.0
- * (capability listed in `~/.claude/PAI/ALGORITHM/capabilities.md` line 17).
+ * (capability listed in `the upstream spec` line 17).
  *
- * Doctrine summary (PAI capabilities.md): "Re-read user's last message
+ * Doctrine summary (the upstream spec capabilities.md): "Re-read user's last message
  * verbatim; enumerate every explicit ask against what shipped; block
  * `phase: complete` on any ✗. Targets the 82% 'missed ask' complaint
  * cluster. MANDATORY at every tier — at E1 single-part it's a one-line
  * block. No fast-path exemption."
  *
- * PAI lists this as `*(inline doctrine step — no external tool)*` —
+ * the upstream spec lists this as `*(inline doctrine step — no external tool)*` —
  * meaning the model performs the check inline. This module makes the
  * check programmatically callable so the model can pipe its own draft
  * through it AND get a structured pass/fail report. Hooks can also use

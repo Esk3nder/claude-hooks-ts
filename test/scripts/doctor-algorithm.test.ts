@@ -171,7 +171,7 @@ describe("doctor — thinking-capability skill stubs", () => {
   test("status reports an integer count when skills exist", async () => {
     const { root, cleanup } = stage()
     try {
-      // The host running tests may have PAI installed (real skills) — we only
+      // The host running tests may have upstream Life OS installed (real skills) — we only
       // assert that the check executes and produces either PASS or INFO.
       const r = await runDoctor(root)
       const check = find(r.results, "thinking-capability skill stubs installed")

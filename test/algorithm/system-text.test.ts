@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test"
 import { isSystemTextPrompt } from "../../src/algorithm/classifier.ts"
 
-describe("isSystemTextPrompt — PAI lines 125-131 verbatim port", () => {
+describe("isSystemTextPrompt — the upstream classifier verbatim port", () => {
   test("matches <task-notification>", () => {
     expect(isSystemTextPrompt("<task-notification>foo")).toBe(true)
   })
@@ -34,7 +34,7 @@ describe("isSystemTextPrompt — PAI lines 125-131 verbatim port", () => {
     expect(isSystemTextPrompt("thanks")).toBe(false)
     expect(isSystemTextPrompt("/e3 do the migration")).toBe(false)
   })
-  test("case-insensitive (PAI uses /i flag)", () => {
+  test("case-insensitive (the spec uses /i flag)", () => {
     expect(isSystemTextPrompt("<SYSTEM-REMINDER>x")).toBe(true)
     expect(isSystemTextPrompt("please continue the conversation")).toBe(true)
   })

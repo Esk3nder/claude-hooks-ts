@@ -15,7 +15,7 @@ import {
   type ClaudeSpawnOptions,
 } from "../../src/services/claude-subprocess.ts"
 
-describe("cleanPrompt — PAI line 926 verbatim", () => {
+describe("cleanPrompt — the upstream classifier verbatim", () => {
   test("strips HTML/tag tokens", () => {
     expect(cleanPrompt("<system-reminder>foo</system-reminder>bar")).toBe(
       "foo bar",
@@ -40,7 +40,7 @@ describe("cleanPrompt — PAI line 926 verbatim", () => {
   })
 })
 
-describe("buildUserPrompt — CONTEXT/CURRENT MESSAGE framing (PAI line 931)", () => {
+describe("buildUserPrompt — CONTEXT/CURRENT MESSAGE framing", () => {
   test("without context, returns just cleanPrompt", () => {
     expect(buildUserPrompt("hello world")).toBe("hello world")
   })
@@ -116,7 +116,7 @@ describe("Inference.classify — cleanPrompt applied (L12)", () => {
   })
 })
 
-describe("Inference default timeout — 25s (L13, PAI line 939)", () => {
+describe("Inference default timeout — 25s (L13, the upstream classifier)", () => {
   test("classify uses 25_000 ms by default", async () => {
     let capturedTimeout = 0
     const layer = ClaudeSubprocessTest((args, opts) => {
@@ -163,7 +163,7 @@ describe("Inference default timeout — 25s (L13, PAI line 939)", () => {
   })
 })
 
-describe("Inference image-args branch (L16, PAI Inference.ts:120-132)", () => {
+describe("Inference image-args branch (L16, the upstream classifier)", () => {
   test("no images → '--tools ' '' in args", async () => {
     let capturedArgs: ReadonlyArray<string> = []
     const layer = ClaudeSubprocessTest((args, opts) => {
@@ -216,7 +216,7 @@ describe("Inference image-args branch (L16, PAI Inference.ts:120-132)", () => {
     // With images, the '--tools' flag is replaced — but '--setting-sources ""'
     // still has an empty string second arg, which is correct.
     expect(capturedArgs).not.toContain("--tools")
-    // PAI line 130-132: image refs prepended to user prompt as @path lines.
+    // the upstream classifier: image refs prepended to user prompt as @path lines.
     expect(capturedStdin).toContain("@/tmp/a.png")
     expect(capturedStdin).toContain("@/tmp/b.png")
     expect(capturedStdin).toContain("describe these images")
