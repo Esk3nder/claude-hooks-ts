@@ -69,6 +69,10 @@ The installer merges hook entries into `~/.claude/settings.json` (or `--target <
 
 `claude-hooks-init` writes into the **current working directory's** `.claude-hooks/` — always `cd` into your project first. It is opt-in for everything destructive: it does NOT touch `~/.claude/settings.json`, does NOT spawn subprocesses, and does NOT touch `~/.claude/skills/` unless you pass `--install-skills`.
 
+By default, `init` only creates `<project>/.claude-hooks/state/`. Optional config files listed under [Configure](#configure) are NOT auto-generated — pass `--regenerate`, `--probes`, or `--feedback-dir` to scaffold the corresponding starter file, or just create them by hand when you need to override a default.
+
+> **Note on `bun add -g`:** Bun blocks the package's `postinstall` script by default. claude-hooks-ts's postinstall is intentionally minimal (it only prints next-step hints), so the block is harmless — but if you want the hint to print, run `bun pm trust claude-hooks-ts` first. The CLIs work either way.
+
 ### Skill bundle
 
 The `--install-skills` flag installs ~15 SKILL.md stubs that declare `algorithm_capability: thinking`. The Algorithm's **capability phantom audit** rejects paraphrased capability names by checking them against installed skills — without these stubs the audit has nothing to enforce against and silently noops. Install them if you're using the Algorithm layer; skip if you only want the hooks layer.
@@ -115,21 +119,21 @@ Project-local config lives at `<project>/.claude-hooks/`:
 
 ```
 .claude-hooks/
- protected-paths.yaml # paths requiring confirmation before edit
- generated-files.yaml # paths that cannot be edited
- test-map.yaml # changed-file → smallest verify command
- research-domains.yaml # whitelisted research source roots
- checkpoint-repos.txt # allowlist for ISC auto-commit (opt-in, default empty)
- probes.ts # hot-loadable ISC verification probes (opt-in)
- regenerate.yaml # source-changed → regenerate command rules
- feedback/*.md # FeedbackMemoryConsult corpus
- state/ # per-session ledgers (managed by hooks)
+ protected-paths.yaml # paths requiring confirmation before edit (create manually)
+ generated-files.yaml # paths that cannot be edited (create manually)
+ test-map.yaml # changed-file → smallest verify command (create manually)
+ research-domains.yaml # whitelisted research source roots (create manually)
+ checkpoint-repos.txt # allowlist for ISC auto-commit (`init --probes` or manual)
+ probes.ts # hot-loadable ISC verification probes (`init --probes`)
+ regenerate.yaml # source-changed → regenerate command rules (`init --regenerate`)
+ feedback/*.md # FeedbackMemoryConsult corpus (`init --feedback-dir`)
+ state/ # per-session ledgers (auto-created; managed by hooks)
  state/observability/ # classifier telemetry JSONL
  state/work/<slug>/ # task ISAs
  state/archive/<date>/<slug>/ # archived completed ISAs
 ```
 
-Defaults are baked in. YAML/TS files are optional — when missing, policies fall back to safe defaults.
+Only `state/` is auto-created by `claude-hooks-init`. Every other file is optional — defaults are baked in, and policies fall back to safe defaults when a file is missing. Use the `init` flags above to scaffold a starter file, or just create one by hand.
 
 ### Disable the classifier
 
