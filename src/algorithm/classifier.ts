@@ -32,9 +32,9 @@
 
 import { Effect } from "effect"
 import {
- Inference,
- type Classification,
- type Tier,
+  Inference,
+  type Classification,
+  type Tier,
 } from "../services/inference.ts"
 import type { ClaudeSubprocess } from "../services/claude-subprocess.ts"
 
@@ -47,53 +47,82 @@ const MIN_PROMPT_LENGTH = 3
 
 /** the classifier. */
 const POSITIVE_PRAISE_WORDS: ReadonlySet<string> = new Set([
- "excellent", "amazing", "brilliant", "fantastic", "wonderful", "beautiful",
- "incredible", "awesome", "perfect", "great", "nice", "superb", "outstanding",
- "magnificent", "stellar", "phenomenal", "remarkable", "terrific", "splendid",
+  "excellent",
+  "amazing",
+  "brilliant",
+  "fantastic",
+  "wonderful",
+  "beautiful",
+  "incredible",
+  "awesome",
+  "perfect",
+  "great",
+  "nice",
+  "superb",
+  "outstanding",
+  "magnificent",
+  "stellar",
+  "phenomenal",
+  "remarkable",
+  "terrific",
+  "splendid",
 ])
 
 /** the classifier. */
 const POSITIVE_PHRASES: ReadonlySet<string> = new Set([
- "great job", "good job", "nice work", "well done", "nice job", "good work",
- "love it", "nailed it", "looks great", "looks good", "thats great", "that works",
+  "great job",
+  "good job",
+  "nice work",
+  "well done",
+  "nice job",
+  "good work",
+  "love it",
+  "nailed it",
+  "looks great",
+  "looks good",
+  "thats great",
+  "that works",
 ])
 
 /** the classifier. */
 const SYSTEM_TEXT_PATTERNS: ReadonlyArray<RegExp> = [
- /^<task-notification>/i,
- /^<system-reminder>/i,
- /^This session is being continued from a previous conversation/i,
- /^Please continue the conversation/i,
- /^Note:.*was read before/i,
+  /^<task-notification>/i,
+  /^<system-reminder>/i,
+  /^This session is being continued from a previous conversation/i,
+  /^Please continue the conversation/i,
+  /^Note:.*was read before/i,
 ]
 
 /** the classifier — . */
 const isExplicitRating = (prompt: string): boolean => {
- const trimmed = prompt.trim()
- const match = trimmed.match(/^(10|[1-9])(?:\s*[-:]\s*|\s+)?(.*)$/)
- if (!match || match[1] === undefined) return false
- const afterNumber = trimmed.slice(match[1].length)
- if (afterNumber.length > 0 && /^[/.\dA-Za-z]/.test(afterNumber)) return false
- const rest = match[2]?.trim()
- if (rest && rest.length > 0) {
- const sentenceStarters =
- /^(items?|things?|steps?|files?|lines?|bugs?|issues?|errors?|times?|minutes?|hours?|days?|seconds?|percent|%|th\b|st\b|nd\b|rd\b|of\b|in\b|at\b|to\b|the\b|a\b|an\b)/i
- if (sentenceStarters.test(rest)) return false
- }
- return true
+  const trimmed = prompt.trim()
+  const match = trimmed.match(/^(10|[1-9])(?:\s*[-:]\s*|\s+)?(.*)$/)
+  if (!match || match[1] === undefined) return false
+  const afterNumber = trimmed.slice(match[1].length)
+  if (afterNumber.length > 0 && /^[/.\dA-Za-z]/.test(afterNumber)) return false
+  const rest = match[2]?.trim()
+  if (rest && rest.length > 0) {
+    const sentenceStarters =
+      /^(items?|things?|steps?|files?|lines?|bugs?|issues?|errors?|times?|minutes?|hours?|days?|seconds?|percent|%|th\b|st\b|nd\b|rd\b|of\b|in\b|at\b|to\b|the\b|a\b|an\b)/i
+    if (sentenceStarters.test(rest)) return false
+  }
+  return true
 }
 
 /** the classifier — praise detection on normalized prompt. */
 const isPositivePraise = (prompt: string): boolean => {
- const normalized = prompt.trim().toLowerCase().replace(/[.!?,'"]/g, "")
- const words = normalized.split(/\s+/)
- if (words.length > 2) return false
- if (POSITIVE_PRAISE_WORDS.has(normalized)) return true
- if (POSITIVE_PHRASES.has(normalized)) return true
- if (words.length === 2 && words.every((w) => POSITIVE_PRAISE_WORDS.has(w))) {
- return true
- }
- return false
+  const normalized = prompt
+    .trim()
+    .toLowerCase()
+    .replace(/[.!?,'"]/g, "")
+  const words = normalized.split(/\s+/)
+  if (words.length > 2) return false
+  if (POSITIVE_PRAISE_WORDS.has(normalized)) return true
+  if (POSITIVE_PHRASES.has(normalized)) return true
+  if (words.length === 2 && words.every((w) => POSITIVE_PRAISE_WORDS.has(w))) {
+    return true
+  }
+  return false
 }
 
 /**
@@ -106,7 +135,7 @@ const isPositivePraise = (prompt: string): boolean => {
  * system-text input.
  */
 export const isSystemTextPrompt = (prompt: string): boolean =>
- SYSTEM_TEXT_PATTERNS.some((re) => re.test(prompt.trim()))
+  SYSTEM_TEXT_PATTERNS.some((re) => re.test(prompt.trim()))
 
 // ════════════════════════════════════════════════════════════════
 // END this package VERBATIM PORT
@@ -119,46 +148,44 @@ export const isSystemTextPrompt = (prompt: string): boolean =>
  *
  * Order matches the classifier: rating → praise → system-text → length.
  */
-export const tryFastPath = (
- rawPrompt: string,
-): Classification | null => {
- const prompt = rawPrompt ?? ""
- // Gate 1: explicit rating
- if (isExplicitRating(prompt)) {
- return {
- mode: "MINIMAL",
- tier: null,
- reason: "explicit rating",
- source: "fast-path",
- latencyMs: 0,
- }
- }
- // Gate 2: positive praise
- if (isPositivePraise(prompt)) {
- return {
- mode: "MINIMAL",
- tier: null,
- reason: "positive praise / acknowledgment",
- source: "fast-path",
- latencyMs: 0,
- }
- }
- // Gate 3: system text — handled by the prompt-router BEFORE this function
- // is called (mirrors process.exit(0) — no additionalContext at all).
- // We do NOT check it here; if the router somehow lets system text through,
- // it would fall to inference and Sonnet would classify it normally.
- //
- // Gate 4: short prompt
- if (prompt.length < MIN_PROMPT_LENGTH) {
- return {
- mode: "MINIMAL",
- tier: null,
- reason: "prompt too short for classification",
- source: "fast-path",
- latencyMs: 0,
- }
- }
- return null
+export const tryFastPath = (rawPrompt: string): Classification | null => {
+  const prompt = rawPrompt ?? ""
+  // Gate 1: explicit rating
+  if (isExplicitRating(prompt)) {
+    return {
+      mode: "MINIMAL",
+      tier: null,
+      reason: "explicit rating",
+      source: "fast-path",
+      latencyMs: 0,
+    }
+  }
+  // Gate 2: positive praise
+  if (isPositivePraise(prompt)) {
+    return {
+      mode: "MINIMAL",
+      tier: null,
+      reason: "positive praise / acknowledgment",
+      source: "fast-path",
+      latencyMs: 0,
+    }
+  }
+  // Gate 3: system text — handled by the prompt-router BEFORE this function
+  // is called (mirrors process.exit(0) — no additionalContext at all).
+  // We do NOT check it here; if the router somehow lets system text through,
+  // it would fall to inference and Sonnet would classify it normally.
+  //
+  // Gate 4: short prompt
+  if (prompt.length < MIN_PROMPT_LENGTH) {
+    return {
+      mode: "MINIMAL",
+      tier: null,
+      reason: "prompt too short for classification",
+      source: "fast-path",
+      latencyMs: 0,
+    }
+  }
+  return null
 }
 
 /**
@@ -172,16 +199,16 @@ export const tryFastPath = (
  * Fast-path gates are still consulted first.
  */
 const isClassifierDisabled = (): boolean => {
- const v = process.env["CLAUDE_HOOKS_DISABLE_CLASSIFIER"]
- return v === "1" || v === "true"
+  const v = process.env["CLAUDE_HOOKS_DISABLE_CLASSIFIER"]
+  return v === "1" || v === "true"
 }
 
 export interface ClassifyOptions {
- /** Recent conversation context (getRecentContext output). When present,
- * prepended to the user prompt as `CONTEXT:\n${context}\n\nCURRENT MESSAGE:...`
- * inside Inference. This is what makes the rule "single-word
- * approvals NEVER MINIMAL" actually fire — Sonnet needs the prior turn. */
- readonly context?: string
+  /** Recent conversation context (getRecentContext output). When present,
+   * prepended to the user prompt as `CONTEXT:\n${context}\n\nCURRENT MESSAGE:...`
+   * inside Inference. This is what makes the rule "single-word
+   * approvals NEVER MINIMAL" actually fire — Sonnet needs the prior turn. */
+  readonly context?: string
 }
 
 /**
@@ -189,23 +216,26 @@ export interface ClassifyOptions {
  * otherwise asks the Inference service (unless disabled by env). Never fails.
  */
 export const classify = (
- prompt: string,
- opts?: ClassifyOptions,
+  prompt: string,
+  opts?: ClassifyOptions,
 ): Effect.Effect<Classification, never, Inference | ClaudeSubprocess> => {
- const fast = tryFastPath(prompt)
- if (fast !== null) return Effect.succeed(fast)
- if (isClassifierDisabled()) {
- return Effect.succeed({
- mode: "ALGORITHM",
- tier: 3,
- reason: "classifier disabled via CLAUDE_HOOKS_DISABLE_CLASSIFIER",
- source: "fail-safe",
- latencyMs: 0,
- })
- }
- return Effect.flatMap(Inference, (svc) =>
- svc.classify(prompt, opts?.context !== undefined ? { context: opts.context } : undefined),
- )
+  const fast = tryFastPath(prompt)
+  if (fast !== null) return Effect.succeed(fast)
+  if (isClassifierDisabled()) {
+    return Effect.succeed({
+      mode: "ALGORITHM",
+      tier: 3,
+      reason: "classifier disabled via CLAUDE_HOOKS_DISABLE_CLASSIFIER",
+      source: "fail-safe",
+      latencyMs: 0,
+    })
+  }
+  return Effect.flatMap(Inference, (svc) =>
+    svc.classify(
+      prompt,
+      opts?.context !== undefined ? { context: opts.context } : undefined,
+    ),
+  )
 }
 
 /**
@@ -222,11 +252,11 @@ export const classify = (
  * want for the classifier-vs-fail-safe ratio.
  */
 export const renderClassificationLine = (c: Classification): string => {
- const sourceForLine = c.source === "fail-safe" ? "fail-safe" : "classifier"
- if (c.mode === "ALGORITHM" && c.tier !== null) {
- return `MODE: ALGORITHM | TIER: E${c.tier} | REASON: ${c.reason} | SOURCE: ${sourceForLine}`
- }
- return `MODE: ${c.mode} | REASON: ${c.reason} | SOURCE: ${sourceForLine}`
+  const sourceForLine = c.source === "fail-safe" ? "fail-safe" : "classifier"
+  if (c.mode === "ALGORITHM" && c.tier !== null) {
+    return `MODE: ALGORITHM | TIER: E${c.tier} | REASON: ${c.reason} | SOURCE: ${sourceForLine}`
+  }
+  return `MODE: ${c.mode} | REASON: ${c.reason} | SOURCE: ${sourceForLine}`
 }
 
 /** Re-exported for callers that need the type without re-importing. */

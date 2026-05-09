@@ -19,21 +19,21 @@
  * and arrays are NOT supported — same as this package.
  */
 export const parseFrontmatter = (
- content: string,
+  content: string,
 ): Record<string, string> | null => {
- const match = content.match(/^---\n([\s\S]*?)\n---/)
- if (!match || match[1] === undefined) return null
- const fm: Record<string, string> = {}
- for (const line of match[1].split("\n")) {
- const idx = line.indexOf(":")
- if (idx > 0) {
- fm[line.slice(0, idx).trim()] = line
- .slice(idx + 1)
- .trim()
- .replace(/^["']|["']$/g, "")
- }
- }
- return fm
+  const match = content.match(/^---\n([\s\S]*?)\n---/)
+  if (!match || match[1] === undefined) return null
+  const fm: Record<string, string> = {}
+  for (const line of match[1].split("\n")) {
+    const idx = line.indexOf(":")
+    if (idx > 0) {
+      fm[line.slice(0, idx).trim()] = line
+        .slice(idx + 1)
+        .trim()
+        .replace(/^["']|["']$/g, "")
+    }
+  }
+  return fm
 }
 
 /**
@@ -44,24 +44,34 @@ export const parseFrontmatter = (
  * end of the frontmatter block (this package's behavior).
  */
 export const writeFrontmatterField = (
- content: string,
- field: string,
- value: string,
+  content: string,
+  field: string,
+  value: string,
 ): string => {
- const fmMatch = content.match(/^(---\n)([\s\S]*?)(\n---)/)
- if (!fmMatch || fmMatch[1] === undefined || fmMatch[2] === undefined || fmMatch[3] === undefined) {
- return content
- }
- const lines = fmMatch[2].split("\n")
- let found = false
- for (let i = 0; i < lines.length; i++) {
- const line = lines[i]
- if (line !== undefined && line.startsWith(`${field}:`)) {
- lines[i] = `${field}: ${value}`
- found = true
- break
- }
- }
- if (!found) lines.push(`${field}: ${value}`)
- return fmMatch[1] + lines.join("\n") + fmMatch[3] + content.slice(fmMatch[0].length)
+  const fmMatch = content.match(/^(---\n)([\s\S]*?)(\n---)/)
+  if (
+    !fmMatch ||
+    fmMatch[1] === undefined ||
+    fmMatch[2] === undefined ||
+    fmMatch[3] === undefined
+  ) {
+    return content
+  }
+  const lines = fmMatch[2].split("\n")
+  let found = false
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i]
+    if (line !== undefined && line.startsWith(`${field}:`)) {
+      lines[i] = `${field}: ${value}`
+      found = true
+      break
+    }
+  }
+  if (!found) lines.push(`${field}: ${value}`)
+  return (
+    fmMatch[1] +
+    lines.join("\n") +
+    fmMatch[3] +
+    content.slice(fmMatch[0].length)
+  )
 }

@@ -45,7 +45,7 @@ const WORK_SUBPATH = [".claude-hooks", "state", "work"] as const
 
 /** Compute the work directory for a given project root. */
 export const workDirFor = (root: string = process.cwd()): string =>
- join(root, ...WORK_SUBPATH)
+  join(root, ...WORK_SUBPATH)
 
 /**
  * Resolve the ideal-state artifact path for a session slug. Read order:
@@ -56,15 +56,15 @@ export const workDirFor = (root: string = process.cwd()): string =>
  * that wants per-session artifacts.
  */
 export const findArtifactPath = (
- slug: string,
- root: string = process.cwd(),
+  slug: string,
+  root: string = process.cwd(),
 ): string | null => {
- const dir = join(workDirFor(root), slug)
- const isa = join(dir, ARTIFACT_FILENAME)
- if (existsSync(isa)) return isa
- const legacy = join(dir, LEGACY_ARTIFACT_FILENAME)
- if (existsSync(legacy)) return legacy
- return null
+  const dir = join(workDirFor(root), slug)
+  const isa = join(dir, ARTIFACT_FILENAME)
+  if (existsSync(isa)) return isa
+  const legacy = join(dir, LEGACY_ARTIFACT_FILENAME)
+  if (existsSync(legacy)) return legacy
+  return null
 }
 
 /**
@@ -76,33 +76,31 @@ export const findArtifactPath = (
  * Mirror of the classifier. Best-effort: per-directory stat errors are
  * swallowed so one corrupt entry doesn't poison the scan.
  */
-export const findLatestISA = (
- root: string = process.cwd(),
-): string | null => {
- const workDir = workDirFor(root)
- if (!existsSync(workDir)) return null
- let latest: string | null = null
- let latestMtime = 0
- let entries: ReadonlyArray<string>
- try {
- entries = readdirSync(workDir)
- } catch {
- return null
- }
- for (const dir of entries) {
- const candidate = findArtifactPath(dir, root)
- if (candidate === null) continue
- try {
- const s = statSync(candidate)
- if (s.mtimeMs > latestMtime) {
- latestMtime = s.mtimeMs
- latest = candidate
- }
- } catch {
- // best-effort — skip unreadable entry
- }
- }
- return latest
+export const findLatestISA = (root: string = process.cwd()): string | null => {
+  const workDir = workDirFor(root)
+  if (!existsSync(workDir)) return null
+  let latest: string | null = null
+  let latestMtime = 0
+  let entries: ReadonlyArray<string>
+  try {
+    entries = readdirSync(workDir)
+  } catch {
+    return null
+  }
+  for (const dir of entries) {
+    const candidate = findArtifactPath(dir, root)
+    if (candidate === null) continue
+    try {
+      const s = statSync(candidate)
+      if (s.mtimeMs > latestMtime) {
+        latestMtime = s.mtimeMs
+        latest = candidate
+      }
+    } catch {
+      // best-effort — skip unreadable entry
+    }
+  }
+  return latest
 }
 
 /**
@@ -116,11 +114,9 @@ export const findLatestISA = (
  * (no `git rev-parse`-style ancestor walk) — caller passes the root
  * explicitly. The project-detection layer lives elsewhere.
  */
-export const findProjectIsa = (
- root: string = process.cwd(),
-): string | null => {
- const candidate = join(root, ARTIFACT_FILENAME)
- return existsSync(candidate) ? candidate : null
+export const findProjectIsa = (root: string = process.cwd()): string | null => {
+  const candidate = join(root, ARTIFACT_FILENAME)
+  return existsSync(candidate) ? candidate : null
 }
 
 /**
@@ -133,11 +129,11 @@ export const findProjectIsa = (
  * or a user-defined location).
  */
 export const isIsaFilePath = (filePath: string): boolean => {
- if (typeof filePath !== "string" || filePath.length === 0) return false
- return (
- filePath.endsWith(`/${ARTIFACT_FILENAME}`) ||
- filePath === ARTIFACT_FILENAME ||
- filePath.endsWith(`/${LEGACY_ARTIFACT_FILENAME}`) ||
- filePath === LEGACY_ARTIFACT_FILENAME
- )
+  if (typeof filePath !== "string" || filePath.length === 0) return false
+  return (
+    filePath.endsWith(`/${ARTIFACT_FILENAME}`) ||
+    filePath === ARTIFACT_FILENAME ||
+    filePath.endsWith(`/${LEGACY_ARTIFACT_FILENAME}`) ||
+    filePath === LEGACY_ARTIFACT_FILENAME
+  )
 }

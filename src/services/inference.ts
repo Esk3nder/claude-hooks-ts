@@ -27,18 +27,18 @@ export type Tier = 1 | 2 | 3 | 4 | 5
 export type ClassificationSource = "classifier" | "fast-path" | "fail-safe"
 
 export interface Classification {
- readonly mode: Mode
- /** Present iff MODE === "ALGORITHM". */
- readonly tier: Tier | null
- readonly reason: string
- readonly source: ClassificationSource
- readonly latencyMs: number
+  readonly mode: Mode
+  /** Present iff MODE === "ALGORITHM". */
+  readonly tier: Tier | null
+  readonly reason: string
+  readonly source: ClassificationSource
+  readonly latencyMs: number
 }
 
 export const FAIL_SAFE: Omit<Classification, "latencyMs" | "reason"> = {
- mode: "ALGORITHM",
- tier: 3,
- source: "fail-safe",
+  mode: "ALGORITHM",
+  tier: 3,
+  source: "fail-safe",
 }
 
 /**
@@ -96,7 +96,11 @@ const VALID_TIERS: ReadonlySet<number> = new Set([1, 2, 3, 4, 5])
  * other injected markup from contaminating Sonnet's input.
  */
 export const cleanPrompt = (prompt: string): string =>
- prompt.replace(/<[^>]*>/g, " ").replace(/\s+/g, " ").trim().slice(0, 1000)
+  prompt
+    .replace(/<[^>]*>/g, " ")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, 1000)
 
 /**
  * Build the user prompt sent to the classifier. The classifier framing:
@@ -104,25 +108,25 @@ export const cleanPrompt = (prompt: string): string =>
  * Without context, just the cleaned prompt.
  */
 export const buildUserPrompt = (
- rawPrompt: string,
- context?: string,
+  rawPrompt: string,
+  context?: string,
 ): string => {
- const cleaned = cleanPrompt(rawPrompt)
- if (context !== undefined && context.length > 0) {
- return `CONTEXT:\n${context}\n\nCURRENT MESSAGE:\n${cleaned}`
- }
- return cleaned
+  const cleaned = cleanPrompt(rawPrompt)
+  if (context !== undefined && context.length > 0) {
+    return `CONTEXT:\n${context}\n\nCURRENT MESSAGE:\n${cleaned}`
+  }
+  return cleaned
 }
 
 interface ParseSuccess {
- readonly _tag: "ok"
- readonly mode: Mode
- readonly tier: Tier | null
- readonly reason: string
+  readonly _tag: "ok"
+  readonly mode: Mode
+  readonly tier: Tier | null
+  readonly reason: string
 }
 interface ParseFailure {
- readonly _tag: "fail"
- readonly message: string
+  readonly _tag: "fail"
+  readonly message: string
 }
 
 /**
@@ -131,80 +135,80 @@ interface ParseFailure {
  * fences (some Sonnet runs wrap the JSON despite the classifier rubric).
  */
 export const parseClassifierResponse = (
- raw: string,
+  raw: string,
 ): ParseSuccess | ParseFailure => {
- const stripped = raw
- .replace(/^```(?:json)?\n?/m, "")
- .replace(/```\s*$/m, "")
- .trim()
- if (stripped.length === 0) {
- return { _tag: "fail", message: "empty response" }
- }
- const objectMatch = stripped.match(/\{[\s\S]*\}/)
- if (!objectMatch) {
- return { _tag: "fail", message: "no JSON object in response" }
- }
- let obj: unknown
- try {
- obj = JSON.parse(objectMatch[0])
- } catch (err) {
- return { _tag: "fail", message: `JSON parse: ${String(err).slice(0, 80)}` }
- }
- if (typeof obj !== "object" || obj === null) {
- return { _tag: "fail", message: "JSON is not an object" }
- }
- const r = obj as { mode?: unknown; tier?: unknown; mode_reason?: unknown }
- if (typeof r.mode !== "string" || !MODES.has(r.mode as Mode)) {
- return { _tag: "fail", message: "missing or invalid mode" }
- }
- const mode = r.mode as Mode
- let tier: Tier | null = null
- if (r.tier === null || r.tier === undefined) {
- tier = null
- } else if (typeof r.tier === "number" && VALID_TIERS.has(r.tier)) {
- tier = r.tier as Tier
- } else {
- return { _tag: "fail", message: `invalid tier: ${String(r.tier)}` }
- }
- if (mode === "ALGORITHM" && tier === null) {
- return { _tag: "fail", message: "ALGORITHM mode requires a tier" }
- }
- if (mode !== "ALGORITHM") tier = null
- // B6: whitespace-only mode_reason was passing the length check, leaking
- // useless " " strings into additionalContext. Trim before length check.
- const trimmedReason =
- typeof r.mode_reason === "string" ? r.mode_reason.trim() : ""
- const reason = trimmedReason.length > 0 ? trimmedReason : "(no reason given)"
- return { _tag: "ok", mode, tier, reason }
+  const stripped = raw
+    .replace(/^```(?:json)?\n?/m, "")
+    .replace(/```\s*$/m, "")
+    .trim()
+  if (stripped.length === 0) {
+    return { _tag: "fail", message: "empty response" }
+  }
+  const objectMatch = stripped.match(/\{[\s\S]*\}/)
+  if (!objectMatch) {
+    return { _tag: "fail", message: "no JSON object in response" }
+  }
+  let obj: unknown
+  try {
+    obj = JSON.parse(objectMatch[0])
+  } catch (err) {
+    return { _tag: "fail", message: `JSON parse: ${String(err).slice(0, 80)}` }
+  }
+  if (typeof obj !== "object" || obj === null) {
+    return { _tag: "fail", message: "JSON is not an object" }
+  }
+  const r = obj as { mode?: unknown; tier?: unknown; mode_reason?: unknown }
+  if (typeof r.mode !== "string" || !MODES.has(r.mode as Mode)) {
+    return { _tag: "fail", message: "missing or invalid mode" }
+  }
+  const mode = r.mode as Mode
+  let tier: Tier | null = null
+  if (r.tier === null || r.tier === undefined) {
+    tier = null
+  } else if (typeof r.tier === "number" && VALID_TIERS.has(r.tier)) {
+    tier = r.tier as Tier
+  } else {
+    return { _tag: "fail", message: `invalid tier: ${String(r.tier)}` }
+  }
+  if (mode === "ALGORITHM" && tier === null) {
+    return { _tag: "fail", message: "ALGORITHM mode requires a tier" }
+  }
+  if (mode !== "ALGORITHM") tier = null
+  // B6: whitespace-only mode_reason was passing the length check, leaking
+  // useless " " strings into additionalContext. Trim before length check.
+  const trimmedReason =
+    typeof r.mode_reason === "string" ? r.mode_reason.trim() : ""
+  const reason = trimmedReason.length > 0 ? trimmedReason : "(no reason given)"
+  return { _tag: "ok", mode, tier, reason }
 }
 
 export interface ClassifyOptions {
- readonly timeoutMs?: number
- /** Recent conversation context (getRecentContext output). When present,
- * prepended as `CONTEXT:\n${context}\n\nCURRENT MESSAGE:\n${cleanPrompt}`.
- * This is what makes the rule "single-word approvals NEVER
- * MINIMAL" actually fire — Sonnet needs the prior turn to disambiguate. */
- readonly context?: string
- /** Optional image file paths. Mirrors the classifier — when present,
- * Read tool is enabled and `@path` references are prepended. The classifier
- * does not currently take images, but this is a . */
- readonly imagePaths?: ReadonlyArray<string>
+  readonly timeoutMs?: number
+  /** Recent conversation context (getRecentContext output). When present,
+   * prepended as `CONTEXT:\n${context}\n\nCURRENT MESSAGE:\n${cleanPrompt}`.
+   * This is what makes the rule "single-word approvals NEVER
+   * MINIMAL" actually fire — Sonnet needs the prior turn to disambiguate. */
+  readonly context?: string
+  /** Optional image file paths. Mirrors the classifier — when present,
+   * Read tool is enabled and `@path` references are prepended. The classifier
+   * does not currently take images, but this is a . */
+  readonly imagePaths?: ReadonlyArray<string>
 }
 
 export interface InferenceApi {
- /**
- * Classify a user prompt. Always succeeds — failures collapse to FAIL_SAFE.
- * The Effect requires a ClaudeSubprocess in its environment.
- */
- readonly classify: (
- prompt: string,
- opts?: ClassifyOptions,
- ) => Effect.Effect<Classification, never, ClaudeSubprocess>
+  /**
+   * Classify a user prompt. Always succeeds — failures collapse to FAIL_SAFE.
+   * The Effect requires a ClaudeSubprocess in its environment.
+   */
+  readonly classify: (
+    prompt: string,
+    opts?: ClassifyOptions,
+  ) => Effect.Effect<Classification, never, ClaudeSubprocess>
 }
 
 export class Inference extends Context.Tag("Inference")<
- Inference,
- InferenceApi
+  Inference,
+  InferenceApi
 >() {}
 
 /**
@@ -214,17 +218,17 @@ export class Inference extends Context.Tag("Inference")<
  * classifier.
  */
 const buildArgs = (hasImages: boolean): ReadonlyArray<string> => [
- "--print",
- "--model",
- "sonnet",
- ...(hasImages ? ["--allowedTools", "Read"] : ["--tools", ""]),
- "--output-format",
- "text",
- "--exclude-dynamic-system-prompt-sections",
- "--setting-sources",
- "",
- "--system-prompt",
- CLASSIFIER_SYSTEM_PROMPT,
+  "--print",
+  "--model",
+  "sonnet",
+  ...(hasImages ? ["--allowedTools", "Read"] : ["--tools", ""]),
+  "--output-format",
+  "text",
+  "--exclude-dynamic-system-prompt-sections",
+  "--setting-sources",
+  "",
+  "--system-prompt",
+  CLASSIFIER_SYSTEM_PROMPT,
 ]
 
 /**
@@ -233,68 +237,67 @@ const buildArgs = (hasImages: boolean): ReadonlyArray<string> => [
  * and cleaned by buildUserPrompt).
  */
 const buildStdin = (
- framedPrompt: string,
- imagePaths?: ReadonlyArray<string>,
+  framedPrompt: string,
+  imagePaths?: ReadonlyArray<string>,
 ): string => {
- if (imagePaths === undefined || imagePaths.length === 0) return framedPrompt
- const refs = imagePaths.map((p) => `@${p}`).join("\n")
- return `${refs}\n\n${framedPrompt}`
+  if (imagePaths === undefined || imagePaths.length === 0) return framedPrompt
+  const refs = imagePaths.map((p) => `@${p}`).join("\n")
+  return `${refs}\n\n${framedPrompt}`
 }
 
 const liveImpl: InferenceApi = {
- classify: (prompt, opts) =>
- Effect.gen(function* () {
- const subproc = yield* ClaudeSubprocess
- const timeoutMs = opts?.timeoutMs ?? DEFAULT_TIMEOUT_MS
- const hasImages = opts?.imagePaths !== undefined && opts.imagePaths.length > 0
- const framed = buildUserPrompt(prompt, opts?.context)
- const stdin = buildStdin(framed, opts?.imagePaths)
- const args = buildArgs(hasImages)
+  classify: (prompt, opts) =>
+    Effect.gen(function* () {
+      const subproc = yield* ClaudeSubprocess
+      const timeoutMs = opts?.timeoutMs ?? DEFAULT_TIMEOUT_MS
+      const hasImages =
+        opts?.imagePaths !== undefined && opts.imagePaths.length > 0
+      const framed = buildUserPrompt(prompt, opts?.context)
+      const stdin = buildStdin(framed, opts?.imagePaths)
+      const args = buildArgs(hasImages)
 
- const result = yield* subproc
- .spawn(args, { stdin, timeoutMs })
- .pipe(
- Effect.catchAll((err) =>
- Effect.succeed({
- stdout: "",
- stderr: `spawn-error: ${String(err)}`,
- exitCode: -1,
- latencyMs: 0,
- timedOut: false,
- }),
- ),
- )
+      const result = yield* subproc.spawn(args, { stdin, timeoutMs }).pipe(
+        Effect.catchAll((err) =>
+          Effect.succeed({
+            stdout: "",
+            stderr: `spawn-error: ${String(err)}`,
+            exitCode: -1,
+            latencyMs: 0,
+            timedOut: false,
+          }),
+        ),
+      )
 
- if (result.timedOut) {
- return {
- ...FAIL_SAFE,
- reason: `classifier timeout after ${timeoutMs}ms`,
- latencyMs: result.latencyMs,
- }
- }
- if (result.exitCode !== 0) {
- return {
- ...FAIL_SAFE,
- reason: `classifier exit ${result.exitCode}: ${result.stderr.slice(0, 120).trim()}`,
- latencyMs: result.latencyMs,
- }
- }
- const parsed = parseClassifierResponse(result.stdout)
- if (parsed._tag === "fail") {
- return {
- ...FAIL_SAFE,
- reason: `parse-fail: ${parsed.message}`,
- latencyMs: result.latencyMs,
- }
- }
- return {
- mode: parsed.mode,
- tier: parsed.tier,
- reason: parsed.reason,
- source: "classifier",
- latencyMs: result.latencyMs,
- }
- }),
+      if (result.timedOut) {
+        return {
+          ...FAIL_SAFE,
+          reason: `classifier timeout after ${timeoutMs}ms`,
+          latencyMs: result.latencyMs,
+        }
+      }
+      if (result.exitCode !== 0) {
+        return {
+          ...FAIL_SAFE,
+          reason: `classifier exit ${result.exitCode}: ${result.stderr.slice(0, 120).trim()}`,
+          latencyMs: result.latencyMs,
+        }
+      }
+      const parsed = parseClassifierResponse(result.stdout)
+      if (parsed._tag === "fail") {
+        return {
+          ...FAIL_SAFE,
+          reason: `parse-fail: ${parsed.message}`,
+          latencyMs: result.latencyMs,
+        }
+      }
+      return {
+        mode: parsed.mode,
+        tier: parsed.tier,
+        reason: parsed.reason,
+        source: "classifier",
+        latencyMs: result.latencyMs,
+      }
+    }),
 }
 
 export const InferenceLive = Layer.succeed(Inference, Inference.of(liveImpl))
@@ -304,18 +307,18 @@ export const InferenceLive = Layer.succeed(Inference, Inference.of(liveImpl))
  * assert that context/imagePaths were threaded through.
  */
 export const InferenceTest = (
- responder: (
- prompt: string,
- opts?: ClassifyOptions,
- ) => Classification = () => ({
- ...FAIL_SAFE,
- reason: "test default",
- latencyMs: 0,
- }),
+  responder: (
+    prompt: string,
+    opts?: ClassifyOptions,
+  ) => Classification = () => ({
+    ...FAIL_SAFE,
+    reason: "test default",
+    latencyMs: 0,
+  }),
 ): Layer.Layer<Inference> =>
- Layer.succeed(
- Inference,
- Inference.of({
- classify: (prompt, opts) => Effect.sync(() => responder(prompt, opts)),
- }),
- )
+  Layer.succeed(
+    Inference,
+    Inference.of({
+      classify: (prompt, opts) => Effect.sync(() => responder(prompt, opts)),
+    }),
+  )

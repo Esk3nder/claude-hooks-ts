@@ -31,82 +31,82 @@
  */
 
 export interface ExplicitAsk {
- /** Original sentence/clause as it appeared in the user prompt. */
- readonly text: string
- /** Approximate ordinal in the prompt (1-based). Useful for messages. */
- readonly index: number
- /** Detected category — informational. */
- readonly kind: "imperative" | "question" | "list-item"
+  /** Original sentence/clause as it appeared in the user prompt. */
+  readonly text: string
+  /** Approximate ordinal in the prompt (1-based). Useful for messages. */
+  readonly index: number
+  /** Detected category — informational. */
+  readonly kind: "imperative" | "question" | "list-item"
 }
 
 export interface ReReadCheckReport {
- /** All explicit asks parsed from the user prompt. */
- readonly asks: ReadonlyArray<ExplicitAsk>
- /** Subset of `asks` that the assistant draft does NOT appear to address. */
- readonly unmet: ReadonlyArray<ExplicitAsk>
- /** True iff `unmet` is empty. */
- readonly ok: boolean
- /**
- * Single-line guidance suitable for stderr / additionalContext.
- * Empty when ok.
- */
- readonly message: string
+  /** All explicit asks parsed from the user prompt. */
+  readonly asks: ReadonlyArray<ExplicitAsk>
+  /** Subset of `asks` that the assistant draft does NOT appear to address. */
+  readonly unmet: ReadonlyArray<ExplicitAsk>
+  /** True iff `unmet` is empty. */
+  readonly ok: boolean
+  /**
+   * Single-line guidance suitable for stderr / additionalContext.
+   * Empty when ok.
+   */
+  readonly message: string
 }
 
 const IMPERATIVE_VERBS: ReadonlySet<string> = new Set([
- "add",
- "build",
- "create",
- "make",
- "implement",
- "fix",
- "remove",
- "delete",
- "rename",
- "move",
- "rewrite",
- "refactor",
- "update",
- "explain",
- "list",
- "show",
- "describe",
- "summarize",
- "audit",
- "review",
- "verify",
- "check",
- "test",
- "run",
- "deploy",
- "ship",
- "write",
- "draft",
- "design",
- "ensure",
- "include",
+  "add",
+  "build",
+  "create",
+  "make",
+  "implement",
+  "fix",
+  "remove",
+  "delete",
+  "rename",
+  "move",
+  "rewrite",
+  "refactor",
+  "update",
+  "explain",
+  "list",
+  "show",
+  "describe",
+  "summarize",
+  "audit",
+  "review",
+  "verify",
+  "check",
+  "test",
+  "run",
+  "deploy",
+  "ship",
+  "write",
+  "draft",
+  "design",
+  "ensure",
+  "include",
 ])
 
 const ACK_TOKENS: ReadonlyArray<string> = [
- "✓",
- "[x]",
- "[X]",
- "done",
- "shipped",
- "implemented",
- "added",
- "fixed",
- "removed",
- "updated",
- "covered",
+  "✓",
+  "[x]",
+  "[X]",
+  "done",
+  "shipped",
+  "implemented",
+  "added",
+  "fixed",
+  "removed",
+  "updated",
+  "covered",
 ]
 
 const splitSentences = (text: string): ReadonlyArray<string> =>
- text
- .replace(/\r/g, "")
- .split(/(?<=[.?!])\s+|\n+/)
- .map((s) => s.trim())
- .filter((s) => s.length > 0)
+  text
+    .replace(/\r/g, "")
+    .split(/(?<=[.?!])\s+|\n+/)
+    .map((s) => s.trim())
+    .filter((s) => s.length > 0)
 
 /**
  * Extract the first N words. Sentences starting with a conjunction
@@ -114,25 +114,25 @@ const splitSentences = (text: string): ReadonlyArray<string> =>
  * imperative. We scan the first 3 alphabetic tokens.
  */
 const firstWords = (s: string, n: number): ReadonlyArray<string> => {
- const words: string[] = []
- const re = /[A-Za-z]+/g
- let m: RegExpExecArray | null
- while ((m = re.exec(s)) !== null && words.length < n) {
- words.push(m[0].toLowerCase())
- }
- return words
+  const words: string[] = []
+  const re = /[A-Za-z]+/g
+  let m: RegExpExecArray | null
+  while ((m = re.exec(s)) !== null && words.length < n) {
+    words.push(m[0].toLowerCase())
+  }
+  return words
 }
 
 const startsWithImperative = (s: string): boolean =>
- firstWords(s, 3).some((w) => IMPERATIVE_VERBS.has(w))
+  firstWords(s, 3).some((w) => IMPERATIVE_VERBS.has(w))
 
 const splitListItems = (text: string): ReadonlyArray<string> => {
- const out: string[] = []
- for (const rawLine of text.split("\n")) {
- const m = rawLine.match(/^\s*(?:[-*]|\d+[.)])\s+(.+)$/)
- if (m && m[1] !== undefined) out.push(m[1].trim())
- }
- return out
+  const out: string[] = []
+  for (const rawLine of text.split("\n")) {
+    const m = rawLine.match(/^\s*(?:[-*]|\d+[.)])\s+(.+)$/)
+    if (m && m[1] !== undefined) out.push(m[1].trim())
+  }
+  return out
 }
 
 /**
@@ -144,26 +144,26 @@ const splitListItems = (text: string): ReadonlyArray<string> => {
  * Each ask is returned at most once even if multiple signals match.
  */
 export const extractExplicitAsks = (
- prompt: string,
+  prompt: string,
 ): ReadonlyArray<ExplicitAsk> => {
- const asks: ExplicitAsk[] = []
- const seen = new Set<string>()
- let counter = 0
- const push = (text: string, kind: ExplicitAsk["kind"]): void => {
- const key = text.toLowerCase().replace(/\s+/g, " ").trim()
- if (key.length === 0 || seen.has(key)) return
- seen.add(key)
- counter += 1
- asks.push({ text, index: counter, kind })
- }
- for (const sentence of splitSentences(prompt)) {
- if (sentence.endsWith("?")) push(sentence, "question")
- else if (startsWithImperative(sentence)) push(sentence, "imperative")
- }
- for (const item of splitListItems(prompt)) {
- push(item, "list-item")
- }
- return asks
+  const asks: ExplicitAsk[] = []
+  const seen = new Set<string>()
+  let counter = 0
+  const push = (text: string, kind: ExplicitAsk["kind"]): void => {
+    const key = text.toLowerCase().replace(/\s+/g, " ").trim()
+    if (key.length === 0 || seen.has(key)) return
+    seen.add(key)
+    counter += 1
+    asks.push({ text, index: counter, kind })
+  }
+  for (const sentence of splitSentences(prompt)) {
+    if (sentence.endsWith("?")) push(sentence, "question")
+    else if (startsWithImperative(sentence)) push(sentence, "imperative")
+  }
+  for (const item of splitListItems(prompt)) {
+    push(item, "list-item")
+  }
+  return asks
 }
 
 /**
@@ -173,57 +173,57 @@ export const extractExplicitAsks = (
  * and look for it in the draft (case-insensitive substring).
  */
 const askIsCovered = (ask: ExplicitAsk, draft: string): boolean => {
- const lowDraft = draft.toLowerCase()
- // Acknowledgement scan — if any ack token AND any noun-ish word from the
- // ask appears in the draft, treat as covered.
- const allWords = ask.text
- .toLowerCase()
- .split(/[^a-z0-9]+/)
- .filter((w) => w.length > 0 && !IMPERATIVE_VERBS.has(w))
- const askWords = allWords.filter((w) => w.length >= 4)
- if (askWords.length === 0) {
- // No long noun — fall back to "any non-imperative token from ask
- // appears in draft" so short-noun asks like "Add foo bar." still
- // resolve when the draft mentions "foo" or "bar".
- if (allWords.length === 0) {
- return lowDraft.includes(ask.text.toLowerCase())
- }
- return allWords.some((w) => lowDraft.includes(w))
- }
- // Any noun present?
- const nounPresent = askWords.some((w) => lowDraft.includes(w))
- if (!nounPresent) return false
- // Heuristic: noun present AND any ack token nearby OR draft mentions the
- // ask noun more than once (signals discussion, not just echo).
- if (ACK_TOKENS.some((t) => lowDraft.includes(t.toLowerCase()))) return true
- // Multiple noun mentions = discussion of the topic.
- for (const w of askWords) {
- let count = 0
- let idx = lowDraft.indexOf(w)
- while (idx !== -1 && count < 2) {
- count += 1
- idx = lowDraft.indexOf(w, idx + 1)
- }
- if (count >= 2) return true
- }
- return false
+  const lowDraft = draft.toLowerCase()
+  // Acknowledgement scan — if any ack token AND any noun-ish word from the
+  // ask appears in the draft, treat as covered.
+  const allWords = ask.text
+    .toLowerCase()
+    .split(/[^a-z0-9]+/)
+    .filter((w) => w.length > 0 && !IMPERATIVE_VERBS.has(w))
+  const askWords = allWords.filter((w) => w.length >= 4)
+  if (askWords.length === 0) {
+    // No long noun — fall back to "any non-imperative token from ask
+    // appears in draft" so short-noun asks like "Add foo bar." still
+    // resolve when the draft mentions "foo" or "bar".
+    if (allWords.length === 0) {
+      return lowDraft.includes(ask.text.toLowerCase())
+    }
+    return allWords.some((w) => lowDraft.includes(w))
+  }
+  // Any noun present?
+  const nounPresent = askWords.some((w) => lowDraft.includes(w))
+  if (!nounPresent) return false
+  // Heuristic: noun present AND any ack token nearby OR draft mentions the
+  // ask noun more than once (signals discussion, not just echo).
+  if (ACK_TOKENS.some((t) => lowDraft.includes(t.toLowerCase()))) return true
+  // Multiple noun mentions = discussion of the topic.
+  for (const w of askWords) {
+    let count = 0
+    let idx = lowDraft.indexOf(w)
+    while (idx !== -1 && count < 2) {
+      count += 1
+      idx = lowDraft.indexOf(w, idx + 1)
+    }
+    if (count >= 2) return true
+  }
+  return false
 }
 
 export const rereadCheck = (
- userPrompt: string,
- assistantDraft: string,
+  userPrompt: string,
+  assistantDraft: string,
 ): ReReadCheckReport => {
- const asks = extractExplicitAsks(userPrompt)
- const unmet = asks.filter((a) => !askIsCovered(a, assistantDraft))
- const ok = unmet.length === 0
- const message = ok
- ? ""
- : `ReReadCheck: ${unmet.length} explicit ask(s) appear unaddressed: ` +
- unmet
- .map(
- (a) =>
- `[${a.index}/${a.kind}] "${a.text.slice(0, 80)}${a.text.length > 80 ? "..." : ""}"`,
- )
- .join("; ")
- return { asks, unmet, ok, message }
+  const asks = extractExplicitAsks(userPrompt)
+  const unmet = asks.filter((a) => !askIsCovered(a, assistantDraft))
+  const ok = unmet.length === 0
+  const message = ok
+    ? ""
+    : `ReReadCheck: ${unmet.length} explicit ask(s) appear unaddressed: ` +
+      unmet
+        .map(
+          (a) =>
+            `[${a.index}/${a.kind}] "${a.text.slice(0, 80)}${a.text.length > 80 ? "..." : ""}"`,
+        )
+        .join("; ")
+  return { asks, unmet, ok, message }
 }

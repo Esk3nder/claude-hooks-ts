@@ -21,55 +21,59 @@ import * as path from "node:path"
 import type { Mode, Tier, ClassificationSource } from "./inference.ts"
 
 export interface ClassifierTelemetryRecord {
- /** ISO 8601 timestamp. */
- readonly timestamp: string
- readonly session_id: string
- /** First 120 chars of the user prompt — matches the prompt_excerpt slice. */
- readonly prompt_excerpt: string
- readonly mode: Mode
- readonly tier: Tier | null
- readonly mode_reason: string
- readonly source: ClassificationSource
- readonly latency_ms: number
+  /** ISO 8601 timestamp. */
+  readonly timestamp: string
+  readonly session_id: string
+  /** First 120 chars of the user prompt — matches the prompt_excerpt slice. */
+  readonly prompt_excerpt: string
+  readonly mode: Mode
+  readonly tier: Tier | null
+  readonly mode_reason: string
+  readonly source: ClassificationSource
+  readonly latency_ms: number
 }
 
 export interface ClassifierTelemetryApi {
- readonly append: (
- record: ClassifierTelemetryRecord,
- ) => Effect.Effect<void>
+  readonly append: (record: ClassifierTelemetryRecord) => Effect.Effect<void>
 }
 
 export class ClassifierTelemetry extends Context.Tag("ClassifierTelemetry")<
- ClassifierTelemetry,
- ClassifierTelemetryApi
+  ClassifierTelemetry,
+  ClassifierTelemetryApi
 >() {}
 
 /** Build the prompt_excerpt the same way this package does. */
 export const buildPromptExcerpt = (prompt: string): string =>
- prompt.slice(0, 120)
+  prompt.slice(0, 120)
 
 /** Build a single record. Used by the prompt-router and by tests. */
 export const buildRecord = (input: {
- readonly sessionId: string
- readonly prompt: string
- readonly mode: Mode
- readonly tier: Tier | null
- readonly modeReason: string
- readonly source: ClassificationSource
- readonly latencyMs: number
+  readonly sessionId: string
+  readonly prompt: string
+  readonly mode: Mode
+  readonly tier: Tier | null
+  readonly modeReason: string
+  readonly source: ClassificationSource
+  readonly latencyMs: number
 }): ClassifierTelemetryRecord => ({
- timestamp: new Date().toISOString(),
- session_id: input.sessionId,
- prompt_excerpt: buildPromptExcerpt(input.prompt),
- mode: input.mode,
- tier: input.tier,
- mode_reason: input.modeReason,
- source: input.source,
- latency_ms: input.latencyMs,
+  timestamp: new Date().toISOString(),
+  session_id: input.sessionId,
+  prompt_excerpt: buildPromptExcerpt(input.prompt),
+  mode: input.mode,
+  tier: input.tier,
+  mode_reason: input.modeReason,
+  source: input.source,
+  latency_ms: input.latencyMs,
 })
 
 const telemetryPath = (root: string): string =>
- path.join(root, ".claude-hooks", "state", "observability", "mode-classifier.jsonl")
+  path.join(
+    root,
+    ".claude-hooks",
+    "state",
+    "observability",
+    "mode-classifier.jsonl",
+  )
 
 /**
  * Live impl — appends a JSON line to the destination file. implements canonical behavior
@@ -77,44 +81,44 @@ const telemetryPath = (root: string): string =>
  * malformed record can't corrupt downstream JSONL parsers.
  */
 export const ClassifierTelemetryLive = (
- root: string = process.cwd(),
+  root: string = process.cwd(),
 ): Layer.Layer<ClassifierTelemetry> =>
- Layer.succeed(
- ClassifierTelemetry,
- ClassifierTelemetry.of({
- append: (record) =>
- Effect.tryPromise({
- try: async () => {
- const serialized = JSON.stringify(record)
- // the classifier: skip if serialization contains a literal newline
- // (defensive — some prompt_excerpt values could carry one).
- if (serialized.includes("\n")) return
- const file = telemetryPath(root)
- await fs.mkdir(path.dirname(file), { recursive: true })
- await fs.appendFile(file, `${serialized}\n`, "utf8")
- },
- catch: () => undefined,
- }).pipe(Effect.catchAll(() => Effect.succeed(undefined))),
- }),
- )
+  Layer.succeed(
+    ClassifierTelemetry,
+    ClassifierTelemetry.of({
+      append: (record) =>
+        Effect.tryPromise({
+          try: async () => {
+            const serialized = JSON.stringify(record)
+            // the classifier: skip if serialization contains a literal newline
+            // (defensive — some prompt_excerpt values could carry one).
+            if (serialized.includes("\n")) return
+            const file = telemetryPath(root)
+            await fs.mkdir(path.dirname(file), { recursive: true })
+            await fs.appendFile(file, `${serialized}\n`, "utf8")
+          },
+          catch: () => undefined,
+        }).pipe(Effect.catchAll(() => Effect.succeed(undefined))),
+    }),
+  )
 
 /**
  * Test layer — captures records into an in-memory array exposed via the
  * factory's `records` getter so tests can assert what was logged.
  */
 export const ClassifierTelemetryTest = (): {
- readonly layer: Layer.Layer<ClassifierTelemetry>
- readonly records: () => ReadonlyArray<ClassifierTelemetryRecord>
+  readonly layer: Layer.Layer<ClassifierTelemetry>
+  readonly records: () => ReadonlyArray<ClassifierTelemetryRecord>
 } => {
- const captured: ClassifierTelemetryRecord[] = []
- const layer = Layer.succeed(
- ClassifierTelemetry,
- ClassifierTelemetry.of({
- append: (record) =>
- Effect.sync(() => {
- captured.push(record)
- }),
- }),
- )
- return { layer, records: () => captured }
+  const captured: ClassifierTelemetryRecord[] = []
+  const layer = Layer.succeed(
+    ClassifierTelemetry,
+    ClassifierTelemetry.of({
+      append: (record) =>
+        Effect.sync(() => {
+          captured.push(record)
+        }),
+    }),
+  )
+  return { layer, records: () => captured }
 }

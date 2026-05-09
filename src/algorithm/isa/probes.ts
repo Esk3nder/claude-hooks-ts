@@ -42,12 +42,10 @@ import type { CriterionEntry } from "./criteria.ts"
  * was matched against and returns a boolean (or a Promise<boolean>).
  * Sync return is fine; we wrap everything in Effect.tryPromise.
  */
-export type ProbeFn = (
- criterion: CriterionEntry,
-) => boolean | Promise<boolean>
+export type ProbeFn = (criterion: CriterionEntry) => boolean | Promise<boolean>
 
 export interface ProbesModule {
- readonly probes: Readonly<Record<string, ProbeFn>>
+  readonly probes: Readonly<Record<string, ProbeFn>>
 }
 
 /** Default per-probe timeout — defensive ceiling for hot-loaded user code. */
@@ -56,7 +54,7 @@ export const PROBE_TIMEOUT_MS = 1_000
 const PROBES_SUBPATH = [".claude-hooks", "probes.ts"] as const
 
 export const probesPathFor = (root: string = process.cwd()): string =>
- join(root, ...PROBES_SUBPATH)
+  join(root, ...PROBES_SUBPATH)
 
 /**
  * Hot-load the user's probes module. Returns an empty registry when:
@@ -72,32 +70,32 @@ export const probesPathFor = (root: string = process.cwd()): string =>
  * Each hook fires a fresh process, so cache-bust is unnecessary.
  */
 export const loadProbes = async (
- root: string = process.cwd(),
+  root: string = process.cwd(),
 ): Promise<Readonly<Record<string, ProbeFn>>> => {
- const file = probesPathFor(root)
- if (!existsSync(file)) return Object.freeze({})
- try {
- const mod = (await import(file)) as Partial<ProbesModule>
- if (
- typeof mod.probes !== "object" ||
- mod.probes === null ||
- Array.isArray(mod.probes)
- ) {
- process.stderr.write(
- `[probes] ${file} did not export an object literal named 'probes'\n`,
- )
- return Object.freeze({})
- }
- // Defensive copy + freeze; only keep entries whose value is a function.
- const out: Record<string, ProbeFn> = {}
- for (const [name, fn] of Object.entries(mod.probes)) {
- if (typeof fn === "function") out[name] = fn as ProbeFn
- }
- return Object.freeze(out)
- } catch (err) {
- process.stderr.write(`[probes] failed to load ${file}: ${String(err)}\n`)
- return Object.freeze({})
- }
+  const file = probesPathFor(root)
+  if (!existsSync(file)) return Object.freeze({})
+  try {
+    const mod = (await import(file)) as Partial<ProbesModule>
+    if (
+      typeof mod.probes !== "object" ||
+      mod.probes === null ||
+      Array.isArray(mod.probes)
+    ) {
+      process.stderr.write(
+        `[probes] ${file} did not export an object literal named 'probes'\n`,
+      )
+      return Object.freeze({})
+    }
+    // Defensive copy + freeze; only keep entries whose value is a function.
+    const out: Record<string, ProbeFn> = {}
+    for (const [name, fn] of Object.entries(mod.probes)) {
+      if (typeof fn === "function") out[name] = fn as ProbeFn
+    }
+    return Object.freeze(out)
+  } catch (err) {
+    process.stderr.write(`[probes] failed to load ${file}: ${String(err)}\n`)
+    return Object.freeze({})
+  }
 }
 
 /**
@@ -110,35 +108,35 @@ export const loadProbes = async (
  * checkpoint git ops).
  */
 export const runProbe = (
- probe: ProbeFn,
- criterion: CriterionEntry,
- timeoutMs: number = PROBE_TIMEOUT_MS,
+  probe: ProbeFn,
+  criterion: CriterionEntry,
+  timeoutMs: number = PROBE_TIMEOUT_MS,
 ): Effect.Effect<boolean> =>
- Effect.tryPromise({
- try: async () => {
- const result = await Promise.resolve(probe(criterion))
- return result === true
- },
- catch: (cause) => {
- process.stderr.write(
- `[probes] probe for ${criterion.id} threw: ${String(cause).slice(0, 200)}\n`,
- )
- return new Error(String(cause))
- },
- }).pipe(
- Effect.timeout(`${timeoutMs} millis`),
- Effect.catchAll((cause) => {
- // Timeout OR upstream error → treat as non-passing.
- const reason =
- cause instanceof Error && cause.name === "TimeoutException"
- ? "timed out"
- : "errored"
- process.stderr.write(
- `[probes] probe for ${criterion.id} ${reason} after ${timeoutMs}ms\n`,
- )
- return Effect.succeed(false)
- }),
- )
+  Effect.tryPromise({
+    try: async () => {
+      const result = await Promise.resolve(probe(criterion))
+      return result === true
+    },
+    catch: (cause) => {
+      process.stderr.write(
+        `[probes] probe for ${criterion.id} threw: ${String(cause).slice(0, 200)}\n`,
+      )
+      return new Error(String(cause))
+    },
+  }).pipe(
+    Effect.timeout(`${timeoutMs} millis`),
+    Effect.catchAll((cause) => {
+      // Timeout OR upstream error → treat as non-passing.
+      const reason =
+        cause instanceof Error && cause.name === "TimeoutException"
+          ? "timed out"
+          : "errored"
+      process.stderr.write(
+        `[probes] probe for ${criterion.id} ${reason} after ${timeoutMs}ms\n`,
+      )
+      return Effect.succeed(false)
+    }),
+  )
 
 /**
  * Given the parsed Test Strategy table from an ISA and a probe registry,
@@ -151,26 +149,26 @@ export const runProbe = (
  * Pure function — no I/O, easy to test.
  */
 export interface ProbeMatch {
- readonly criterion: CriterionEntry
- readonly probeName: string
- readonly probe: ProbeFn
+  readonly criterion: CriterionEntry
+  readonly probeName: string
+  readonly probe: ProbeFn
 }
 
 export const matchProbes = (
- criteria: ReadonlyArray<CriterionEntry>,
- testStrategy: ReadonlyMap<string, string>, // iscId → probe name
- registry: Readonly<Record<string, ProbeFn>>,
+  criteria: ReadonlyArray<CriterionEntry>,
+  testStrategy: ReadonlyMap<string, string>, // iscId → probe name
+  registry: Readonly<Record<string, ProbeFn>>,
 ): ReadonlyArray<ProbeMatch> => {
- const matches: ProbeMatch[] = []
- for (const c of criteria) {
- if (c.status !== "pending") continue
- const probeName = testStrategy.get(c.id)
- if (probeName === undefined) continue
- const probe = registry[probeName]
- if (probe === undefined) continue
- matches.push({ criterion: c, probeName, probe })
- }
- return matches
+  const matches: ProbeMatch[] = []
+  for (const c of criteria) {
+    if (c.status !== "pending") continue
+    const probeName = testStrategy.get(c.id)
+    if (probeName === undefined) continue
+    const probe = registry[probeName]
+    if (probe === undefined) continue
+    matches.push({ criterion: c, probeName, probe })
+  }
+  return matches
 }
 
 /**
@@ -183,25 +181,25 @@ export const matchProbes = (
  * Rows missing either side are silently skipped (best-effort).
  */
 export const parseTestStrategy = (
- body: string,
+  body: string,
 ): ReadonlyMap<string, string> => {
- const out = new Map<string, string>()
- for (const rawLine of body.split("\n")) {
- const line = rawLine.trim()
- if (line.length === 0) continue
- if (!line.startsWith("|")) continue
- if (/^\|\s*[-:]+\s*\|/.test(line)) continue // separator row
- const cells = line
- .split("|")
- .slice(1, -1) // drop leading/trailing empty from outer pipes
- .map((c) => c.trim())
- if (cells.length < 2) continue
- const first = cells[0]
- const last = cells[cells.length - 1]
- if (first === undefined || last === undefined) continue
- if (!/^ISC-[\w.-]+/.test(first)) continue
- if (last.length === 0) continue
- out.set(first, last)
- }
- return out
+  const out = new Map<string, string>()
+  for (const rawLine of body.split("\n")) {
+    const line = rawLine.trim()
+    if (line.length === 0) continue
+    if (!line.startsWith("|")) continue
+    if (/^\|\s*[-:]+\s*\|/.test(line)) continue // separator row
+    const cells = line
+      .split("|")
+      .slice(1, -1) // drop leading/trailing empty from outer pipes
+      .map((c) => c.trim())
+    if (cells.length < 2) continue
+    const first = cells[0]
+    const last = cells[cells.length - 1]
+    if (first === undefined || last === undefined) continue
+    if (!/^ISC-[\w.-]+/.test(first)) continue
+    if (last.length === 0) continue
+    out.set(first, last)
+  }
+  return out
 }

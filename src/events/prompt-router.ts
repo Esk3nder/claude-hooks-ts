@@ -5,16 +5,16 @@ import { SAFE_DEFAULT } from "../schema/decisions.ts"
 import { classifyPrompt } from "../policies/workflow-classifier.ts"
 import { SessionState } from "../services/session-state.ts"
 import {
- classify,
- renderClassificationLine,
- isSystemTextPrompt,
+  classify,
+  renderClassificationLine,
+  isSystemTextPrompt,
 } from "../algorithm/classifier.ts"
 import { getRecentContext } from "../algorithm/transcript-context.ts"
 import type { Inference } from "../services/inference.ts"
 import type { ClaudeSubprocess } from "../services/claude-subprocess.ts"
 import {
- ClassifierTelemetry,
- buildRecord,
+  ClassifierTelemetry,
+  buildRecord,
 } from "../services/classifier-telemetry.ts"
 
 /**
@@ -48,56 +48,56 @@ import {
  * rate.
  */
 export const handleUserPromptSubmit = (
- payload: HookPayload,
+  payload: HookPayload,
 ): Effect.Effect<
- HookDecision,
- never,
- SessionState | Inference | ClaudeSubprocess | ClassifierTelemetry
+  HookDecision,
+  never,
+  SessionState | Inference | ClaudeSubprocess | ClassifierTelemetry
 > =>
- Effect.gen(function* () {
- if (payload._tag !== "UserPromptSubmit") return SAFE_DEFAULT
+  Effect.gen(function* () {
+    if (payload._tag !== "UserPromptSubmit") return SAFE_DEFAULT
 
- // Step 1 — system-text short-circuit.
- if (isSystemTextPrompt(payload.prompt)) {
- return SAFE_DEFAULT
- }
+    // Step 1 — system-text short-circuit.
+    if (isSystemTextPrompt(payload.prompt)) {
+      return SAFE_DEFAULT
+    }
 
- // Step 2 — regex workflow tagger.
- const { workflow, playbook } = classifyPrompt(payload.prompt)
- const state = yield* SessionState
- yield* state
- .update(payload.session_id, { last_workflow: workflow })
- .pipe(Effect.catchAll(() => Effect.succeed(undefined)))
+    // Step 2 — regex workflow tagger.
+    const { workflow, playbook } = classifyPrompt(payload.prompt)
+    const state = yield* SessionState
+    yield* state
+      .update(payload.session_id, { last_workflow: workflow })
+      .pipe(Effect.catchAll(() => Effect.succeed(undefined)))
 
- // Step 3 — transcript context. Effectful because it
- // reads from disk; isolated to a sync helper so failure is silent.
- const context = getRecentContext(payload.transcript_path)
+    // Step 3 — transcript context. Effectful because it
+    // reads from disk; isolated to a sync helper so failure is silent.
+    const context = getRecentContext(payload.transcript_path)
 
- // Step 4 — mode classifier with context.
- const classification = yield* classify(payload.prompt, { context })
- const modeLine = renderClassificationLine(classification)
- const workflowLine = `Detected workflow: ${workflow}. ${playbook}`
- const additionalContext = `${workflowLine}\n${modeLine}`
+    // Step 4 — mode classifier with context.
+    const classification = yield* classify(payload.prompt, { context })
+    const modeLine = renderClassificationLine(classification)
+    const workflowLine = `Detected workflow: ${workflow}. ${playbook}`
+    const additionalContext = `${workflowLine}\n${modeLine}`
 
- // Step 5 — telemetry (best-effort, never blocks).
- const telemetry = yield* ClassifierTelemetry
- yield* telemetry.append(
- buildRecord({
- sessionId: payload.session_id,
- prompt: payload.prompt,
- mode: classification.mode,
- tier: classification.tier,
- modeReason: classification.reason,
- source: classification.source,
- latencyMs: classification.latencyMs,
- }),
- )
+    // Step 5 — telemetry (best-effort, never blocks).
+    const telemetry = yield* ClassifierTelemetry
+    yield* telemetry.append(
+      buildRecord({
+        sessionId: payload.session_id,
+        prompt: payload.prompt,
+        mode: classification.mode,
+        tier: classification.tier,
+        modeReason: classification.reason,
+        source: classification.source,
+        latencyMs: classification.latencyMs,
+      }),
+    )
 
- const out: HookDecision = {
- hookSpecificOutput: {
- hookEventName: "UserPromptSubmit",
- additionalContext,
- },
- }
- return out
- })
+    const out: HookDecision = {
+      hookSpecificOutput: {
+        hookEventName: "UserPromptSubmit",
+        additionalContext,
+      },
+    }
+    return out
+  })

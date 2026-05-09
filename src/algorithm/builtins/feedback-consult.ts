@@ -25,7 +25,7 @@ import { join } from "node:path"
 const FEEDBACK_SUBPATH = [".claude-hooks", "feedback"] as const
 
 export const feedbackDirFor = (root: string = process.cwd()): string =>
- join(root, ...FEEDBACK_SUBPATH)
+  join(root, ...FEEDBACK_SUBPATH)
 
 /** Default cap on results — enough to surface signal without flooding context. */
 const DEFAULT_MAX_RESULTS = 5
@@ -34,18 +34,18 @@ const DEFAULT_MAX_RESULTS = 5
 const EXCERPT_CHARS = 320
 
 export interface FeedbackMatch {
- /** Absolute path to the memo file. */
- readonly path: string
- /** Filename basename (e.g. "feedback_classifier.md") for display. */
- readonly name: string
- /** Number of distinct supplied keywords found in the memo body. */
- readonly hits: number
- /** First passage in the memo containing any keyword, capped at 320 chars. */
- readonly excerpt: string
+  /** Absolute path to the memo file. */
+  readonly path: string
+  /** Filename basename (e.g. "feedback_classifier.md") for display. */
+  readonly name: string
+  /** Number of distinct supplied keywords found in the memo body. */
+  readonly hits: number
+  /** First passage in the memo containing any keyword, capped at 320 chars. */
+  readonly excerpt: string
 }
 
 const escapeRegex = (s: string): string =>
- s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
+  s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
 
 /**
  * Build a case-insensitive boundary-matching regex from keywords. Empty
@@ -53,12 +53,12 @@ const escapeRegex = (s: string): string =>
  * treats as "no signal, return nothing").
  */
 const buildKeywordRegex = (keywords: ReadonlyArray<string>): RegExp | null => {
- const cleaned = keywords
- .map((k) => k.trim())
- .filter((k) => k.length > 0)
- .map(escapeRegex)
- if (cleaned.length === 0) return null
- return new RegExp(`\\b(?:${cleaned.join("|")})\\b`, "gi")
+  const cleaned = keywords
+    .map((k) => k.trim())
+    .filter((k) => k.length > 0)
+    .map(escapeRegex)
+  if (cleaned.length === 0) return null
+  return new RegExp(`\\b(?:${cleaned.join("|")})\\b`, "gi")
 }
 
 /**
@@ -67,18 +67,20 @@ const buildKeywordRegex = (keywords: ReadonlyArray<string>): RegExp | null => {
  * clipped to EXCERPT_CHARS.
  */
 const buildExcerpt = (body: string, re: RegExp): string => {
- re.lastIndex = 0
- const m = re.exec(body)
- if (m === null || m.index === undefined) {
- return body.slice(0, EXCERPT_CHARS)
- }
- // Paragraph bounds: blank-line on either side.
- const before = body.slice(0, m.index).lastIndexOf("\n\n")
- const after = body.indexOf("\n\n", m.index)
- const start = before >= 0 ? before + 2 : 0
- const end = after >= 0 ? after : body.length
- const para = body.slice(start, end).trim()
- return para.length > EXCERPT_CHARS ? `${para.slice(0, EXCERPT_CHARS - 3)}...` : para
+  re.lastIndex = 0
+  const m = re.exec(body)
+  if (m === null || m.index === undefined) {
+    return body.slice(0, EXCERPT_CHARS)
+  }
+  // Paragraph bounds: blank-line on either side.
+  const before = body.slice(0, m.index).lastIndexOf("\n\n")
+  const after = body.indexOf("\n\n", m.index)
+  const start = before >= 0 ? before + 2 : 0
+  const end = after >= 0 ? after : body.length
+  const para = body.slice(start, end).trim()
+  return para.length > EXCERPT_CHARS
+    ? `${para.slice(0, EXCERPT_CHARS - 3)}...`
+    : para
 }
 
 /**
@@ -87,23 +89,23 @@ const buildExcerpt = (body: string, re: RegExp): string => {
  * keyword 10 times.
  */
 const countDistinctHits = (
- body: string,
- keywords: ReadonlyArray<string>,
+  body: string,
+  keywords: ReadonlyArray<string>,
 ): number => {
- const lowBody = body.toLowerCase()
- let hits = 0
- for (const k of keywords) {
- const trimmed = k.trim().toLowerCase()
- if (trimmed.length === 0) continue
- if (lowBody.includes(trimmed)) hits += 1
- }
- return hits
+  const lowBody = body.toLowerCase()
+  let hits = 0
+  for (const k of keywords) {
+    const trimmed = k.trim().toLowerCase()
+    if (trimmed.length === 0) continue
+    if (lowBody.includes(trimmed)) hits += 1
+  }
+  return hits
 }
 
 export interface ConsultOptions {
- readonly maxResults?: number
- /** Override default feedback directory location. */
- readonly dir?: string
+  readonly maxResults?: number
+  /** Override default feedback directory location. */
+  readonly dir?: string
 }
 
 /**
@@ -117,47 +119,47 @@ export interface ConsultOptions {
  * - no memos match
  */
 export const consultFeedback = (
- keywords: ReadonlyArray<string>,
- opts?: ConsultOptions,
+  keywords: ReadonlyArray<string>,
+  opts?: ConsultOptions,
 ): ReadonlyArray<FeedbackMatch> => {
- const re = buildKeywordRegex(keywords)
- if (re === null) return []
- const dir = opts?.dir ?? feedbackDirFor()
- if (!existsSync(dir)) return []
- let entries: ReadonlyArray<string>
- try {
- entries = readdirSync(dir)
- } catch {
- return []
- }
- const matches: Array<FeedbackMatch & { mtime: number }> = []
- for (const name of entries) {
- if (!name.endsWith(".md")) continue
- const path = join(dir, name)
- let body: string
- let mtime = 0
- try {
- body = readFileSync(path, "utf-8")
- mtime = statSync(path).mtimeMs
- } catch {
- continue
- }
- const hits = countDistinctHits(body, keywords)
- if (hits === 0) continue
- matches.push({
- path,
- name,
- hits,
- excerpt: buildExcerpt(body, re),
- mtime,
- })
- }
- matches.sort((a, b) => b.hits - a.hits || b.mtime - a.mtime)
- const max = opts?.maxResults ?? DEFAULT_MAX_RESULTS
- return matches.slice(0, max).map(({ mtime: _mtime, ...rest }) => {
- void _mtime
- return rest
- })
+  const re = buildKeywordRegex(keywords)
+  if (re === null) return []
+  const dir = opts?.dir ?? feedbackDirFor()
+  if (!existsSync(dir)) return []
+  let entries: ReadonlyArray<string>
+  try {
+    entries = readdirSync(dir)
+  } catch {
+    return []
+  }
+  const matches: Array<FeedbackMatch & { mtime: number }> = []
+  for (const name of entries) {
+    if (!name.endsWith(".md")) continue
+    const path = join(dir, name)
+    let body: string
+    let mtime = 0
+    try {
+      body = readFileSync(path, "utf-8")
+      mtime = statSync(path).mtimeMs
+    } catch {
+      continue
+    }
+    const hits = countDistinctHits(body, keywords)
+    if (hits === 0) continue
+    matches.push({
+      path,
+      name,
+      hits,
+      excerpt: buildExcerpt(body, re),
+      mtime,
+    })
+  }
+  matches.sort((a, b) => b.hits - a.hits || b.mtime - a.mtime)
+  const max = opts?.maxResults ?? DEFAULT_MAX_RESULTS
+  return matches.slice(0, max).map(({ mtime: _mtime, ...rest }) => {
+    void _mtime
+    return rest
+  })
 }
 
 /**
@@ -165,12 +167,15 @@ export const consultFeedback = (
  * string when no matches — caller decides whether to emit at all.
  */
 export const renderConsultBlock = (
- matches: ReadonlyArray<FeedbackMatch>,
+  matches: ReadonlyArray<FeedbackMatch>,
 ): string => {
- if (matches.length === 0) return ""
- const header = `FeedbackMemoryConsult: ${matches.length} prior memo(s) match`
- const body = matches
- .map((m) => `- ${m.name} (${m.hits} hit${m.hits === 1 ? "" : "s"}): ${m.excerpt.split("\n")[0]?.slice(0, 200) ?? ""}`)
- .join("\n")
- return `${header}\n${body}`
+  if (matches.length === 0) return ""
+  const header = `FeedbackMemoryConsult: ${matches.length} prior memo(s) match`
+  const body = matches
+    .map(
+      (m) =>
+        `- ${m.name} (${m.hits} hit${m.hits === 1 ? "" : "s"}): ${m.excerpt.split("\n")[0]?.slice(0, 200) ?? ""}`,
+    )
+    .join("\n")
+  return `${header}\n${body}`
 }

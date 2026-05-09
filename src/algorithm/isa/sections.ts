@@ -33,29 +33,29 @@
  * re-declaring names.
  */
 export const ISA_SECTIONS_V2_7 = [
- "Problem",
- "Vision",
- "Out of Scope",
- "Principles",
- "Constraints",
- "Goal",
- "Criteria",
- "Test Strategy",
- "Features",
- "Decisions",
- "Changelog",
- "Verification",
+  "Problem",
+  "Vision",
+  "Out of Scope",
+  "Principles",
+  "Constraints",
+  "Goal",
+  "Criteria",
+  "Test Strategy",
+  "Features",
+  "Decisions",
+  "Changelog",
+  "Verification",
 ] as const
 
 export type IsaSectionName = (typeof ISA_SECTIONS_V2_7)[number]
 
 export interface IsaSection {
- /** Canonical section name (one of ISA_SECTIONS_V2_7). */
- readonly name: IsaSectionName
- /** Body text — everything after the heading line until the next H2 / YAML terminator / EOF. */
- readonly body: string
- /** Original heading line as it appeared (may include parenthesized qualifier). */
- readonly rawHeading: string
+  /** Canonical section name (one of ISA_SECTIONS_V2_7). */
+  readonly name: IsaSectionName
+  /** Body text — everything after the heading line until the next H2 / YAML terminator / EOF. */
+  readonly body: string
+  /** Original heading line as it appeared (may include parenthesized qualifier). */
+  readonly rawHeading: string
 }
 
 /**
@@ -69,13 +69,13 @@ export interface IsaSection {
  * accept those variants here too via a one-shot lookup.
  */
 const headingRegexFor = (name: IsaSectionName): RegExp => {
- if (name === "Criteria") {
- return /^(?:##\s+(?:ISC\s+)?Criteria\b[^\n]*|##\s+IDEAL\s+STATE\s+CRITERIA\b[^\n]*)$/im
- }
- // Escape regex metachars in the name (none of the v2.7 names need it,
- // but defensive against future additions).
- const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
- return new RegExp(`^##\\s+${escaped}\\b[^\\n]*$`, "im")
+  if (name === "Criteria") {
+    return /^(?:##\s+(?:ISC\s+)?Criteria\b[^\n]*|##\s+IDEAL\s+STATE\s+CRITERIA\b[^\n]*)$/im
+  }
+  // Escape regex metachars in the name (none of the v2.7 names need it,
+  // but defensive against future additions).
+  const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
+  return new RegExp(`^##\\s+${escaped}\\b[^\\n]*$`, "im")
 }
 
 /**
@@ -85,30 +85,29 @@ const headingRegexFor = (name: IsaSectionName): RegExp => {
  * present so leading `---\n…\n---` doesn't trip the section-end terminator.
  */
 export const parseSections = (
- content: string,
+  content: string,
 ): ReadonlyMap<IsaSectionName, IsaSection> => {
- const stripped = content.replace(/^---\n[\s\S]*?\n---\n?/, "")
- const out = new Map<IsaSectionName, IsaSection>()
- for (const name of ISA_SECTIONS_V2_7) {
- const re = headingRegexFor(name)
- const m = re.exec(stripped)
- if (!m || m.index === undefined) continue
- const headingLine = m[0]
- const startOfBody = m.index + headingLine.length
- const rest = stripped.slice(startOfBody)
- // End at next H2 (`## ` not `### `) or YAML doc terminator.
- const endMatch = rest.match(/\n##\s+(?!#)|\n---\s*\n/)
- const body = endMatch ? rest.slice(0, endMatch.index) : rest
- out.set(name, {
- name,
- body: body.replace(/^\n+/, "").replace(/\n+$/, ""),
- rawHeading: headingLine.trim(),
- })
- }
- return out
+  const stripped = content.replace(/^---\n[\s\S]*?\n---\n?/, "")
+  const out = new Map<IsaSectionName, IsaSection>()
+  for (const name of ISA_SECTIONS_V2_7) {
+    const re = headingRegexFor(name)
+    const m = re.exec(stripped)
+    if (!m || m.index === undefined) continue
+    const headingLine = m[0]
+    const startOfBody = m.index + headingLine.length
+    const rest = stripped.slice(startOfBody)
+    // End at next H2 (`## ` not `### `) or YAML doc terminator.
+    const endMatch = rest.match(/\n##\s+(?!#)|\n---\s*\n/)
+    const body = endMatch ? rest.slice(0, endMatch.index) : rest
+    out.set(name, {
+      name,
+      body: body.replace(/^\n+/, "").replace(/\n+$/, ""),
+      rawHeading: headingLine.trim(),
+    })
+  }
+  return out
 }
 
 /** Convenience: which canonical sections are present in this ISA body. */
-export const presentSections = (
- content: string,
-): ReadonlySet<IsaSectionName> => new Set(parseSections(content).keys())
+export const presentSections = (content: string): ReadonlySet<IsaSectionName> =>
+  new Set(parseSections(content).keys())
