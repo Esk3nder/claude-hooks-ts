@@ -16,6 +16,7 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import * as os from "node:os";
+import { spawnSync } from "node:child_process";
 
 const DISPATCHER_MARKERS = ["claude-hooks-ts/bin/claude-hook", "claude-hook"];
 const DEFAULT_TARGET = path.join(os.homedir(), ".claude", "settings.json");
@@ -73,23 +74,53 @@ const HOOK_EVENTS: ReadonlyArray<HookEvent> = [
 ];
 
 /**
+ * Lazy build. `bun add -g` blocks postinstall scripts by default, so we
+ * cannot rely on `scripts/build.ts` having been run at install time.
+ * Instead we build on first --apply, which is when the user has already
+ * committed to the install. Returns true on success.
+ */
+const tryBuild = (
+  installRoot: string,
+  out: NodeJS.WritableStream,
+): boolean => {
+  const buildScript = path.join(installRoot, "scripts", "build.ts");
+  if (!fs.existsSync(buildScript)) return false;
+  out.write(`${CYAN}build:${RESET} compiling claude-hook for ${process.platform}-${process.arch}\n`);
+  const r = spawnSync("bun", ["run", buildScript], {
+    cwd: installRoot,
+    stdio: ["ignore", "inherit", "inherit"],
+  });
+  return r.status === 0;
+};
+
+/**
  * Resolve the hook command path. Prefer the compiled single-binary at
- * `<installRoot>/dist/claude-hook-<platform>-<arch>` for ~3x cold-start win.
- * Fall back to the bun-run shim at `<installRoot>/bin/claude-hook` when the
- * binary is missing OR when --no-binary is set OR on macOS where unsigned
- * compiled binaries are killed by the OS sandbox.
+ * `<installRoot>/dist/claude-hook-<platform>-<arch>` — the bundled bun
+ * runtime makes it independent of the subprocess PATH (which Claude Code
+ * sanitizes). Build it lazily if missing. Fall back to the bash shim at
+ * `<installRoot>/bin/claude-hook` only when --no-binary is set or the
+ * build fails.
  */
 const resolveDispatcherPath = (
   installRoot: string,
   noBinary: boolean,
+  out: NodeJS.WritableStream = process.stdout,
 ): string => {
-  if (noBinary || process.platform === "darwin") {
+  if (noBinary) {
     return path.join(installRoot, "bin", "claude-hook");
   }
   const archMap: Record<string, string> = { x64: "x64", arm64: "arm64" };
   const arch = archMap[process.arch] ?? process.arch;
-  const platform = process.platform === "linux" ? "linux" : process.platform;
+  const platform =
+    process.platform === "linux"
+      ? "linux"
+      : process.platform === "darwin"
+        ? "darwin"
+        : process.platform;
   const binary = path.join(installRoot, "dist", `claude-hook-${platform}-${arch}`);
+  if (!fs.existsSync(binary)) {
+    tryBuild(installRoot, out);
+  }
   try {
     fs.accessSync(binary, fs.constants.X_OK);
     return binary;
@@ -101,11 +132,12 @@ const resolveDispatcherPath = (
 const buildEntries = (
   installRoot: string,
   noBinary: boolean = false,
+  out: NodeJS.WritableStream = process.stdout,
 ): Record<HookEvent, HookMatcher[]> => {
-  const dispatcher = resolveDispatcherPath(installRoot, noBinary);
-  const out: Record<HookEvent, HookMatcher[]> = {};
+  const dispatcher = resolveDispatcherPath(installRoot, noBinary, out);
+  const entries: Record<HookEvent, HookMatcher[]> = {};
   for (const ev of HOOK_EVENTS) {
-    out[ev] = [
+    entries[ev] = [
       {
         hooks: [
           {
@@ -117,7 +149,7 @@ const buildEntries = (
       },
     ];
   }
-  return out;
+  return entries;
 };
 
 const readJsonOr = <T>(file: string, fallback: T): T => {
@@ -251,7 +283,7 @@ export const runInstallDetailed = (
 ): InstallResult => {
   const args = parseArgs(argv);
   const existing = readJsonOr<SettingsShape>(args.target, {});
-  const ours = buildEntries(args.installRoot, args.noBinary);
+  const ours = buildEntries(args.installRoot, args.noBinary, out);
   const merged = mergeHooks(
     existing,
     ours,
