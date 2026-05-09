@@ -50,20 +50,30 @@ See [`docs/HOOK-EVENTS.md`](./docs/HOOK-EVENTS.md) for the full per-event refere
 
 ## Install
 
-Requires [Bun](https://bun.sh).
+Requires:
+- [Bun](https://bun.sh) on PATH.
+- The [Claude Code CLI](https://docs.claude.com/claude-code) installed and signed in. The mode classifier shells out to `claude --print`; without it every prompt silently falls back to `ALGORITHM E3` (technically working but the classifier is the whole point — see [Verify](#verify) for how to confirm).
 
 ```bash
 bun add -g github:Esk3nder/claude-hooks-ts
 claude-hooks-install --dry-run                  # preview the merge first
 claude-hooks-install --apply                    # write atomically with .bak backup
-claude-hooks-init                               # create per-project state dir
-claude-hooks-init --install-skills              # opt-in skill bundle (~/.claude/skills/_bundled/)
+
+cd /path/to/your/project                        # init is per-project — run it INSIDE the project
+claude-hooks-init                               # create <project>/.claude-hooks/state/
+claude-hooks-init --install-skills              # opt-in skill bundle (see "Skill bundle" below)
 claude-hooks-doctor                             # verify wiring + algorithm setup
 ```
 
 The installer merges hook entries into `~/.claude/settings.json` (or `--target <path>`), preserving unrelated keys. The previous file is backed up to `<target>.bak.<ISO-timestamp>` before any write. Install is idempotent.
 
-`claude-hooks-init` is opt-in for everything destructive — it does NOT touch `~/.claude/skills/` unless you pass `--install-skills`. The default skill install namespaces under `_bundled/` to avoid colliding with your existing skills; pass `--into-root --force` for the flat layout.
+`claude-hooks-init` writes into the **current working directory's** `.claude-hooks/` — always `cd` into your project first. It is opt-in for everything destructive: it does NOT touch `~/.claude/settings.json`, does NOT spawn subprocesses, and does NOT touch `~/.claude/skills/` unless you pass `--install-skills`.
+
+### Skill bundle
+
+The `--install-skills` flag installs ~15 SKILL.md stubs that declare `algorithm_capability: thinking`. The Algorithm's **capability phantom audit** rejects paraphrased capability names by checking them against installed skills — without these stubs the audit has nothing to enforce against and silently noops. Install them if you're using the Algorithm layer; skip if you only want the hooks layer.
+
+The default install namespaces under `~/.claude/skills/_bundled/<Name>/` to avoid colliding with skills you already have. `--into-root` installs flat at `~/.claude/skills/<Name>/`; combined with `--force` it will overwrite same-named skill files in place — only use this if you specifically want the flat layout AND have audited the collisions.
 
 To uninstall:
 ```bash
@@ -90,6 +100,12 @@ claude-hooks-doctor
 ```
 
 End-to-end checks: bun on PATH, settings.json parseable, wired hook commands resolve, state dir writable, dispatcher round-trip succeeds, **classifier subprocess available, classifier billing path, thinking-capability skill stubs installed, active ISA + phase + progress**. Exits non-zero on any FAIL. Use `--verbose` for details, `--json` for machine output.
+
+Two checks report `[INFO]` rather than `[FAIL]` when missing — read them, don't skip them:
+- `classifier subprocess available` — `[INFO]` if `claude` isn't on PATH; the dispatcher works but every prompt becomes ALGORITHM E3 fail-safe.
+- `thinking-capability skill stubs installed` — `[INFO]` if you didn't run `claude-hooks-init --install-skills`; the Algorithm's capability phantom audit silently noops.
+
+If you want either of those features actually enforcing, both lines need to read `[PASS]`.
 
 ---
 
