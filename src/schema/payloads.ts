@@ -16,7 +16,22 @@ const ToolCommon = {
   tool_use_id: Schema.optional(Schema.String),
 }
 
-export const SessionStart = Schema.TaggedStruct("SessionStart", {
+/**
+ * Build a hook-payload variant that:
+ *   - Decodes from the wire format Claude Code actually sends (no `_tag`,
+ *     uses `hook_event_name` as the discriminator).
+ *   - Carries an Effect-style `_tag` on the decoded type so existing handler
+ *     code (`payload._tag === "PreToolUse"`, etc.) keeps working unchanged.
+ *
+ * Use this instead of `Schema.TaggedStruct` for any schema modeling an
+ * external protocol where the producer does NOT serialize `_tag`.
+ */
+const variant = <Tag extends string, Fields extends Schema.Struct.Fields>(
+  tag: Tag,
+  fields: Fields,
+) => Schema.Struct(fields).pipe(Schema.attachPropertySignature("_tag", tag))
+
+export const SessionStart = variant("SessionStart", {
   ...Common,
   hook_event_name: Schema.Literal("SessionStart"),
   source: Schema.optional(Schema.String),
@@ -24,20 +39,20 @@ export const SessionStart = Schema.TaggedStruct("SessionStart", {
   agent_type: Schema.optional(Schema.String),
 })
 
-export const UserPromptSubmit = Schema.TaggedStruct("UserPromptSubmit", {
+export const UserPromptSubmit = variant("UserPromptSubmit", {
   ...Common,
   hook_event_name: Schema.Literal("UserPromptSubmit"),
   prompt: Schema.String,
 })
 
-export const UserPromptExpansion = Schema.TaggedStruct("UserPromptExpansion", {
+export const UserPromptExpansion = variant("UserPromptExpansion", {
   ...Common,
   hook_event_name: Schema.Literal("UserPromptExpansion"),
   prompt: Schema.String,
   expanded_prompt: Schema.optional(Schema.String),
 })
 
-export const PreToolUse = Schema.TaggedStruct("PreToolUse", {
+export const PreToolUse = variant("PreToolUse", {
   ...Common,
   ...ToolCommon,
   hook_event_name: Schema.Literal("PreToolUse"),
@@ -45,7 +60,7 @@ export const PreToolUse = Schema.TaggedStruct("PreToolUse", {
   tool_input: Schema.Unknown,
 })
 
-export const PostToolUse = Schema.TaggedStruct("PostToolUse", {
+export const PostToolUse = variant("PostToolUse", {
   ...Common,
   ...ToolCommon,
   hook_event_name: Schema.Literal("PostToolUse"),
@@ -54,7 +69,7 @@ export const PostToolUse = Schema.TaggedStruct("PostToolUse", {
   tool_response: Schema.Unknown,
 })
 
-export const PostToolUseFailure = Schema.TaggedStruct("PostToolUseFailure", {
+export const PostToolUseFailure = variant("PostToolUseFailure", {
   ...Common,
   ...ToolCommon,
   hook_event_name: Schema.Literal("PostToolUseFailure"),
@@ -64,7 +79,7 @@ export const PostToolUseFailure = Schema.TaggedStruct("PostToolUseFailure", {
   error_type: Schema.optional(Schema.String),
 })
 
-export const PostToolBatch = Schema.TaggedStruct("PostToolBatch", {
+export const PostToolBatch = variant("PostToolBatch", {
   ...Common,
   hook_event_name: Schema.Literal("PostToolBatch"),
   tools: Schema.Array(
@@ -82,32 +97,32 @@ export const PostToolBatch = Schema.TaggedStruct("PostToolBatch", {
  * `stop_hook_active` field; loop-protection must be tracked locally
  * via `SessionState.stop_blocked_once`.
  */
-export const Stop = Schema.TaggedStruct("Stop", {
+export const Stop = variant("Stop", {
   ...Common,
   hook_event_name: Schema.Literal("Stop"),
   assistant_message: Schema.optional(Schema.String),
 })
 
-export const PreCompact = Schema.TaggedStruct("PreCompact", {
+export const PreCompact = variant("PreCompact", {
   ...Common,
   hook_event_name: Schema.Literal("PreCompact"),
   trigger: Schema.optional(Schema.String),
   custom_instructions: Schema.optional(Schema.String),
 })
 
-export const PostCompact = Schema.TaggedStruct("PostCompact", {
+export const PostCompact = variant("PostCompact", {
   ...Common,
   hook_event_name: Schema.Literal("PostCompact"),
   trigger: Schema.optional(Schema.String),
 })
 
-export const SessionEnd = Schema.TaggedStruct("SessionEnd", {
+export const SessionEnd = variant("SessionEnd", {
   ...Common,
   hook_event_name: Schema.Literal("SessionEnd"),
   reason: Schema.optional(Schema.String),
 })
 
-export const PermissionRequest = Schema.TaggedStruct("PermissionRequest", {
+export const PermissionRequest = variant("PermissionRequest", {
   ...Common,
   ...ToolCommon,
   hook_event_name: Schema.Literal("PermissionRequest"),
@@ -116,14 +131,14 @@ export const PermissionRequest = Schema.TaggedStruct("PermissionRequest", {
   permission_suggestions: Schema.optional(Schema.Array(Schema.Unknown)),
 })
 
-export const ConfigChange = Schema.TaggedStruct("ConfigChange", {
+export const ConfigChange = variant("ConfigChange", {
   ...Common,
   hook_event_name: Schema.Literal("ConfigChange"),
   scope: Schema.optional(Schema.String),
   changes: Schema.optional(Schema.Unknown),
 })
 
-export const FileChanged = Schema.TaggedStruct("FileChanged", {
+export const FileChanged = variant("FileChanged", {
   ...Common,
   hook_event_name: Schema.Literal("FileChanged"),
   file_path: Schema.String,
@@ -138,7 +153,7 @@ export const FileChanged = Schema.TaggedStruct("FileChanged", {
  * Claude Code builds and existing tests, but the canonical fields are
  * `agent_type`, `agent_id`, `prompt`, `output`.
  */
-export const SubagentStart = Schema.TaggedStruct("SubagentStart", {
+export const SubagentStart = variant("SubagentStart", {
   ...Common,
   hook_event_name: Schema.Literal("SubagentStart"),
   agent_type: Schema.optional(Schema.String),
@@ -149,7 +164,7 @@ export const SubagentStart = Schema.TaggedStruct("SubagentStart", {
   task_id: Schema.optional(Schema.String),
 })
 
-export const SubagentStop = Schema.TaggedStruct("SubagentStop", {
+export const SubagentStop = variant("SubagentStop", {
   ...Common,
   hook_event_name: Schema.Literal("SubagentStop"),
   agent_type: Schema.optional(Schema.String),
@@ -161,14 +176,14 @@ export const SubagentStop = Schema.TaggedStruct("SubagentStop", {
   result: Schema.optional(Schema.String),
 })
 
-export const TaskCreated = Schema.TaggedStruct("TaskCreated", {
+export const TaskCreated = variant("TaskCreated", {
   ...Common,
   hook_event_name: Schema.Literal("TaskCreated"),
   task_id: Schema.String,
   description: Schema.optional(Schema.String),
 })
 
-export const TaskCompleted = Schema.TaggedStruct("TaskCompleted", {
+export const TaskCompleted = variant("TaskCompleted", {
   ...Common,
   hook_event_name: Schema.Literal("TaskCompleted"),
   task_id: Schema.String,
@@ -180,7 +195,7 @@ export const TaskCompleted = Schema.TaggedStruct("TaskCompleted", {
 /**
  * Setup — first-time project setup. Per spec, no `permission_mode`.
  */
-export const Setup = Schema.TaggedStruct("Setup", {
+export const Setup = variant("Setup", {
   ...Common,
   hook_event_name: Schema.Literal("Setup"),
   trigger: Schema.optional(Schema.Literal("init", "maintenance")),
@@ -190,7 +205,7 @@ export const Setup = Schema.TaggedStruct("Setup", {
  * PermissionDenied — fired after Claude Code rejects a permission request.
  * Carries `permission_mode` per spec (tool-related event).
  */
-export const PermissionDenied = Schema.TaggedStruct("PermissionDenied", {
+export const PermissionDenied = variant("PermissionDenied", {
   ...Common,
   permission_mode: Schema.optional(Schema.String),
   hook_event_name: Schema.Literal("PermissionDenied"),
@@ -202,28 +217,28 @@ export const PermissionDenied = Schema.TaggedStruct("PermissionDenied", {
 /**
  * StopFailure — failure inside a Stop hook. Per spec, no `permission_mode`.
  */
-export const StopFailure = Schema.TaggedStruct("StopFailure", {
+export const StopFailure = variant("StopFailure", {
   ...Common,
   hook_event_name: Schema.Literal("StopFailure"),
   error_type: Schema.String,
   error_message: Schema.String,
 })
 
-export const TeammateIdle = Schema.TaggedStruct("TeammateIdle", {
+export const TeammateIdle = variant("TeammateIdle", {
   ...Common,
   hook_event_name: Schema.Literal("TeammateIdle"),
   teammate_name: Schema.String,
   teammate_type: Schema.String,
 })
 
-export const Notification = Schema.TaggedStruct("Notification", {
+export const Notification = variant("Notification", {
   ...Common,
   hook_event_name: Schema.Literal("Notification"),
   notification_type: Schema.String,
   message: Schema.String,
 })
 
-export const InstructionsLoaded = Schema.TaggedStruct("InstructionsLoaded", {
+export const InstructionsLoaded = variant("InstructionsLoaded", {
   ...Common,
   hook_event_name: Schema.Literal("InstructionsLoaded"),
   file_path: Schema.String,
@@ -234,27 +249,27 @@ export const InstructionsLoaded = Schema.TaggedStruct("InstructionsLoaded", {
   parent_file_path: Schema.optional(Schema.String),
 })
 
-export const CwdChanged = Schema.TaggedStruct("CwdChanged", {
+export const CwdChanged = variant("CwdChanged", {
   ...Common,
   hook_event_name: Schema.Literal("CwdChanged"),
   previous_cwd: Schema.String,
   new_cwd: Schema.String,
 })
 
-export const WorktreeCreate = Schema.TaggedStruct("WorktreeCreate", {
+export const WorktreeCreate = variant("WorktreeCreate", {
   ...Common,
   hook_event_name: Schema.Literal("WorktreeCreate"),
   base_path: Schema.String,
   worktree_name: Schema.String,
 })
 
-export const WorktreeRemove = Schema.TaggedStruct("WorktreeRemove", {
+export const WorktreeRemove = variant("WorktreeRemove", {
   ...Common,
   hook_event_name: Schema.Literal("WorktreeRemove"),
   worktree_path: Schema.String,
 })
 
-export const Elicitation = Schema.TaggedStruct("Elicitation", {
+export const Elicitation = variant("Elicitation", {
   ...Common,
   hook_event_name: Schema.Literal("Elicitation"),
   server_name: Schema.String,
@@ -262,7 +277,7 @@ export const Elicitation = Schema.TaggedStruct("Elicitation", {
   elicitation: Schema.Unknown,
 })
 
-export const ElicitationResult = Schema.TaggedStruct("ElicitationResult", {
+export const ElicitationResult = variant("ElicitationResult", {
   ...Common,
   hook_event_name: Schema.Literal("ElicitationResult"),
   server_name: Schema.String,
