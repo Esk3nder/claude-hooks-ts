@@ -1,16 +1,16 @@
 /**
  * Tier completeness gate for ISA v2.7 / Algorithm v6.2.0+.
  *
- * NEW DESIGN (this package — not a port). PAI's `skills/ISA/Workflows/CheckCompleteness.md`
+ * NEW DESIGN (this package — not a port). this package's `skills/ISA/Workflows/CheckCompleteness.md`
  * describes the gate as a model-side workflow. This module is the
  * hook-readable version called out in IsaFormat.md line 213 as a forthcoming
  * patch. Required-section table is verbatim from IsaFormat.md lines 191-201:
  *
- *   E1 | Goal, Criteria
- *   E2 | Problem, Goal, Criteria, Test Strategy
- *   E3 | Problem, Vision, Out of Scope, Constraints, Goal, Criteria, Features, Test Strategy
- *   E4 | All twelve
- *   E5 | All twelve + active Interview workflow run before BUILD
+ * E1 | Goal, Criteria
+ * E2 | Problem, Goal, Criteria, Test Strategy
+ * E3 | Problem, Vision, Out of Scope, Constraints, Goal, Criteria, Features, Test Strategy
+ * E4 | All twelve
+ * E5 | All twelve + active Interview workflow run before BUILD
  *
  * Project ISA override (IsaFormat.md line 201): any `<project>/ISA.md`
  * requires E3+ structure regardless of task tier. Caller passes `isProjectIsa`
@@ -22,7 +22,11 @@
  * Stop on it.
  */
 
-import { ISA_SECTIONS_V2_7, parseSections, type IsaSectionName } from "./sections.ts"
+import {
+  ISA_SECTIONS_V2_7,
+  parseSections,
+  type IsaSectionName,
+} from "./sections.ts"
 
 import type { Tier } from "../../services/inference.ts"
 
@@ -80,8 +84,7 @@ export const checkCompleteness = (
   taskTier: Tier,
   opts?: CheckCompletenessOptions,
 ): CompletenessReport => {
-  const tier: Tier =
-    opts?.isProjectIsa === true && taskTier < 3 ? 3 : taskTier
+  const tier: Tier = opts?.isProjectIsa === true && taskTier < 3 ? 3 : taskTier
   const required = REQUIRED_SECTIONS_BY_TIER.get(tier) ?? []
   const present = parseSections(content)
   const missing: IsaSectionName[] = []

@@ -1,16 +1,20 @@
 import { describe, expect, test } from "bun:test"
 import { isSystemTextPrompt } from "../../src/algorithm/classifier.ts"
 
-describe("isSystemTextPrompt — PAI lines 125-131 verbatim port", () => {
+describe("isSystemTextPrompt — the classifier verbatim port", () => {
   test("matches <task-notification>", () => {
     expect(isSystemTextPrompt("<task-notification>foo")).toBe(true)
   })
   test("matches <system-reminder>", () => {
-    expect(isSystemTextPrompt("<system-reminder>x</system-reminder>")).toBe(true)
+    expect(isSystemTextPrompt("<system-reminder>x</system-reminder>")).toBe(
+      true,
+    )
   })
   test("matches 'This session is being continued from a previous conversation'", () => {
     expect(
-      isSystemTextPrompt("This session is being continued from a previous conversation"),
+      isSystemTextPrompt(
+        "This session is being continued from a previous conversation",
+      ),
     ).toBe(true)
   })
   test("matches 'Please continue the conversation'", () => {
@@ -21,7 +25,7 @@ describe("isSystemTextPrompt — PAI lines 125-131 verbatim port", () => {
   })
 
   test("ignores leading whitespace via prompt.trim()", () => {
-    expect(isSystemTextPrompt("   <system-reminder>x")).toBe(true)
+    expect(isSystemTextPrompt(" <system-reminder>x")).toBe(true)
   })
 
   test("does NOT match prompt that mentions <system-reminder> mid-text", () => {
@@ -34,7 +38,7 @@ describe("isSystemTextPrompt — PAI lines 125-131 verbatim port", () => {
     expect(isSystemTextPrompt("thanks")).toBe(false)
     expect(isSystemTextPrompt("/e3 do the migration")).toBe(false)
   })
-  test("case-insensitive (PAI uses /i flag)", () => {
+  test("case-insensitive (uses /i flag)", () => {
     expect(isSystemTextPrompt("<SYSTEM-REMINDER>x")).toBe(true)
     expect(isSystemTextPrompt("please continue the conversation")).toBe(true)
   })

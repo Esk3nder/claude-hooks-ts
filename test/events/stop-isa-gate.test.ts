@@ -9,12 +9,7 @@
  */
 import { describe, expect, test } from "bun:test"
 import { Effect, Schema } from "effect"
-import {
-  mkdtempSync,
-  mkdirSync,
-  writeFileSync,
-  rmSync,
-} from "node:fs"
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { handleStop } from "../../src/events/stop-definition-of-done.ts"
@@ -47,9 +42,7 @@ const runStop = async (
   initial: Partial<SessionStateRecord> = {},
 ): Promise<{ decision?: string; reason?: string }> => {
   const sessionId = "test-stop"
-  const seed = new Map([
-    [sessionId, { ...EMPTY_SESSION_STATE, ...initial }],
-  ])
+  const seed = new Map([[sessionId, { ...EMPTY_SESSION_STATE, ...initial }]])
   const payload = decode({
     _tag: "Stop",
     session_id: sessionId,
@@ -233,7 +226,9 @@ describe("Stop ISA gate — completeness check on phase: complete", () => {
       expect(out.decision).toBe("block")
       expect(out.reason ?? "").toContain("Tier Completeness Gate")
       // Missing sections from E3's required set — at least one must be named.
-      expect(out.reason ?? "").toMatch(/Vision|Out of Scope|Test Strategy|Features|Constraints|Problem/)
+      expect(out.reason ?? "").toMatch(
+        /Vision|Out of Scope|Test Strategy|Features|Constraints|Problem/,
+      )
     } finally {
       cleanup()
     }
@@ -331,7 +326,10 @@ describe("Stop ISA gate — completeness check on phase: complete", () => {
   test("malformed frontmatter (no fm at all) → gate skipped, falls through to existing gates", async () => {
     const { root, cleanup } = stage()
     try {
-      writeProjectIsa(root, "## Goal\nno frontmatter\n## Criteria\n- [ ] ISC-1: x\n")
+      writeProjectIsa(
+        root,
+        "## Goal\nno frontmatter\n## Criteria\n- [ ] ISC-1: x\n",
+      )
       // No frontmatter → gate noops → falls through. Verification gate fires
       // because files_changed > 0 + verification_status != passed.
       const out = await runStop(root, {
@@ -345,7 +343,7 @@ describe("Stop ISA gate — completeness check on phase: complete", () => {
     }
   })
 
-  test("phase value is case-insensitive (PAI tolerance)", async () => {
+  test("phase value is case-insensitive (tolerance)", async () => {
     const { root, cleanup } = stage()
     try {
       writeProjectIsa(

@@ -69,10 +69,10 @@ const rotateLargeLedgers = (cwd: string): number => {
 
 /**
  * Setup — supports two triggers:
- *   - `init`: ensures `.claude-hooks/` skeleton exists (state dir + a
- *     one-line README pointing at the upstream HOOK-EVENTS reference).
- *   - `maintenance`: forces an `Approvals.gc` pass and rotates oversized
- *     ledger JSONL files.
+ * - `init`: ensures `.claude-hooks/` skeleton exists (state dir + a
+ * one-line README pointing at this package HOOK-EVENTS reference).
+ * - `maintenance`: forces an `Approvals.gc` pass and rotates oversized
+ * ledger JSONL files.
  * In both cases a ledger entry is appended (best-effort).
  */
 export const handleSetup = (

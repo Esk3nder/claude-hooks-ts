@@ -22,16 +22,15 @@ export const handleTaskCreated = (
  * model-actionable block reason or null.
  *
  * Two block conditions:
- *   1. Active ISA has unchecked ISCs — task can't really be done if the
- *      written-down done-criteria aren't met.
- *   2. Active ISA has at least one ISC AND the `## Verification` section
- *      is empty / missing — the doctrine (IsaFormat.md:343-350) is that
- *      Verification names the evidence per ISC; declaring done with no
- *      written verification is the exact "TaskCompleted-without-evidence"
- *      anti-pattern this gate prevents.
+ * 1. Active ISA has unchecked ISCs — task can't really be done if the
+ * written-down done-criteria aren't met.
+ * 2. Active ISA has at least one ISC AND the `## Verification` section
+ * is empty / missing — Verification names the evidence per ISC, and
+ * declaring done with no written verification is the
+ * "TaskCompleted-without-evidence" anti-pattern this gate prevents.
  *
  * Returns null when no ISA is found at cwd — the gate is opt-in via ISA
- * presence, mirroring the Stop ISA-gate convention from slice 2d.
+ * presence (same convention as the Stop ISA-gate).
  */
 const checkIsaEvidence = (cwd: string): string | null => {
   const isaPath = findProjectIsa(cwd) ?? findLatestISA(cwd)

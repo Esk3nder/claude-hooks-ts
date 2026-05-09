@@ -1,38 +1,28 @@
 /**
- * Inference service — Sonnet classifier mirroring PAI's PromptProcessing.hook.ts
- * TASK 3 doctrine (file: ~/.claude/hooks/PromptProcessing.hook.ts, lines 734-766).
+ * Inference service — Sonnet classifier that decides MODE + TIER for a
+ * given user prompt. Identity-free: the rubric uses literal placeholders
+ * "the user" / "the assistant" and never resolves real principal names.
  *
- * Faithful port of PAI source of truth. Three deliberate adaptations from the
- * PAI hook are documented inline (and only there):
- *   1. PAI's hook does TASK 1 (tab title) + TASK 2 (session name) + TASK 3
- *      (mode/tier) in one inference call. This package only needs TASK 3, so
- *      the rubric below contains TASK 3 verbatim and drops TASK 1/2.
- *   2. PAI's hook resolves principal/assistant names via getPrincipal/getIdentity.
- *      This package is identity-free (CLAUDE-HOOKS-TS scope), so the rubric
- *      uses the literal placeholder "the user" / "the assistant". The classifier
- *      decisions don't depend on the names.
- *   3. PAI's `inference()` helper wraps the chokepoint and parses JSON. This
- *      package wires the same shape via `ClaudeSubprocess.spawn` + JSON parse.
- *
- * Everything else — model tier (Sonnet), classifier prompt body, JSON output
- * schema, fail-safe behavior, env scrubs, --exclude-dynamic-system-prompt-sections
- * cache flag, 25s timeout, cleanPrompt sanitization, image-args branch,
- * CONTEXT/CURRENT MESSAGE framing — mirrors PAI exactly.
+ * Configuration: model `sonnet`, --exclude-dynamic-system-prompt-sections
+ * for cache friendliness, 25s timeout (envelope under the dispatcher's
+ * 30s UserPromptSubmit cap). On any failure the classifier returns
+ * FAIL_SAFE (ALGORITHM E3) so the model never blocks on classifier
+ * trouble.
  */
 
 import { Context, Effect, Layer } from "effect"
 import { ClaudeSubprocess } from "./claude-subprocess.ts"
 
 export type Mode = "MINIMAL" | "NATIVE" | "ALGORITHM"
-/** Numeric tiers 1-5 internally — mirrors PAI's InferenceResult.tier shape.
- *  The `E${tier}` prefix is applied only at additionalContext emission. */
+/** Numeric tiers 1-5 internally — mirrors the InferenceResult.tier shape.
+ * The `E${tier}` prefix is applied only at additionalContext emission. */
 export type Tier = 1 | 2 | 3 | 4 | 5
 /**
- * Three-valued source. PAI distinguishes "fast-path" (deterministic gate
- * hit) from "classifier" (Sonnet subprocess) in telemetry (PAI line 877-879
- * vs line 1023). The additionalContext line itself only ever shows
- * "classifier" or "fail-safe" (PAI line 60 hardcodes "classifier" for both
- * fast-path and subprocess paths) — see renderClassificationLine.
+ * Three-valued source: `fast-path` for a deterministic gate hit, `classifier`
+ * for a Sonnet subprocess decision, `fail-safe` for the conservative default
+ * after any error. Telemetry preserves all three; the additionalContext line
+ * shown to the model collapses fast-path → classifier (see
+ * renderClassificationLine).
  */
 export type ClassificationSource = "classifier" | "fast-path" | "fail-safe"
 
@@ -52,13 +42,9 @@ export const FAIL_SAFE: Omit<Classification, "latencyMs" | "reason"> = {
 }
 
 /**
- * Classifier rubric — PORTED VERBATIM from PAI's
- * ~/.claude/hooks/PromptProcessing.hook.ts buildContextPrompt() TASK 3
- * (lines 734-766). Re-port required if PAI's TASK 3 changes; doctrine version
- * pinned to Algorithm v6.3.0.
- *
- * Editing this string outside of a "re-port from PAI" PR is a doctrine
- * violation. Tests in inference.test.ts pin every doctrine clause.
+ * Canonical classifier rubric for Algorithm v6.3.0. Tests in
+ * inference.test.ts pin every clause; if you change the rubric, update
+ * the tests in the same commit.
  */
 export const CLASSIFIER_SYSTEM_PROMPT = `You analyze user messages to extract what response mode is required. The user is the only one sending prompts. The AI assistant responds.
 
@@ -89,13 +75,13 @@ Mode examples:
 
 OUTPUT FORMAT (JSON only, single object on one line, no prose, no markdown):
 {
-  "mode": "MINIMAL" | "NATIVE" | "ALGORITHM",
-  "tier": 1 | 2 | 3 | 4 | 5 | null,
-  "mode_reason": "<one short sentence>"
+ "mode": "MINIMAL" | "NATIVE" | "ALGORITHM",
+ "tier": 1 | 2 | 3 | 4 | 5 | null,
+ "mode_reason": "<one short sentence>"
 }`
 
 /**
- * Default subprocess timeout — mirrors PAI line 939 (`timeout: 25000`).
+ * Default subprocess timeout — implements the classifier (`timeout: 25000`).
  * The dispatcher's UserPromptSubmit cap (30s) gives 5s of overhead headroom.
  */
 const DEFAULT_TIMEOUT_MS = 25_000
@@ -104,17 +90,21 @@ const MODES: ReadonlySet<Mode> = new Set(["MINIMAL", "NATIVE", "ALGORITHM"])
 const VALID_TIERS: ReadonlySet<number> = new Set([1, 2, 3, 4, 5])
 
 /**
- * cleanPrompt — PORTED VERBATIM from PAI line 926.
+ * cleanPrompt — the classifier.
  * Strips HTML/tag-shaped tokens, normalizes whitespace, caps at 1000 chars
  * before sending to the classifier. Prevents `<system-reminder>` blocks and
  * other injected markup from contaminating Sonnet's input.
  */
 export const cleanPrompt = (prompt: string): string =>
-  prompt.replace(/<[^>]*>/g, " ").replace(/\s+/g, " ").trim().slice(0, 1000)
+  prompt
+    .replace(/<[^>]*>/g, " ")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, 1000)
 
 /**
- * Build the user prompt sent to the classifier. PAI line 931 framing:
- *   `CONTEXT:\n${context}\n\nCURRENT MESSAGE:\n${cleanPrompt}`
+ * Build the user prompt sent to the classifier. The classifier framing:
+ * `CONTEXT:\n${context}\n\nCURRENT MESSAGE:\n${cleanPrompt}`
  * Without context, just the cleaned prompt.
  */
 export const buildUserPrompt = (
@@ -140,9 +130,9 @@ interface ParseFailure {
 }
 
 /**
- * Parse the classifier's JSON response. Mirrors PAI lines 943-1024 — extracts
+ * Parse the classifier's JSON response. implements the classifier — extracts
  * `mode`, `tier`, `mode_reason`. Tolerates leading/trailing prose and code
- * fences (some Sonnet runs wrap the JSON despite the rubric).
+ * fences (some Sonnet runs wrap the JSON despite the classifier rubric).
  */
 export const parseClassifierResponse = (
   raw: string,
@@ -185,7 +175,7 @@ export const parseClassifierResponse = (
   }
   if (mode !== "ALGORITHM") tier = null
   // B6: whitespace-only mode_reason was passing the length check, leaking
-  // useless "   " strings into additionalContext. Trim before length check.
+  // useless " " strings into additionalContext. Trim before length check.
   const trimmedReason =
     typeof r.mode_reason === "string" ? r.mode_reason.trim() : ""
   const reason = trimmedReason.length > 0 ? trimmedReason : "(no reason given)"
@@ -194,14 +184,14 @@ export const parseClassifierResponse = (
 
 export interface ClassifyOptions {
   readonly timeoutMs?: number
-  /** Recent conversation context (PAI getRecentContext output). When present,
-   *  prepended as `CONTEXT:\n${context}\n\nCURRENT MESSAGE:\n${cleanPrompt}`.
-   *  This is what makes the doctrine rule "single-word approvals NEVER
-   *  MINIMAL" actually fire — Sonnet needs the prior turn to disambiguate. */
+  /** Recent conversation context (getRecentContext output). When present,
+   * prepended as `CONTEXT:\n${context}\n\nCURRENT MESSAGE:\n${cleanPrompt}`.
+   * This is what makes the rule "single-word approvals NEVER
+   * MINIMAL" actually fire — Sonnet needs the prior turn to disambiguate. */
   readonly context?: string
-  /** Optional image file paths. Mirrors PAI Inference.ts:73-74 — when present,
-   *  Read tool is enabled and `@path` references are prepended. The classifier
-   *  does not currently take images, but this is a faithful port. */
+  /** Optional image file paths. Mirrors the classifier — when present,
+   * Read tool is enabled and `@path` references are prepended. The classifier
+   * does not currently take images, but this is a . */
   readonly imagePaths?: ReadonlyArray<string>
 }
 
@@ -222,9 +212,9 @@ export class Inference extends Context.Tag("Inference")<
 >() {}
 
 /**
- * Build CLI args. Mirrors PAI Inference.ts:120-128 exactly, including the
+ * Build CLI args. Mirrors the classifier exactly, including the
  * image-args branch that swaps `--tools ''` for `--allowedTools Read`.
- * `--model sonnet` because Algorithm v6.3.0 line 73 specifies a Sonnet
+ * `--model sonnet` because Algorithm v6.3.0ifies a Sonnet
  * classifier.
  */
 const buildArgs = (hasImages: boolean): ReadonlyArray<string> => [
@@ -242,7 +232,7 @@ const buildArgs = (hasImages: boolean): ReadonlyArray<string> => [
 ]
 
 /**
- * Build the stdin payload. PAI Inference.ts:130-132 prepends @-references
+ * Build the stdin payload. The classifier prepends @-references
  * for image inputs; otherwise just the user prompt (already CONTEXT-framed
  * and cleaned by buildUserPrompt).
  */
@@ -260,24 +250,23 @@ const liveImpl: InferenceApi = {
     Effect.gen(function* () {
       const subproc = yield* ClaudeSubprocess
       const timeoutMs = opts?.timeoutMs ?? DEFAULT_TIMEOUT_MS
-      const hasImages = opts?.imagePaths !== undefined && opts.imagePaths.length > 0
+      const hasImages =
+        opts?.imagePaths !== undefined && opts.imagePaths.length > 0
       const framed = buildUserPrompt(prompt, opts?.context)
       const stdin = buildStdin(framed, opts?.imagePaths)
       const args = buildArgs(hasImages)
 
-      const result = yield* subproc
-        .spawn(args, { stdin, timeoutMs })
-        .pipe(
-          Effect.catchAll((err) =>
-            Effect.succeed({
-              stdout: "",
-              stderr: `spawn-error: ${String(err)}`,
-              exitCode: -1,
-              latencyMs: 0,
-              timedOut: false,
-            }),
-          ),
-        )
+      const result = yield* subproc.spawn(args, { stdin, timeoutMs }).pipe(
+        Effect.catchAll((err) =>
+          Effect.succeed({
+            stdout: "",
+            stderr: `spawn-error: ${String(err)}`,
+            exitCode: -1,
+            latencyMs: 0,
+            timedOut: false,
+          }),
+        ),
+      )
 
       if (result.timedOut) {
         return {

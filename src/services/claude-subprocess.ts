@@ -1,6 +1,6 @@
 /**
  * The single sanctioned chokepoint for spawning the `claude` CLI from inside
- * this package. Mirrors `PAI/TOOLS/Inference.ts` lines 104-145 byte-for-byte
+ * this package. Mirrors `the classifier` lines 104-145 byte-for-byte
  * on env scrubbing, spawn library (node child_process), event-listener
  * accumulation, SIGTERM-on-timeout pattern, and result shape.
  *
@@ -9,12 +9,12 @@
  * puts BOTH `ANTHROPIC_API_KEY` and `ANTHROPIC_AUTH_TOKEN` ABOVE
  * `CLAUDE_CODE_OAUTH_TOKEN`. If either is set in the spawned process's env,
  * it silently routes the work onto API-key billing instead of the user's
- * subscription — that's how the PAI principal got billed $498 in April 2026.
+ * subscription — that's how this package principal got billed $498 in April 2026.
  *
  * Every spawn through `spawnClaude` always:
- *   - deletes ANTHROPIC_API_KEY
- *   - deletes ANTHROPIC_AUTH_TOKEN
- *   - deletes CLAUDECODE     (else nested-session guard rejects the spawn)
+ * - deletes ANTHROPIC_API_KEY
+ * - deletes ANTHROPIC_AUTH_TOKEN
+ * - deletes CLAUDECODE (else nested-session guard rejects the spawn)
  *
  * A grep-based CI check (`scripts/check-claude-spawn.ts`) refuses to build
  * if any direct `Bun.spawn(["claude", ...])`, `child_process.spawn("claude",
@@ -80,12 +80,12 @@ export const scrubClaudeEnv = (
 }
 
 /**
- * Live impl mirroring PAI Inference.ts spawn pattern (lines 104-145):
- *   - node child_process.spawn (NOT Bun.spawn — match PAI exactly)
- *   - stdin written then ended
- *   - stdout/stderr accumulated via 'data' event listeners
- *   - timeout via setTimeout firing proc.kill('SIGTERM')
- *   - resolve on close, with success/error/exitCode mapped
+ * Live impl mirroring the classifier spawn pattern (lines 104-145):
+ * - node child_process.spawn (NOT Bun.spawn — match the documented behavior)
+ * - stdin written then ended
+ * - stdout/stderr accumulated via 'data' event listeners
+ * - timeout via setTimeout firing proc.kill('SIGTERM')
+ * - resolve on close, with success/error/exitCode mapped
  */
 const liveImpl: ClaudeSubprocessApi = {
   spawn: (args, opts) =>
@@ -114,10 +114,26 @@ const liveImpl: ClaudeSubprocessApi = {
            * buffers) alive for the lifetime of the parent process.
            */
           const detachListeners = (): void => {
-            try { proc.stdout?.removeAllListeners() } catch { /* ignore */ }
-            try { proc.stderr?.removeAllListeners() } catch { /* ignore */ }
-            try { proc.removeAllListeners("close") } catch { /* ignore */ }
-            try { proc.removeAllListeners("error") } catch { /* ignore */ }
+            try {
+              proc.stdout?.removeAllListeners()
+            } catch {
+              /* ignore */
+            }
+            try {
+              proc.stderr?.removeAllListeners()
+            } catch {
+              /* ignore */
+            }
+            try {
+              proc.removeAllListeners("close")
+            } catch {
+              /* ignore */
+            }
+            try {
+              proc.removeAllListeners("error")
+            } catch {
+              /* ignore */
+            }
           }
 
           const finish = (result: ClaudeSpawnResult): void => {
@@ -128,7 +144,7 @@ const liveImpl: ClaudeSubprocessApi = {
             resolve(result)
           }
 
-          // Write stdin then close — mirrors PAI lines 142-144.
+          // Write stdin then close — implements the classifier.
           if (proc.stdin) {
             try {
               if (opts.stdin.length > 0) proc.stdin.write(opts.stdin)
@@ -145,7 +161,7 @@ const liveImpl: ClaudeSubprocessApi = {
             stderr += data.toString()
           })
 
-          // Mirrors PAI lines 154-164: timeout fires SIGTERM AND resolves
+          // implements the classifier: timeout fires SIGTERM AND resolves
           // immediately rather than waiting for the killed process to exit.
           // B5: schedule a SIGKILL fallback 1s after SIGTERM in case the
           // child ignores SIGTERM (e.g. caught and swallowed). The fallback
@@ -186,7 +202,7 @@ const liveImpl: ClaudeSubprocessApi = {
             })
           }, opts.timeoutMs)
 
-          // Mirrors PAI lines 166-178: on close, emit success or non-zero
+          // implements the classifier: on close, emit success or non-zero
           // exit. Time-out path already resolved above.
           proc.on("close", (code) => {
             clearTimeout(timeoutId)

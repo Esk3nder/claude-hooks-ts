@@ -2,19 +2,19 @@
  * Doc-integrity regen — declarative "when source files changed, run a
  * command" rules read from `<repo>/.claude-hooks/regenerate.yaml`.
  *
- * NEW DESIGN. PAI has `DocIntegrity.hook.ts` that hardcodes its own regen
+ * NEW DESIGN. this package has `DocIntegrity.hook.ts` that hardcodes its own regen
  * targets (e.g. `RebuildArchSummary`); this package generalizes the idea
  * via a user-declared YAML file so any project can wire derived-doc regen.
  *
  * YAML shape:
  *
- *   rules:
- *     - source: docs/architecture.md
- *       derived: docs/SUMMARY.md
- *       command: bun run scripts/gen-summary.ts
- *     - source: src/algorithm/v6.3.0.md
- *       derived: src/algorithm/SUMMARY.md
- *       command: ["bun", "run", "scripts/algorithm-summary.ts"]
+ * rules:
+ * - source: docs/architecture.md
+ * derived: docs/SUMMARY.md
+ * command: bun run scripts/gen-summary.ts
+ * - source: src/algorithm/v6.3.0.md
+ * derived: src/algorithm/SUMMARY.md
+ * command: ["bun", "run", "scripts/algorithm-summary.ts"]
  *
  * `source` may be a single path OR a glob (wildcards `*` only — no `**`,
  * no brace expansion — keeps the matcher trivial). `command` may be a
@@ -60,12 +60,12 @@ interface ParseFailure {
  * structured failure on malformed input rather than throwing.
  *
  * Recognized form:
- *   rules:
- *     - source: foo
- *       derived: bar
- *       command: baz
- *   - or -
- *       command: ["bun", "run", "x"]
+ * rules:
+ * - source: foo
+ * derived: bar
+ * command: baz
+ * - or -
+ * command: ["bun", "run", "x"]
  *
  * Anything else (block scalars, nested maps beyond rule entries, anchors,
  * tags) is silently skipped at the unrecognized line.
@@ -91,11 +91,17 @@ const stripTrailingComment = (line: string): string => {
   return line
 }
 
-export const parseRegenerateYaml = (raw: string): ParseSuccess | ParseFailure => {
+export const parseRegenerateYaml = (
+  raw: string,
+): ParseSuccess | ParseFailure => {
   const lines = raw.split("\n")
   let inRules = false
   const rules: RegenerateRule[] = []
-  let current: { source?: string; derived?: string; command?: string | string[] } = {}
+  let current: {
+    source?: string
+    derived?: string
+    command?: string | string[]
+  } = {}
 
   const flush = (): void => {
     if (
@@ -126,7 +132,11 @@ export const parseRegenerateYaml = (raw: string): ParseSuccess | ParseFailure =>
     if (!inRules) continue
     // New rule item.
     const itemHeadMatch = line.match(/^\s*-\s+([A-Za-z_]+)\s*:\s*(.*)$/)
-    if (itemHeadMatch && itemHeadMatch[1] !== undefined && itemHeadMatch[2] !== undefined) {
+    if (
+      itemHeadMatch &&
+      itemHeadMatch[1] !== undefined &&
+      itemHeadMatch[2] !== undefined
+    ) {
       flush()
       const key = itemHeadMatch[1]
       const val = itemHeadMatch[2].trim().replace(/^["']|["']$/g, "")
@@ -183,7 +193,9 @@ export const parseRegenerateYaml = (raw: string): ParseSuccess | ParseFailure =>
  * shell command in `command:` and skip the source filter.
  */
 const globToRegex = (glob: string): RegExp => {
-  const escaped = glob.replace(/[.+?^${}()|[\]\\]/g, "\\$&").replace(/\*/g, ".*")
+  const escaped = glob
+    .replace(/[.+?^${}()|[\]\\]/g, "\\$&")
+    .replace(/\*/g, ".*")
   return new RegExp(`^${escaped}$`)
 }
 

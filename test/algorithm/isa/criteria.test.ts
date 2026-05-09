@@ -8,7 +8,7 @@ import {
   parseCriteriaList,
 } from "../../../src/algorithm/isa/criteria.ts"
 
-describe("CRITERIA_HEADING_RE — PAI line 108 verbatim", () => {
+describe("CRITERIA_HEADING_RE — the classifier verbatim", () => {
   test("matches `## Criteria`", () => {
     expect(CRITERIA_HEADING_RE.test("## Criteria")).toBe(true)
   })
@@ -17,7 +17,9 @@ describe("CRITERIA_HEADING_RE — PAI line 108 verbatim", () => {
   })
   test("matches `## IDEAL STATE CRITERIA (Verification Criteria)`", () => {
     expect(
-      CRITERIA_HEADING_RE.test("## IDEAL STATE CRITERIA (Verification Criteria)"),
+      CRITERIA_HEADING_RE.test(
+        "## IDEAL STATE CRITERIA (Verification Criteria)",
+      ),
     ).toBe(true)
   })
   test("matches `### Criteria` sub-heading (legacy)", () => {
@@ -31,7 +33,7 @@ describe("CRITERIA_HEADING_RE — PAI line 108 verbatim", () => {
   })
 })
 
-describe("extractCriteriaSection — PAI line 118 mirror", () => {
+describe("extractCriteriaSection — the classifier mirror", () => {
   test("returns body up to next H2", () => {
     const doc = `## ISC Criteria
 - [ ] ISC-1: a
@@ -79,7 +81,7 @@ trailer
   })
 })
 
-describe("countCriteria — PAI line 129 mirror", () => {
+describe("countCriteria — the classifier mirror", () => {
   test("counts checked vs total", () => {
     const doc = `## Criteria
 - [ ] ISC-1: a
@@ -91,7 +93,10 @@ describe("countCriteria — PAI line 129 mirror", () => {
   })
 
   test("returns 0/0 when section missing", () => {
-    expect(countCriteria("# no criteria here")).toEqual({ checked: 0, total: 0 })
+    expect(countCriteria("# no criteria here")).toEqual({
+      checked: 0,
+      total: 0,
+    })
   })
 
   test("ignores non-checkbox lines inside criteria section", () => {
@@ -105,7 +110,7 @@ more prose
   })
 })
 
-describe("parseCriteriaList — PAI line 209-256 mirror", () => {
+describe("parseCriteriaList — the classifier mirror", () => {
   test("primary v5.5.0+ format with Anti: prefix", () => {
     const doc = `## Criteria
 - [ ] ISC-1: build the thing
@@ -114,9 +119,21 @@ describe("parseCriteriaList — PAI line 209-256 mirror", () => {
 `
     const out = parseCriteriaList(doc)
     expect(out.length).toBe(3)
-    expect(out[0]).toMatchObject({ id: "ISC-1", type: "criterion", status: "pending" })
-    expect(out[1]).toMatchObject({ id: "ISC-2", type: "criterion", status: "completed" })
-    expect(out[2]).toMatchObject({ id: "ISC-3", type: "anti-criterion", status: "pending" })
+    expect(out[0]).toMatchObject({
+      id: "ISC-1",
+      type: "criterion",
+      status: "pending",
+    })
+    expect(out[1]).toMatchObject({
+      id: "ISC-2",
+      type: "criterion",
+      status: "completed",
+    })
+    expect(out[2]).toMatchObject({
+      id: "ISC-3",
+      type: "anti-criterion",
+      status: "pending",
+    })
   })
 
   test("backward-compat: pre-v5.3.0 bracketed category [F]", () => {
@@ -172,10 +189,10 @@ describe("parseCriteriaList — PAI line 209-256 mirror", () => {
     const doc = `## Criteria
 - [ ] ISC-CLI-3: CLI behavior criterion
 `
-    // PAI's `id.includes('-A-')` would falsely match ISC-CLI-3 too — wait,
+    // this package's `id.includes('-A-')` would falsely match ISC-CLI-3 too — wait,
     // actually ISC-CLI-3 contains '-C-' not '-A-'. Domain prefix safe.
     // Test the safer case: a domain prefix that COULD include '-A-' would
-    // match — that's a known PAI faithfulness limit. Test the common case.
+    // match — that's a known parity limit. Test the common case.
     const out = parseCriteriaList(doc)
     expect(out[0]?.type).toBe("criterion")
   })
@@ -196,13 +213,15 @@ not a checkbox
   })
 })
 
-describe("diagnoseCriteria — PAI line 309 mirror", () => {
+describe("diagnoseCriteria — the classifier mirror", () => {
   test("missing-section when no Criteria heading", () => {
     expect(diagnoseCriteria("# no criteria here")).toBe("missing-section")
   })
 
   test("empty-section when heading present, no checkboxes", () => {
-    expect(diagnoseCriteria("## Criteria\n\nsome prose only\n")).toBe("empty-section")
+    expect(diagnoseCriteria("## Criteria\n\nsome prose only\n")).toBe(
+      "empty-section",
+    )
   })
 
   test("all-dropped when checkboxes present but ALL fail to parse", () => {

@@ -32,7 +32,7 @@ const runClassify = async (
   )
 }
 
-describe("parseClassifierResponse (PAI JSON protocol)", () => {
+describe("parseClassifierResponse (this package JSON protocol)", () => {
   test("parses canonical ALGORITHM JSON", () => {
     const r = parseClassifierResponse(
       `{"mode":"ALGORITHM","tier":3,"mode_reason":"multi-file refactor"}`,
@@ -69,7 +69,7 @@ describe("parseClassifierResponse (PAI JSON protocol)", () => {
 
   test("strips ```json fences (defensive — Sonnet sometimes wraps)", () => {
     const r = parseClassifierResponse(
-      "```json\n{\"mode\":\"ALGORITHM\",\"tier\":4,\"mode_reason\":\"x\"}\n```",
+      '```json\n{"mode":"ALGORITHM","tier":4,"mode_reason":"x"}\n```',
     )
     expect(r._tag).toBe("ok")
     if (r._tag === "ok") expect(r.tier).toBe(4)
@@ -77,7 +77,7 @@ describe("parseClassifierResponse (PAI JSON protocol)", () => {
 
   test("extracts JSON object even with surrounding prose", () => {
     const r = parseClassifierResponse(
-      "Here is the classification: {\"mode\":\"NATIVE\",\"tier\":null,\"mode_reason\":\"x\"} — done",
+      'Here is the classification: {"mode":"NATIVE","tier":null,"mode_reason":"x"} — done',
     )
     expect(r._tag).toBe("ok")
   })
@@ -119,7 +119,7 @@ describe("parseClassifierResponse (PAI JSON protocol)", () => {
 
   test("B6 fix: whitespace-only mode_reason becomes '(no reason given)'", () => {
     const r = parseClassifierResponse(
-      `{"mode":"NATIVE","tier":null,"mode_reason":"   "}`,
+      `{"mode":"NATIVE","tier":null,"mode_reason":" "}`,
     )
     expect(r._tag).toBe("ok")
     if (r._tag === "ok") expect(r.reason).toBe("(no reason given)")
@@ -135,7 +135,7 @@ describe("parseClassifierResponse (PAI JSON protocol)", () => {
 
   test("B6 fix: mode_reason gets trimmed of surrounding whitespace", () => {
     const r = parseClassifierResponse(
-      `{"mode":"NATIVE","tier":null,"mode_reason":"  real reason  "}`,
+      `{"mode":"NATIVE","tier":null,"mode_reason":" real reason "}`,
     )
     expect(r._tag).toBe("ok")
     if (r._tag === "ok") expect(r.reason).toBe("real reason")
@@ -209,7 +209,7 @@ describe("Inference.classify (with ClaudeSubprocessTest layer)", () => {
     expect(c.tier).toBe(null)
   })
 
-  test("subprocess called with sonnet + cache flag + verbatim PAI rubric", async () => {
+  test("subprocess called with sonnet + cache flag + verbatim the classifier rubric", async () => {
     let capturedArgs: ReadonlyArray<string> = []
     let capturedStdin = ""
     const layer = ClaudeSubprocessTest((args, opts) => {
@@ -231,9 +231,9 @@ describe("Inference.classify (with ClaudeSubprocessTest layer)", () => {
       program.pipe(Effect.provide(InferenceLive), Effect.provide(layer)),
     )
     expect(capturedArgs).toContain("--print")
-    // PAI uses Sonnet for the classifier (Algorithm v6.3.0 line 73).
+    // uses Sonnet for the classifier (the Algorithm v6.3.0).
     expect(capturedArgs).toContain("sonnet")
-    // PAI cache-friendly flag.
+    // the cache-friendly flag.
     expect(capturedArgs).toContain("--exclude-dynamic-system-prompt-sections")
     const sysIdx = capturedArgs.indexOf("--system-prompt")
     expect(sysIdx).toBeGreaterThan(-1)
@@ -243,9 +243,11 @@ describe("Inference.classify (with ClaudeSubprocessTest layer)", () => {
   })
 })
 
-describe("CLASSIFIER_SYSTEM_PROMPT — PAI doctrine pin", () => {
-  test("contains PAI's TASK 3 header verbatim", () => {
-    expect(CLASSIFIER_SYSTEM_PROMPT).toContain("## TASK 3: MODE + TIER CLASSIFICATION")
+describe("CLASSIFIER_SYSTEM_PROMPT — Algorithm doctrine pin", () => {
+  test("contains TASK 3 header verbatim", () => {
+    expect(CLASSIFIER_SYSTEM_PROMPT).toContain(
+      "## TASK 3: MODE + TIER CLASSIFICATION",
+    )
   })
   test("contains the single-word-approval doctrine rule", () => {
     expect(CLASSIFIER_SYSTEM_PROMPT).toContain(
@@ -254,16 +256,24 @@ describe("CLASSIFIER_SYSTEM_PROMPT — PAI doctrine pin", () => {
   })
   test("contains the casual-phrasing rule", () => {
     expect(CLASSIFIER_SYSTEM_PROMPT).toContain(
-      "Casual phrasing (\"build me a quick X\") does NOT downgrade",
+      'Casual phrasing ("build me a quick X") does NOT downgrade',
     )
   })
   test("contains all 6 worked examples", () => {
     expect(CLASSIFIER_SYSTEM_PROMPT).toContain('"thanks" with no context')
-    expect(CLASSIFIER_SYSTEM_PROMPT).toContain('"yes" after assistant proposed three numbered fixes')
+    expect(CLASSIFIER_SYSTEM_PROMPT).toContain(
+      '"yes" after assistant proposed three numbered fixes',
+    )
     expect(CLASSIFIER_SYSTEM_PROMPT).toContain('"what time is it"')
-    expect(CLASSIFIER_SYSTEM_PROMPT).toContain('"fix the typo on line 12 of foo.ts"')
-    expect(CLASSIFIER_SYSTEM_PROMPT).toContain('"build me a complex application"')
-    expect(CLASSIFIER_SYSTEM_PROMPT).toContain('"audit the algorithm and update doctrine"')
+    expect(CLASSIFIER_SYSTEM_PROMPT).toContain(
+      '"fix the typo on line 12 of foo.ts"',
+    )
+    expect(CLASSIFIER_SYSTEM_PROMPT).toContain(
+      '"build me a complex application"',
+    )
+    expect(CLASSIFIER_SYSTEM_PROMPT).toContain(
+      '"audit the algorithm and update doctrine"',
+    )
   })
   test("contains the full NATIVE artifact enumeration", () => {
     expect(CLASSIFIER_SYSTEM_PROMPT).toContain(

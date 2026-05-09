@@ -1,44 +1,35 @@
 /**
- * ISC criteria parser — PORTED VERBATIM from PAI's
- * ~/.claude/hooks/lib/isa-utils.ts lines 95-317.
+ * ISC criteria parser. Public surface:
+ * CRITERIA_HEADING_RE, CANONICAL_CRITERIA_HEADING, extractCriteriaSection,
+ * countCriteria, CriterionEntry, VALID_CATEGORIES, parseCriteriaList,
+ * CriteriaParseWarning, diagnoseCriteria.
  *
- * Surface mirrors PAI exactly:
- *   - CRITERIA_HEADING_RE          (PAI line 108)
- *   - CANONICAL_CRITERIA_HEADING   (PAI line 113)
- *   - extractCriteriaSection       (PAI line 118)
- *   - countCriteria                (PAI line 129)
- *   - CriterionEntry               (PAI line 184)
- *   - VALID_CATEGORIES             (PAI line 207)
- *   - parseCriteriaList            (PAI line 209)
- *   - CriteriaParseWarning         (PAI line 303)
- *   - diagnoseCriteria             (PAI line 309)
- *
- * Backward-compat preserved: legacy bracketed category tags
- * (`[F]/[S]/[B]/[N]/[E]/[A]`) from pre-v5.3.0 ISAs and `ISC-A-N` numbering
- * from v5.3.0–v5.4.0 ISAs. Documented in PAI lines 199-207, 244-246.
+ * Backward-compat: legacy bracketed category tags (`[F]/[S]/[B]/[N]/[E]/[A]`)
+ * from pre-v5.3.0 ISAs and `ISC-A-N` numbering from v5.3.0–v5.4.0 ISAs are
+ * still accepted by parseCriteriaList.
  */
 
-// ── Heading detection (PAI lines 95-126) ──────────────────────────────────
+// ── Heading detection ──────────────────────────────────
 
 /**
  * One canonical regex matching every historical Criteria heading variant:
- *   `## Criteria`
- *   `## ISC Criteria`
- *   `## IDEAL STATE CRITERIA (Verification Criteria)`
- *   `### Criteria` (sub-heading inside an IDEAL STATE block)
+ * `## Criteria`
+ * `## ISC Criteria`
+ * `## IDEAL STATE CRITERIA (Verification Criteria)`
+ * `### Criteria` (sub-heading inside an IDEAL STATE block)
  * Case-insensitive. Section ends at the next `## ` (H2), `---`, or EOF.
  *
- * Verbatim from PAI line 108.
+ * Verbatim from the classifier.
  */
 export const CRITERIA_HEADING_RE: RegExp =
   /^(?:##\s+(?:ISC\s+)?Criteria\b[^\n]*|##\s+IDEAL\s+STATE\s+CRITERIA\b[^\n]*|###\s+Criteria\b[^\n]*)$/im
 
-/** PAI line 113 — canonical heading new ISAs emit and migrations target. */
+/** the classifier — canonical heading new ISAs emit and migrations target. */
 export const CANONICAL_CRITERIA_HEADING = "## ISC Criteria"
 
 /**
  * Returns the criteria-section body (without the heading line), or null if no
- * recognized heading is found. Mirror of PAI line 118-127.
+ * recognized heading is found. Mirror of the classifier.
  */
 export const extractCriteriaSection = (content: string): string | null => {
   const headingMatch = CRITERIA_HEADING_RE.exec(content)
@@ -51,7 +42,7 @@ export const extractCriteriaSection = (content: string): string | null => {
   return body
 }
 
-/** Mirror of PAI line 129-135. */
+/** Mirror of the classifier. */
 export const countCriteria = (
   content: string,
 ): { readonly checked: number; readonly total: number } => {
@@ -62,7 +53,7 @@ export const countCriteria = (
   return { checked, total: lines.length }
 }
 
-// ── Entry shape (PAI lines 184-197) ───────────────────────────────────────
+// ── Entry shape ───────────────────────────────────────
 
 export interface CriterionEntry {
   readonly id: string
@@ -79,7 +70,7 @@ export interface CriterionEntry {
 }
 
 /**
- * Legacy category whitelist (PAI line 207). Used to distinguish real
+ * Legacy category whitelist. Used to distinguish real
  * pre-v5.3.0 category brackets (`[F]`) from ad-hoc status brackets
  * (`[COMPLETE]`, `[WIP]`) which we strip rather than capture.
  */
@@ -92,25 +83,27 @@ const VALID_CATEGORIES: ReadonlySet<string> = new Set([
   "A",
 ])
 
-// ── List parser (PAI lines 209-256) ───────────────────────────────────────
+// ── List parser ───────────────────────────────────────
 
 /**
- * Parse the criteria section into typed entries. Mirror of PAI line 209-256.
+ * Parse the criteria section into typed entries. Mirror of the classifier.
  *
  * Three regex shapes accepted, in order:
- *   1. Primary (v5.3.0+):     `- [x] ISC-1: description`
- *      With optional bracket: `- [x] ISC-1 [F]: description`
- *      With nested probe:     `- [x] ISC-1 [F][grep]: description`
- *   2. Loose fallback:        `- [x] ISC-1 description` (no colon)
- *      Strips any non-category bracket tokens from the loose-form text.
+ * 1. Primary (v5.3.0+): `- [x] ISC-1: description`
+ * With optional bracket: `- [x] ISC-1 [F]: description`
+ * With nested probe: `- [x] ISC-1 [F][grep]: description`
+ * 2. Loose fallback: `- [x] ISC-1 description` (no colon)
+ * Strips any non-category bracket tokens from the loose-form text.
  *
- * Anti-criterion detection (PAI line 246):
- *   - `Anti:` prose prefix on description (v5.5.0+)
- *   - `id.includes('-A-')` (v5.3.0–v5.4.0 backward-compat)
+ * Anti-criterion detection:
+ * - `Anti:` prose prefix on description (v5.5.0+)
+ * - `id.includes('-A-')` (v5.3.0–v5.4.0 backward-compat)
  *
  * Domain-prefixed IDs like `ISC-CLI-3` are unaffected by the `-A-` check.
  */
-export const parseCriteriaList = (content: string): ReadonlyArray<CriterionEntry> => {
+export const parseCriteriaList = (
+  content: string,
+): ReadonlyArray<CriterionEntry> => {
   const body = extractCriteriaSection(content)
   if (body === null) return []
   const out: CriterionEntry[] = []
@@ -129,16 +122,23 @@ export const parseCriteriaList = (content: string): ReadonlyArray<CriterionEntry
       if (loose && loose[1] !== undefined && loose[2] !== undefined) {
         const rest = loose[2].replace(/\[[A-Za-z]+\]\s*/g, "").trim()
         if (rest.length > 0) {
-          textMatch = [line, loose[1], undefined as unknown as string, rest] as unknown as RegExpMatchArray
+          textMatch = [
+            line,
+            loose[1],
+            undefined as unknown as string,
+            rest,
+          ] as unknown as RegExpMatchArray
         }
       }
     }
-    if (!textMatch || textMatch[1] === undefined || textMatch[3] === undefined) continue
+    if (!textMatch || textMatch[1] === undefined || textMatch[3] === undefined)
+      continue
 
     const id = textMatch[1]
     const rawCategory = textMatch[2]
     const category =
-      typeof rawCategory === "string" && VALID_CATEGORIES.has(rawCategory.toUpperCase())
+      typeof rawCategory === "string" &&
+      VALID_CATEGORIES.has(rawCategory.toUpperCase())
         ? rawCategory.toUpperCase()
         : undefined
     const description = textMatch[3].trim()
@@ -156,14 +156,14 @@ export const parseCriteriaList = (content: string): ReadonlyArray<CriterionEntry
   return out
 }
 
-// ── Diagnose (PAI lines 295-317) ──────────────────────────────────────────
+// ── Diagnose ──────────────────────────────────────────
 
 /**
- * Loud-fail signal for non-parseable ISAs (PAI line 303-307):
- *   'missing-section'   — no recognized Criteria heading at all
- *   'empty-section'     — heading present, zero `- [ ]` checkbox lines
- *   'all-dropped'       — checkbox lines present, ALL failed regex parse
- *   null                — healthy
+ * Loud-fail signal for non-parseable ISAs:
+ * 'missing-section' — no recognized Criteria heading at all
+ * 'empty-section' — heading present, zero `- [ ]` checkbox lines
+ * 'all-dropped' — checkbox lines present, ALL failed regex parse
+ * null — healthy
  */
 export type CriteriaParseWarning =
   | "missing-section"
@@ -171,7 +171,7 @@ export type CriteriaParseWarning =
   | "all-dropped"
   | null
 
-/** Mirror of PAI line 309-317. */
+/** Mirror of the classifier. */
 export const diagnoseCriteria = (content: string): CriteriaParseWarning => {
   const body = extractCriteriaSection(content)
   if (body === null) return "missing-section"

@@ -1,13 +1,13 @@
 /**
  * 12-section walker for ISA v2.7 / Algorithm v6.2.0+.
  *
- * NEW DESIGN (this package — not a port). PAI's `hooks/lib/isa-utils.ts`
+ * NEW DESIGN (this package — not a port). this package's `hooks/lib/isa-utils.ts`
  * parses only the Criteria section and ad-hoc Intent/Context/Problem Space
  * snippets. The 12-section walker is called out as a forthcoming patch in
- * `~/.claude/PAI/DOCUMENTATION/IsaFormat.md` line 213:
+ * this package:
  *
- *   "(v6.2.x: the per-section schema may be pulled into this file directly
- *    when there's a need for a hook-readable single source of truth.)"
+ * "(v6.2.x: the per-section schema may be pulled into this file directly
+ * when there's a need for a hook-readable single source of truth.)"
  *
  * The doctrine sections are listed in IsaFormat.md lines 174-187, fixed
  * order, empty sections never present (Bitter Pill discipline). Order is
@@ -16,11 +16,11 @@
  * gate doesn't have to know about heading variants.
  *
  * Heading detection rules:
- *   - Match H2 only (`## Section Name`).
- *   - Case-insensitive on the canonical name.
- *   - Trailing parenthesized qualifier allowed (mirror of Criteria heading
- *     tolerance, e.g. `## Out of Scope (anti-vision)`).
- *   - Section body ends at the next H2 or YAML doc terminator (`---`).
+ * - Match H2 only (`## Section Name`).
+ * - Case-insensitive on the canonical name.
+ * - Trailing parenthesized qualifier allowed (mirror of Criteria heading
+ * tolerance, e.g. `## Out of Scope (anti-vision)`).
+ * - Section body ends at the next H2 or YAML doc terminator (`---`).
  *
  * Sections that do not appear in the source are simply absent from the
  * returned map. Empty sections (heading present but body all-whitespace)
@@ -109,6 +109,5 @@ export const parseSections = (
 }
 
 /** Convenience: which canonical sections are present in this ISA body. */
-export const presentSections = (
-  content: string,
-): ReadonlySet<IsaSectionName> => new Set(parseSections(content).keys())
+export const presentSections = (content: string): ReadonlySet<IsaSectionName> =>
+  new Set(parseSections(content).keys())

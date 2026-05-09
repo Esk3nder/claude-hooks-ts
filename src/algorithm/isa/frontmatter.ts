@@ -1,24 +1,22 @@
 /**
- * ISA frontmatter parser — PORTED VERBATIM from PAI's
- * ~/.claude/hooks/lib/isa-utils.ts lines 70-93.
+ * ISA frontmatter parser.
  *
- * Naive line-by-line YAML — does NOT use a YAML library. PAI's choice is
- * deliberate: ISA frontmatter is a flat key:value map (8 required fields, a
- * handful of optional ones) and pulling in a YAML lib would diverge from
- * PAI's parse semantics around quoting and value normalization.
+ * Naive line-by-line YAML — does NOT use a YAML library. The choice is
+ * deliberate: ISA frontmatter is a flat key:value map (8 required fields,
+ * a handful of optional ones), and a YAML lib's quoting/normalization
+ * semantics would diverge from what callers expect here.
  *
- * Spec: ~/.claude/PAI/DOCUMENTATION/IsaFormat.md lines 64-168 (frontmatter
- * field rules). This module covers the on-disk read/write surface only —
- * field validation lives in `completeness.ts`.
+ * This module covers the on-disk read/write surface only — field
+ * validation lives in `completeness.ts`.
  */
 
 /**
  * Extract YAML frontmatter to a flat string map. Returns null when the file
  * has no `---\n…\n---` opening block.
  *
- * Mirror of PAI line 70-80. Quoted values are unwrapped (PAI's
+ * Mirror of the classifier. Quoted values are unwrapped (this package's
  * `.replace(/^["']|["']$/g, '')`). Multi-line values, nested objects, lists,
- * and arrays are NOT supported — same as PAI.
+ * and arrays are NOT supported — same as this package.
  */
 export const parseFrontmatter = (
   content: string,
@@ -42,8 +40,8 @@ export const parseFrontmatter = (
  * Update a single frontmatter field, in place. Returns the modified content
  * unchanged if the file has no frontmatter block.
  *
- * Mirror of PAI line 81-93. If the field doesn't exist, it's appended to the
- * end of the frontmatter block (PAI's behavior).
+ * Mirror of the classifier. If the field doesn't exist, it's appended to the
+ * end of the frontmatter block (this package's behavior).
  */
 export const writeFrontmatterField = (
   content: string,
@@ -51,7 +49,12 @@ export const writeFrontmatterField = (
   value: string,
 ): string => {
   const fmMatch = content.match(/^(---\n)([\s\S]*?)(\n---)/)
-  if (!fmMatch || fmMatch[1] === undefined || fmMatch[2] === undefined || fmMatch[3] === undefined) {
+  if (
+    !fmMatch ||
+    fmMatch[1] === undefined ||
+    fmMatch[2] === undefined ||
+    fmMatch[3] === undefined
+  ) {
     return content
   }
   const lines = fmMatch[2].split("\n")
@@ -65,5 +68,10 @@ export const writeFrontmatterField = (
     }
   }
   if (!found) lines.push(`${field}: ${value}`)
-  return fmMatch[1] + lines.join("\n") + fmMatch[3] + content.slice(fmMatch[0].length)
+  return (
+    fmMatch[1] +
+    lines.join("\n") +
+    fmMatch[3] +
+    content.slice(fmMatch[0].length)
+  )
 }

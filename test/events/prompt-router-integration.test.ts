@@ -1,11 +1,11 @@
 /**
- * End-to-end integration: UserPromptSubmit handler with all PAI features
+ * End-to-end integration: UserPromptSubmit handler with all this package features
  * threaded through. Asserts:
- *   - transcript_path → context flows into Inference (L10)
- *   - Telemetry record is appended (L11)
- *   - cleanPrompt runs before subprocess (L12)
- *   - System-text returns SAFE_DEFAULT, NO classification, NO telemetry (L14)
- *   - Workflow line + mode line are emitted in order (B4)
+ * - transcript_path → context flows into Inference (L10)
+ * - Telemetry record is appended (L11)
+ * - cleanPrompt runs before subprocess (L12)
+ * - System-text returns SAFE_DEFAULT, NO classification, NO telemetry (L14)
+ * - Workflow line + mode line are emitted in order (B4)
  */
 import { describe, expect, test } from "bun:test"
 import { Effect, Schema } from "effect"
@@ -50,23 +50,27 @@ const runE2E = async (input: {
 }): Promise<RunResult> => {
   const tel = ClassifierTelemetryTest()
   let capturedSubprocStdin: string | null = null
-  const subprocLayer = ClaudeSubprocessTest((args, opts: ClaudeSpawnOptions) => {
-    void args
-    capturedSubprocStdin = opts.stdin
-    return {
-      stdout: input.subprocResponse,
-      stderr: "",
-      exitCode: 0,
-      latencyMs: 100,
-      timedOut: false,
-    }
-  })
+  const subprocLayer = ClaudeSubprocessTest(
+    (args, opts: ClaudeSpawnOptions) => {
+      void args
+      capturedSubprocStdin = opts.stdin
+      return {
+        stdout: input.subprocResponse,
+        stderr: "",
+        exitCode: 0,
+        latencyMs: 100,
+        timedOut: false,
+      }
+    },
+  )
   const payload = decode({
     _tag: "UserPromptSubmit",
     session_id: "sid-e2e",
     hook_event_name: "UserPromptSubmit",
     prompt: input.prompt,
-    ...(input.transcriptPath !== undefined ? { transcript_path: input.transcriptPath } : {}),
+    ...(input.transcriptPath !== undefined
+      ? { transcript_path: input.transcriptPath }
+      : {}),
   })
   const decision = await Effect.runPromise(
     handleUserPromptSubmit(payload).pipe(
@@ -76,7 +80,9 @@ const runE2E = async (input: {
       Effect.provide(tel.layer),
     ),
   )
-  const out = decision as { hookSpecificOutput?: { additionalContext?: string } }
+  const out = decision as {
+    hookSpecificOutput?: { additionalContext?: string }
+  }
   const raw = out.hookSpecificOutput?.additionalContext ?? ""
   const [workflowLine = "", modeLine = ""] = raw.split("\n")
   return {
@@ -89,7 +95,7 @@ const runE2E = async (input: {
   }
 }
 
-describe("UserPromptSubmit E2E — all PAI features", () => {
+describe("UserPromptSubmit E2E — all this package features", () => {
   test("ambiguous prompt with transcript context: full pipeline fires", async () => {
     const root = mkdtempSync(join(tmpdir(), "e2e-"))
     try {
@@ -112,7 +118,9 @@ describe("UserPromptSubmit E2E — all PAI features", () => {
 
       // L10: context fed to subprocess stdin
       expect(result.capturedSubprocStdin).toContain("CONTEXT:")
-      expect(result.capturedSubprocStdin).toContain("proposed three numbered fixes")
+      expect(result.capturedSubprocStdin).toContain(
+        "proposed three numbered fixes",
+      )
       expect(result.capturedSubprocStdin).toContain("CURRENT MESSAGE:")
 
       // L12: cleanPrompt stripped <wrapper> tags
@@ -147,7 +155,7 @@ describe("UserPromptSubmit E2E — all PAI features", () => {
       prompt: "<system-reminder>this is injected</system-reminder>",
       subprocResponse: `{"mode":"ALGORITHM","tier":3,"mode_reason":"should not be reached"}`,
     })
-    // L14: PAI line 901-902 — process.exit without emission
+    // L14: the classifier — process.exit without emission
     expect(result.raw).toBe("")
     // No classification → no telemetry record
     expect(result.telemetryRecords.length).toBe(0)
@@ -162,13 +170,13 @@ describe("UserPromptSubmit E2E — all PAI features", () => {
     })
     expect(result.modeLine).toContain("MODE: MINIMAL")
     // B2 invariant: additionalContext collapses fast-path to "classifier"
-    // (PAI line 60 hardcodes), but telemetry preserves the distinction.
+    // (the classifier hardcodes), but telemetry preserves the distinction.
     expect(result.modeLine).toContain("SOURCE: classifier")
     expect(result.modeLine).not.toContain("SOURCE: fast-path")
     // Fast-path → no subprocess
     expect(result.capturedSubprocStdin).toBeNull()
     // Telemetry records WITH source: "fast-path" — that's how auditors
-    // compute classifier-vs-fast-path-vs-fail-safe ratio (PAI line 877-879).
+    // compute classifier-vs-fast-path-vs-fail-safe ratio.
     expect(result.telemetryRecords.length).toBe(1)
     const r = result.telemetryRecords[0] as { mode: string; source: string }
     expect(r.mode).toBe("MINIMAL")

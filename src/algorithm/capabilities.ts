@@ -1,30 +1,30 @@
 /**
  * Closed enumeration of THINKING capabilities + phantom-audit validator.
  *
- * Verbatim port of PAI's Algorithm v6.3.0 closed-enum doctrine (the bullet
- * list at `~/.claude/PAI/ALGORITHM/v6.3.0.md` lines 41-62) and capabilities
- * reference (`~/.claude/PAI/ALGORITHM/capabilities.md`).
+ * Verbatim port of the Algorithm v6.3.0 closed-enum doctrine (the bullet
+ * list at the Algorithm v6.3.0 lines 41-62) and capabilities
+ * reference (this package).
  *
  * From v6.3.0 doctrine:
- *   "The thinking-capability vocabulary is a CLOSED ENUMERATION. Selection
- *    MUST come verbatim from this list — the same names that appear in
- *    capabilities.md § Thinking & Analysis Capabilities. Inventing generic
- *    labels (...) is a PHANTOM thinking capability and counts as a CRITICAL
- *    FAILURE — it does NOT contribute to the tier floor regardless of how
- *    the rest of the response is written."
+ * "The thinking-capability vocabulary is a CLOSED ENUMERATION. Selection
+ * MUST come verbatim from this list — the same names that appear in
+ * capabilities.md § Thinking & Analysis Capabilities. Inventing generic
+ * labels (...) is a PHANTOM thinking capability and counts as a CRITICAL
+ * FAILURE — it does NOT contribute to the tier floor regardless of how
+ * the rest of the response is written."
  *
  * Audit-gate rule (v6.3.0 line 65):
- *   "Capability-Name Audit Gate (NEW v6.3.0, fires at OBSERVE→THINK
- *    boundary): before printing 🏹 CAPABILITIES SELECTED, verify each
- *    thinking name appears verbatim in the closed list above. Any miss is
- *    a phantom — split, replace from the list, or remove."
+ * "Capability-Name Audit Gate (NEW v6.3.0, fires at OBSERVE→THINK
+ * boundary): before printing 🏹 CAPABILITIES SELECTED, verify each
+ * thinking name appears verbatim in the closed list above. Any miss is
+ * a phantom — split, replace from the list, or remove."
  *
- * Wiring note (HONEST disclosure): PAI's audit is MODEL-side. The model
+ * Wiring note (HONEST disclosure): this package's audit is MODEL-side. The model
  * prints `🏹 CAPABILITIES SELECTED` in its response text; hooks cannot
  * intercept text output. This module exposes the validator as a pure
  * function so any caller (a future ISA `## Decisions` parser, an in-process
  * skill, ad-hoc tooling, the Stop gate) can apply the rule. We do NOT wire
- * it into a hook this slice — model-side use mirrors PAI behavior.
+ * it into a hook this slice — model-side use mirrors behavior.
  */
 
 /**
@@ -34,9 +34,9 @@
  * last).
  *
  * Editing this list requires:
- *   1. A corresponding edit to PAI Algorithm doctrine.
- *   2. A version bump (PAI's doctrine is currently v6.3.0).
- *   3. The pin tests in `capabilities.test.ts` will fail until updated.
+ * 1. A corresponding edit to the Algorithm doctrine.
+ * 2. A version bump (Algorithm doctrine is currently v6.3.0).
+ * 3. The pin tests in `capabilities.test.ts` will fail until updated.
  */
 export const THINKING_CAPABILITIES: ReadonlyArray<string> = [
   "IterativeDepth",
@@ -108,7 +108,7 @@ export const auditCapabilityNames = (
       `Phantom thinking capabilities: ${list}. ` +
       `Replace each with a verbatim name from the closed list ` +
       `(see THINKING_CAPABILITIES) or split/remove it. ` +
-      `Algorithm v6.3.0 line 65: phantoms do NOT contribute to the tier floor.`,
+      `the Algorithm v6.3.0: phantoms do NOT contribute to the tier floor.`,
   }
 }
 

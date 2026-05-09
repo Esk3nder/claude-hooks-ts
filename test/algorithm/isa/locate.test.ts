@@ -45,7 +45,7 @@ const writeLegacyPrd = (root: string, slug: string): string => {
   return file
 }
 
-describe("constants — PAI lines 28-29", () => {
+describe("constants — the classifier", () => {
   test("ARTIFACT_FILENAME is ISA.md", () => {
     expect(ARTIFACT_FILENAME).toBe("ISA.md")
   })
@@ -63,7 +63,7 @@ describe("workDirFor", () => {
   })
 })
 
-describe("findArtifactPath — PAI lines 38-45 mirror", () => {
+describe("findArtifactPath — the classifier mirror", () => {
   test("returns ISA.md when present", () => {
     const { root, cleanup } = stage()
     try {
@@ -84,7 +84,7 @@ describe("findArtifactPath — PAI lines 38-45 mirror", () => {
     }
   })
 
-  test("prefers ISA.md when both are present (PAI's documented behavior)", () => {
+  test("prefers ISA.md when both are present (this package's documented behavior)", () => {
     const { root, cleanup } = stage()
     try {
       writeLegacyPrd(root, "both")
@@ -109,7 +109,7 @@ describe("findArtifactPath — PAI lines 38-45 mirror", () => {
   })
 })
 
-describe("findLatestISA — PAI lines 52-66 mirror", () => {
+describe("findLatestISA — the classifier mirror", () => {
   test("picks the most recently modified ISA across slugs", () => {
     const { root, cleanup } = stage()
     try {
@@ -206,7 +206,9 @@ describe("findProjectIsa — IsaFormat.md lines 56-57 (project ISAs)", () => {
 
 describe("isIsaFilePath — PostToolUse filter", () => {
   test("matches absolute path ending in /ISA.md", () => {
-    expect(isIsaFilePath("/repo/.claude-hooks/state/work/abc/ISA.md")).toBe(true)
+    expect(isIsaFilePath("/repo/.claude-hooks/state/work/abc/ISA.md")).toBe(
+      true,
+    )
   })
   test("matches absolute path ending in /PRD.md (legacy)", () => {
     expect(isIsaFilePath("/repo/MEMORY/WORK/abc/PRD.md")).toBe(true)

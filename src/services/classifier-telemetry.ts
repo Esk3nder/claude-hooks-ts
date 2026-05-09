@@ -1,18 +1,18 @@
 /**
- * Mode-classifier telemetry sink — mirrors PAI's appendPromptProcessingTelemetry
- * (PromptProcessing.hook.ts lines 67-74) and Algorithm v6.3.0 line 99:
+ * Mode-classifier telemetry sink — implements canonical behavior appendPromptProcessingTelemetry
+ * (the classifier rubric) and the Algorithm v6.3.0:
  * "Every classification is logged… Audit weekly: classifier-vs-fail-safe
  * ratio, average latency, downstream override rate."
  *
- * Record shape mirrors PAI lines 875-879 / 1018-1024 — same field names so
- * downstream auditors that grew up on PAI's JSONL can read this file too.
+ * Record shape implements the classifier / 1018-1024 — same field names so
+ * downstream auditors that grew up on this package's JSONL can read this file too.
  *
  * Destination: `<project>/.claude-hooks/state/observability/mode-classifier.jsonl`
  * (under the package's existing state root, not under MEMORY/OBSERVABILITY
- * which is a PAI-specific path).
+ * which is a this package-specific path).
  *
  * Failure policy: best-effort. A failed write must NEVER block the hook
- * response. Mirrors PAI's empty try/catch around the appendFileSync call.
+ * response. implements canonical behavior empty try/catch around the appendFileSync call.
  */
 
 import { Context, Effect, Layer } from "effect"
@@ -24,7 +24,7 @@ export interface ClassifierTelemetryRecord {
   /** ISO 8601 timestamp. */
   readonly timestamp: string
   readonly session_id: string
-  /** First 120 chars of the user prompt — matches PAI's prompt_excerpt slice. */
+  /** First 120 chars of the user prompt — matches the prompt_excerpt slice. */
   readonly prompt_excerpt: string
   readonly mode: Mode
   readonly tier: Tier | null
@@ -34,9 +34,7 @@ export interface ClassifierTelemetryRecord {
 }
 
 export interface ClassifierTelemetryApi {
-  readonly append: (
-    record: ClassifierTelemetryRecord,
-  ) => Effect.Effect<void>
+  readonly append: (record: ClassifierTelemetryRecord) => Effect.Effect<void>
 }
 
 export class ClassifierTelemetry extends Context.Tag("ClassifierTelemetry")<
@@ -44,7 +42,7 @@ export class ClassifierTelemetry extends Context.Tag("ClassifierTelemetry")<
   ClassifierTelemetryApi
 >() {}
 
-/** Build the prompt_excerpt the same way PAI does (line 877). */
+/** Build the prompt_excerpt the same way this package does. */
 export const buildPromptExcerpt = (prompt: string): string =>
   prompt.slice(0, 120)
 
@@ -69,10 +67,16 @@ export const buildRecord = (input: {
 })
 
 const telemetryPath = (root: string): string =>
-  path.join(root, ".claude-hooks", "state", "observability", "mode-classifier.jsonl")
+  path.join(
+    root,
+    ".claude-hooks",
+    "state",
+    "observability",
+    "mode-classifier.jsonl",
+  )
 
 /**
- * Live impl — appends a JSON line to the destination file. Mirrors PAI's
+ * Live impl — appends a JSON line to the destination file. implements canonical behavior
  * defensive "skip if serialization contains a newline" guard so a single
  * malformed record can't corrupt downstream JSONL parsers.
  */
@@ -86,7 +90,7 @@ export const ClassifierTelemetryLive = (
         Effect.tryPromise({
           try: async () => {
             const serialized = JSON.stringify(record)
-            // PAI line 71: skip if serialization contains a literal newline
+            // the classifier: skip if serialization contains a literal newline
             // (defensive — some prompt_excerpt values could carry one).
             if (serialized.includes("\n")) return
             const file = telemetryPath(root)

@@ -1,13 +1,13 @@
 /**
  * ISC checkpoint — auto git commit on every ISC `[ ]`→`[x]` transition.
  *
- * Faithful port of PAI's `~/.claude/hooks/CheckpointPerISC.hook.ts` (lines
+ * 's `~/.claude/hooks/CheckpointPerISC.hook.ts` (lines
  * 26-200). One path adaptation called out below; everything else (commit
  * subject form, idempotency via sidecar state, allowlist semantics, fail-
  * closed error policy, --no-verify --no-gpg-sign flags, 5000ms git timeout)
- * mirrors PAI byte-for-byte.
+ * implements canonical behavior byte-for-byte.
  *
- * SAFETY POSTURE (verbatim from PAI line 18-19): "Fails closed — any error
+ * SAFETY POSTURE (verbatim from the classifier): "Fails closed — any error
  * path logs to stderr and emits `{continue:true}` with exit 0; never crashes
  * the session, never commits without an allowlist, never executes any
  * destructive git op (no reset/revert/checkout/branch -D/clean -fd/
@@ -18,26 +18,22 @@
  * deliberate — auto-commit on a public package without explicit opt-in
  * would be a footgun.
  *
- * PATH ADAPTATION (the only divergence from PAI):
- *   PAI allowlist: `~/.claude/checkpoint-repos.txt` (per-user, single file).
- *   This package:  `<repo>/.claude-hooks/checkpoint-repos.txt` (per-repo,
- *                  mirrors `services/session-state.ts` `.claude-hooks/state/`
- *                  convention). Each project opts in its own repos. Tilde
- *                  and $HOME prefixes inside the file are still expanded.
+ * PATH ADAPTATION (the only divergence canonically):
+ * this package allowlist: `~/.claude/checkpoint-repos.txt` (per-user, single file).
+ * This package: `<repo>/.claude-hooks/checkpoint-repos.txt` (per-repo,
+ * mirrors `services/session-state.ts` `.claude-hooks/state/`
+ * convention). Each project opts in its own repos. Tilde
+ * and $HOME prefixes inside the file are still expanded.
  */
 
-import {
-  existsSync,
-  readFileSync,
-  writeFileSync,
-} from "node:fs"
+import { existsSync, readFileSync, writeFileSync } from "node:fs"
 import { execFileSync } from "node:child_process"
 import { basename, dirname, join } from "node:path"
 import { homedir } from "node:os"
 import { parseCriteriaList, type CriterionEntry } from "./criteria.ts"
 import { parseFrontmatter } from "./frontmatter.ts"
 
-/** PAI line 34 — git command timeout. */
+/** the classifier — git command timeout. */
 export const GIT_TIMEOUT_MS = 5000
 
 /**
@@ -58,7 +54,7 @@ export interface CheckpointState {
   readonly last_commit_sha: Readonly<Record<string, string>>
 }
 
-/** PAI lines 41-48 — expand `~` and `$HOME` prefixes in allowlist entries. */
+/** the classifier — expand `~` and `$HOME` prefixes in allowlist entries. */
 export const expandPath = (p: string): string => {
   let s = p.trim()
   if (!s) return s
@@ -68,7 +64,7 @@ export const expandPath = (p: string): string => {
   return s
 }
 
-/** PAI lines 50-62 — read allowlist, ignore comments/blanks, expand prefixes. */
+/** the classifier — read allowlist, ignore comments/blanks, expand prefixes. */
 export const loadAllowlist = (
   root: string = process.cwd(),
 ): ReadonlyArray<string> => {
@@ -88,7 +84,7 @@ export const loadAllowlist = (
   }
 }
 
-/** PAI lines 64-76 — load idempotency state from sidecar JSON. */
+/** the classifier — load idempotency state from sidecar JSON. */
 export const loadState = (stateFile: string): CheckpointState => {
   if (!existsSync(stateFile)) {
     return { committed_iscs: [], last_commit_sha: {} }
@@ -118,11 +114,8 @@ export const loadState = (stateFile: string): CheckpointState => {
   }
 }
 
-/** PAI lines 78-84 — best-effort state write; failures logged not thrown. */
-export const saveState = (
-  stateFile: string,
-  state: CheckpointState,
-): void => {
+/** the classifier — best-effort state write; failures logged not thrown. */
+export const saveState = (stateFile: string, state: CheckpointState): void => {
   try {
     writeFileSync(stateFile, `${JSON.stringify(state, null, 2)}\n`, "utf-8")
   } catch (err) {
@@ -132,7 +125,7 @@ export const saveState = (
   }
 }
 
-/** PAI lines 86-92 — synchronous git invocation via execFileSync. */
+/** the classifier — synchronous git invocation via execFileSync. */
 const gitRun = (repo: string, args: ReadonlyArray<string>): string =>
   execFileSync("git", ["-C", repo, ...args], {
     encoding: "utf-8",
@@ -140,7 +133,7 @@ const gitRun = (repo: string, args: ReadonlyArray<string>): string =>
     stdio: ["ignore", "pipe", "pipe"],
   })
 
-/** PAI lines 94-101. */
+/** the classifier. */
 export const isGitRepo = (repo: string): boolean => {
   try {
     gitRun(repo, ["rev-parse", "--git-dir"])
@@ -150,7 +143,7 @@ export const isGitRepo = (repo: string): boolean => {
   }
 }
 
-/** PAI lines 103-109 — `git status --porcelain` truthiness. */
+/** the classifier — `git status --porcelain` truthiness. */
 export const hasChanges = (repo: string): boolean => {
   try {
     return gitRun(repo, ["status", "--porcelain"]).trim().length > 0
@@ -159,13 +152,13 @@ export const hasChanges = (repo: string): boolean => {
   }
 }
 
-/** PAI lines 111-113 — single-line, length-capped, backtick/`$` stripped. */
+/** the classifier — single-line, length-capped, backtick/`$` stripped. */
 export const sanitizeMessage = (s: string): string =>
   s.replace(/\s+/g, " ").replace(/[`$]/g, "").trim().slice(0, 200)
 
 /**
- * PAI lines 115-132 — commit one ISC transition in one repo. Subject form:
- *   "<ISC-id> (<slug>): <sanitized description>"
+ * the classifier — commit one ISC transition in one repo. Subject form:
+ * "<ISC-id> (<slug>): <sanitized description>"
  * `--no-verify` skips husky/pre-commit hooks; `--no-gpg-sign` avoids GPG
  * passphrase prompts that would block the session on stdin.
  *
@@ -192,8 +185,7 @@ export const commitInRepo = (
     return sha
   } catch (err) {
     const e = err as { stderr?: { toString?: () => string }; message?: string }
-    const detail =
-      e.stderr?.toString?.() ?? e.message ?? String(err)
+    const detail = e.stderr?.toString?.() ?? e.message ?? String(err)
     process.stderr.write(
       `[checkpoint] commit failed in ${repo} for ${iscId}: ${detail}\n`,
     )
@@ -211,13 +203,11 @@ export const newlyCompletedISCs = (
   state: CheckpointState,
 ): ReadonlyArray<CriterionEntry> => {
   const already = new Set(state.committed_iscs)
-  return criteria.filter(
-    (c) => c.status === "completed" && !already.has(c.id),
-  )
+  return criteria.filter((c) => c.status === "completed" && !already.has(c.id))
 }
 
 /**
- * Top-level orchestrator. Mirrors PAI's main() (lines 146-193) — given the
+ * Top-level orchestrator. implements canonical behavior main() (lines 146-193) — given the
  * absolute path to a just-edited ISA file, parses it, computes the ISC
  * transitions since last invocation, and creates one git commit per
  * allowlisted repo per newly-completed ISC. Returns a summary so callers
@@ -233,7 +223,12 @@ export interface CheckpointResult {
     readonly repo: string
     readonly sha: string
   }>
-  readonly skipped: "no-allowlist" | "no-criteria" | "no-frontmatter" | "missing-file" | null
+  readonly skipped:
+    | "no-allowlist"
+    | "no-criteria"
+    | "no-frontmatter"
+    | "missing-file"
+    | null
 }
 
 export const runCheckpoint = (

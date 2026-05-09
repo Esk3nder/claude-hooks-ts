@@ -10,57 +10,82 @@ import {
 import { ClaudeSubprocessTest } from "../../src/services/claude-subprocess.ts"
 
 /**
- * 24-prompt regression corpus, doctrine-aligned with PAI's pre-inference
- * gates. Fast-path cases mirror the four PAI gates exactly:
- *   - rating       (isExplicitRating, PAI line 101-113)
- *   - praise       (POSITIVE_PRAISE_WORDS / POSITIVE_PHRASES, PAI line 115-123)
- *   - system text  (SYSTEM_TEXT_PATTERNS, PAI line 125-131)
- *   - short prompt (length < MIN_PROMPT_LENGTH = 3, PAI line 905)
+ * 24-prompt regression corpus, doctrine-aligned with this package's pre-inference
+ * gates. Fast-path cases match the four this package gates exactly:
+ * - rating (isExplicitRating, the classifier)
+ * - praise (POSITIVE_PRAISE_WORDS / POSITIVE_PHRASES, the classifier)
+ * - system text (SYSTEM_TEXT_PATTERNS, the classifier)
+ * - short prompt (length < MIN_PROMPT_LENGTH = 3, the classifier)
  *
- * NOT fast-path per PAI doctrine (single-word approvals, /eN, "thanks") all
+ * NOT fast-path per Algorithm doctrine (single-word approvals, /eN, "thanks") all
  * route to Inference because the Sonnet classifier needs conversation context
- * to disambiguate per Algorithm v6.3.0 line 749.
+ * to disambiguate per the Algorithm v6.3.0.
  */
 
 interface Case {
   readonly prompt: string
   readonly expect:
-    | { readonly via: "fast-path"; readonly mode: Mode; readonly tier: Tier | null }
+    | {
+        readonly via: "fast-path"
+        readonly mode: Mode
+        readonly tier: Tier | null
+      }
     | { readonly via: "inference" }
 }
 
 const CORPUS: ReadonlyArray<Case> = [
-  // Gate 1 — explicit rating (PAI isExplicitRating)
+  // Gate 1 — explicit rating (isExplicitRating)
   { prompt: "8", expect: { via: "fast-path", mode: "MINIMAL", tier: null } },
   { prompt: "10", expect: { via: "fast-path", mode: "MINIMAL", tier: null } },
-  { prompt: "7 - good work", expect: { via: "fast-path", mode: "MINIMAL", tier: null } },
+  {
+    prompt: "7 - good work",
+    expect: { via: "fast-path", mode: "MINIMAL", tier: null },
+  },
   { prompt: "8 things to fix", expect: { via: "inference" } }, // sentence-starter exclusion
 
   // Gate 2 — positive praise (POSITIVE_PRAISE_WORDS / POSITIVE_PHRASES)
-  { prompt: "excellent", expect: { via: "fast-path", mode: "MINIMAL", tier: null } },
-  { prompt: "amazing", expect: { via: "fast-path", mode: "MINIMAL", tier: null } },
-  { prompt: "perfect", expect: { via: "fast-path", mode: "MINIMAL", tier: null } },
-  { prompt: "great job", expect: { via: "fast-path", mode: "MINIMAL", tier: null } },
-  { prompt: "well done", expect: { via: "fast-path", mode: "MINIMAL", tier: null } },
-  { prompt: "looks great", expect: { via: "fast-path", mode: "MINIMAL", tier: null } },
+  {
+    prompt: "excellent",
+    expect: { via: "fast-path", mode: "MINIMAL", tier: null },
+  },
+  {
+    prompt: "amazing",
+    expect: { via: "fast-path", mode: "MINIMAL", tier: null },
+  },
+  {
+    prompt: "perfect",
+    expect: { via: "fast-path", mode: "MINIMAL", tier: null },
+  },
+  {
+    prompt: "great job",
+    expect: { via: "fast-path", mode: "MINIMAL", tier: null },
+  },
+  {
+    prompt: "well done",
+    expect: { via: "fast-path", mode: "MINIMAL", tier: null },
+  },
+  {
+    prompt: "looks great",
+    expect: { via: "fast-path", mode: "MINIMAL", tier: null },
+  },
 
   // Gate 3 (system text) is now handled by the prompt-router BEFORE
-  // tryFastPath, mirroring PAI's process.exit(0). Tested separately in
+  // tryFastPath, mirroring process.exit(0). Tested separately in
   // tryFastPath/system-text.test.ts via isSystemTextPrompt().
 
   // Gate 4 — short prompt (< 3 chars)
   { prompt: "", expect: { via: "fast-path", mode: "MINIMAL", tier: null } },
   { prompt: "hi", expect: { via: "fast-path", mode: "MINIMAL", tier: null } },
 
-  // PAI Gate 4 wins for length<3 ("ok", "no") BEFORE the doctrine's
+  // Gate 4 wins for length<3 ("ok", "no") BEFORE the
   // single-word-approval rule can fire (which lives inside Sonnet's
-  // classification, not in the pre-filter). PAI hook line 905.
+  // classification, not in the pre-filter).
   { prompt: "ok", expect: { via: "fast-path", mode: "MINIMAL", tier: null } },
-  // PAI doctrine: 3+ char single-word approvals → inference (need context)
+  // 3+ char single-word approvals → inference (need conversation context).
   { prompt: "yes", expect: { via: "inference" } },
   { prompt: "thanks", expect: { via: "inference" } },
 
-  // PAI doctrine: /eN is executor-side, classifier still classifies content
+  // /eN is executor-side, classifier still classifies content.
   { prompt: "/e3 do the migration", expect: { via: "inference" } },
 
   // Genuinely ambiguous → inference
@@ -69,12 +94,15 @@ const CORPUS: ReadonlyArray<Case> = [
   { prompt: "what does the dispatcher do", expect: { via: "inference" } },
   { prompt: "review this PR", expect: { via: "inference" } },
   { prompt: "deploy to production", expect: { via: "inference" } },
-  { prompt: "audit the algorithm and update doctrine", expect: { via: "inference" } },
+  {
+    prompt: "audit the algorithm and update doctrine",
+    expect: { via: "inference" },
+  },
   { prompt: "should we use postgres or mysql?", expect: { via: "inference" } },
   { prompt: "ok now also fix the database", expect: { via: "inference" } },
 ]
 
-describe("classifier corpus — PAI-aligned (24 cases)", () => {
+describe("classifier corpus — spec-aligned (24 cases)", () => {
   test(`corpus has at least 24 cases (got ${CORPUS.length})`, () => {
     expect(CORPUS.length).toBeGreaterThanOrEqual(24)
   })

@@ -72,7 +72,7 @@ const c = (
   type: "criterion",
 })
 
-describe("expandPath — PAI lines 41-48 mirror", () => {
+describe("expandPath — the classifier mirror", () => {
   const home = process.env["HOME"] ?? ""
   test("expands ~/foo to $HOME/foo", () => {
     expect(expandPath("~/foo/bar")).toBe(join(home, "foo/bar"))
@@ -87,18 +87,18 @@ describe("expandPath — PAI lines 41-48 mirror", () => {
     expect(expandPath("$HOME")).toBe(home)
   })
   test("trims surrounding whitespace", () => {
-    expect(expandPath("  /tmp/x  ")).toBe("/tmp/x")
+    expect(expandPath(" /tmp/x ")).toBe("/tmp/x")
   })
   test("returns empty for empty / whitespace input", () => {
     expect(expandPath("")).toBe("")
-    expect(expandPath("   ")).toBe("")
+    expect(expandPath(" ")).toBe("")
   })
   test("leaves an absolute path untouched", () => {
     expect(expandPath("/tmp/y")).toBe("/tmp/y")
   })
 })
 
-describe("loadAllowlist — PAI lines 50-62 mirror", () => {
+describe("loadAllowlist — the classifier mirror", () => {
   test("returns [] when allowlist file absent (default install)", () => {
     const { root, cleanup } = stage()
     try {
@@ -117,7 +117,7 @@ describe("loadAllowlist — PAI lines 50-62 mirror", () => {
 /tmp/repo-a
 
 /tmp/repo-b
-   # leading-ws comment
+ # leading-ws comment
 
 /tmp/repo-c
 `,
@@ -147,9 +147,9 @@ describe("loadAllowlist — PAI lines 50-62 mirror", () => {
   })
 })
 
-describe("sanitizeMessage — PAI lines 111-113", () => {
+describe("sanitizeMessage — the classifier", () => {
   test("collapses whitespace, strips backticks/$, trims, caps at 200", () => {
-    expect(sanitizeMessage("  hello   world  ")).toBe("hello world")
+    expect(sanitizeMessage(" hello world ")).toBe("hello world")
     expect(sanitizeMessage("`evil` and $injection")).toBe("evil and injection")
     expect(sanitizeMessage("a".repeat(500)).length).toBe(200)
   })
@@ -254,7 +254,7 @@ describe("newlyCompletedISCs — pure planner", () => {
   })
 })
 
-describe("isGitRepo / hasChanges — PAI lines 94-109", () => {
+describe("isGitRepo / hasChanges — the classifier", () => {
   test("isGitRepo true on initialized repo", () => {
     const { root, cleanup } = stage()
     try {
@@ -307,7 +307,7 @@ describe("commitInRepo end-to-end", () => {
       const repo = join(root, "live-repo")
       initGitRepo(repo)
       writeFileSync(join(repo, "f.txt"), "content", "utf-8")
-      const sha = commitInRepo(repo, "ISC-7", "20260509_x", "  did the\nthing  ")
+      const sha = commitInRepo(repo, "ISC-7", "20260509_x", " did the\nthing ")
       expect(sha).not.toBeNull()
       const log = execFileSync(
         "git",

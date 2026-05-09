@@ -20,7 +20,7 @@ updated: 2026-05-09T10:00:00Z
 body
 `
 
-describe("parseFrontmatter — PAI line 70-80 mirror", () => {
+describe("parseFrontmatter — the classifier mirror", () => {
   test("extracts all 8 required fields", () => {
     const fm = parseFrontmatter(FIXTURE)
     expect(fm).not.toBeNull()
@@ -38,12 +38,12 @@ describe("parseFrontmatter — PAI line 70-80 mirror", () => {
     expect(parseFrontmatter("# just a body\nno fm")).toBeNull()
   })
 
-  test("strips surrounding double quotes (PAI quirk)", () => {
+  test("strips surrounding double quotes (quirk)", () => {
     const fm = parseFrontmatter(`---\ntask: "quoted task"\n---\n`)
     expect(fm?.["task"]).toBe("quoted task")
   })
 
-  test("strips surrounding single quotes (PAI quirk)", () => {
+  test("strips surrounding single quotes (quirk)", () => {
     const fm = parseFrontmatter(`---\ntask: 'quoted task'\n---\n`)
     expect(fm?.["task"]).toBe("quoted task")
   })
@@ -61,7 +61,7 @@ describe("parseFrontmatter — PAI line 70-80 mirror", () => {
     expect(Object.keys(fm ?? {}).length).toBe(1)
   })
 
-  test("only the FIRST frontmatter block is read (PAI behavior)", () => {
+  test("only the FIRST frontmatter block is read (behavior)", () => {
     const doc = `---
 task: first
 ---
@@ -74,7 +74,7 @@ task: second
   })
 })
 
-describe("writeFrontmatterField — PAI line 81-93 mirror", () => {
+describe("writeFrontmatterField — the classifier mirror", () => {
   test("updates an existing field in place", () => {
     const out = writeFrontmatterField(FIXTURE, "phase", "build")
     const fm = parseFrontmatter(out)

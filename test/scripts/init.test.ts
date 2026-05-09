@@ -1,5 +1,12 @@
 import { describe, expect, test } from "bun:test"
-import { mkdtempSync, existsSync, readFileSync, rmSync, writeFileSync, mkdirSync } from "node:fs"
+import {
+  mkdtempSync,
+  existsSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+  mkdirSync,
+} from "node:fs"
 import { tmpdir, homedir } from "node:os"
 import { join } from "node:path"
 
@@ -26,7 +33,11 @@ const runInit = async (
     new Response(proc.stderr as ReadableStream).text(),
   ])
   const exitCode = await proc.exited
-  return { stdout, stderr, exitCode: typeof exitCode === "number" ? exitCode : -1 }
+  return {
+    stdout,
+    stderr,
+    exitCode: typeof exitCode === "number" ? exitCode : -1,
+  }
 }
 
 const stage = (): { root: string; cleanup: () => void } => {
@@ -53,7 +64,9 @@ describe("claude-hooks-init", () => {
       const r = await runInit(root, ["--regenerate", "--print"])
       expect(r.exitCode).toBe(0)
       expect(r.stdout).toContain("[print]")
-      expect(existsSync(join(root, ".claude-hooks", "regenerate.yaml"))).toBe(false)
+      expect(existsSync(join(root, ".claude-hooks", "regenerate.yaml"))).toBe(
+        false,
+      )
     } finally {
       cleanup()
     }
@@ -103,7 +116,7 @@ describe("claude-hooks-init", () => {
       expect(existsSync(target)).toBe(true)
       const body = readFileSync(target, "utf-8")
       expect(body).toContain("export const probes")
-      expect(body).toContain("// \"tests-pass\":")
+      expect(body).toContain('// "tests-pass":')
     } finally {
       cleanup()
     }
@@ -126,8 +139,12 @@ describe("claude-hooks-init", () => {
       const r = await runInit(root, ["--install-skills", "--print"])
       expect(r.exitCode).toBe(0)
       // 15 stubs ship in repo skills/
-      const installLines = r.stdout.split("\n").filter((l) => /\[print\]\s+install/.test(l))
-      const skipLines = r.stdout.split("\n").filter((l) => /\[print\]\s+skip/.test(l))
+      const installLines = r.stdout
+        .split("\n")
+        .filter((l) => /\[print\]\s+install/.test(l))
+      const skipLines = r.stdout
+        .split("\n")
+        .filter((l) => /\[print\]\s+skip/.test(l))
       // Some _bundled paths may already exist for users with prior runs in
       // the real $HOME. Total install+skip referencing skill files should
       // be at least 15.
@@ -142,7 +159,9 @@ describe("claude-hooks-init", () => {
     try {
       const r = await runInit(root, ["--install-skills", "--print"])
       // Every printed install path should contain `/_bundled/`
-      const installs = r.stdout.split("\n").filter((l) => /\[print\]\s+install/.test(l))
+      const installs = r.stdout
+        .split("\n")
+        .filter((l) => /\[print\]\s+install/.test(l))
       for (const line of installs) {
         expect(line).toContain("/_bundled/")
       }
@@ -181,9 +200,13 @@ describe("claude-hooks-init", () => {
   test("--install-skills --into-root WITHOUT --force refuses to overwrite", async () => {
     const { root, cleanup } = stage()
     try {
-      const r = await runInit(root, ["--install-skills", "--into-root", "--print"])
+      const r = await runInit(root, [
+        "--install-skills",
+        "--into-root",
+        "--print",
+      ])
       // For any skill that already exists in the real $HOME ~/.claude/skills/
-      // (likely on PAI users), expect a `skip` line, not an `overwrite` action.
+      // (likely on users running an external host environment), expect a `skip` line, not an `overwrite` action.
       // The literal action keyword for an overwrite would be `[print] overwrite`;
       // the word "overwrite" CAN appear inside skip-message help text (it
       // tells you to pass --force).

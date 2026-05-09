@@ -1,28 +1,28 @@
 /**
  * ReReadCheck built-in — VERIFY→LEARN final gate per Algorithm v6.3.0
- * (capability listed in `~/.claude/PAI/ALGORITHM/capabilities.md` line 17).
+ * (capability listed in this package).
  *
- * Doctrine summary (PAI capabilities.md): "Re-read user's last message
+ * Doctrine summary (this package capabilities.md): "Re-read user's last message
  * verbatim; enumerate every explicit ask against what shipped; block
  * `phase: complete` on any ✗. Targets the 82% 'missed ask' complaint
  * cluster. MANDATORY at every tier — at E1 single-part it's a one-line
  * block. No fast-path exemption."
  *
- * PAI lists this as `*(inline doctrine step — no external tool)*` —
+ * this package lists this as `*(inline doctrine step — no external tool)*` —
  * meaning the model performs the check inline. This module makes the
  * check programmatically callable so the model can pipe its own draft
  * through it AND get a structured pass/fail report. Hooks can also use
  * it (e.g. an ISA Verification-section parser pre-flight).
  *
  * Algorithm:
- *   1. Tokenize the user prompt into "explicit asks" — sentences/clauses
- *      that contain an imperative verb or a question mark, plus any
- *      explicit numbered/bulleted item.
- *   2. For each ask, search the assistant's draft response for either a
- *      lexical match of the key noun, an explicit acknowledgement
- *      ("done", "shipped", "✓", "yes"), or evidence of action (a code
- *      fence, a bullet, etc.).
- *   3. Return the unmet asks. Empty array = ok.
+ * 1. Tokenize the user prompt into "explicit asks" — sentences/clauses
+ * that contain an imperative verb or a question mark, plus any
+ * explicit numbered/bulleted item.
+ * 2. For each ask, search the assistant's draft response for either a
+ * lexical match of the key noun, an explicit acknowledgement
+ * ("done", "shipped", "✓", "yes"), or evidence of action (a code
+ * fence, a bullet, etc.).
+ * 3. Return the unmet asks. Empty array = ok.
  *
  * Heuristic, not perfect — surfaces the obvious misses doctrine targets
  * (the "you asked for X and I shipped Y" failure mode). False negatives
@@ -137,9 +137,9 @@ const splitListItems = (text: string): ReadonlyArray<string> => {
 
 /**
  * Extract explicit asks from a user prompt. Uses three signals:
- *   - sentences starting with an imperative verb
- *   - sentences ending with `?`
- *   - bulleted/numbered list items
+ * - sentences starting with an imperative verb
+ * - sentences ending with `?`
+ * - bulleted/numbered list items
  *
  * Each ask is returned at most once even if multiple signals match.
  */

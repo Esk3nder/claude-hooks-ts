@@ -21,7 +21,9 @@ const writeYaml = (root: string, contents: string): void => {
 
 describe("regeneratePathFor", () => {
   test("path is <root>/.claude-hooks/regenerate.yaml", () => {
-    expect(regeneratePathFor("/tmp/x")).toBe("/tmp/x/.claude-hooks/regenerate.yaml")
+    expect(regeneratePathFor("/tmp/x")).toBe(
+      "/tmp/x/.claude-hooks/regenerate.yaml",
+    )
   })
 })
 
@@ -34,9 +36,9 @@ describe("parseRegenerateYaml", () => {
 
   test("parses single rule with shell-string command", () => {
     const r = parseRegenerateYaml(`rules:
-  - source: docs/architecture.md
-    derived: docs/SUMMARY.md
-    command: bun run scripts/gen.ts
+ - source: docs/architecture.md
+ derived: docs/SUMMARY.md
+ command: bun run scripts/gen.ts
 `)
     expect(r._tag).toBe("ok")
     if (r._tag === "ok") {
@@ -51,9 +53,9 @@ describe("parseRegenerateYaml", () => {
 
   test("parses array-form command", () => {
     const r = parseRegenerateYaml(`rules:
-  - source: a
-    derived: b
-    command: ["bun", "run", "scripts/x.ts"]
+ - source: a
+ derived: b
+ command: ["bun", "run", "scripts/x.ts"]
 `)
     expect(r._tag).toBe("ok")
     if (r._tag === "ok") {
@@ -63,22 +65,22 @@ describe("parseRegenerateYaml", () => {
 
   test("parses multiple rules", () => {
     const r = parseRegenerateYaml(`rules:
-  - source: a.md
-    derived: a-summary.md
-    command: cmd1
-  - source: b.md
-    derived: b-summary.md
-    command: cmd2
+ - source: a.md
+ derived: a-summary.md
+ command: cmd1
+ - source: b.md
+ derived: b-summary.md
+ command: cmd2
 `)
     expect(r._tag).toBe("ok")
     if (r._tag === "ok") expect(r.rules.length).toBe(2)
   })
 
-  test("strips surrounding quotes (PAI quirk parity)", () => {
+  test("strips surrounding quotes (quirk parity)", () => {
     const r = parseRegenerateYaml(`rules:
-  - source: "a b c.md"
-    derived: 'd e f.md'
-    command: "echo hi"
+ - source: "a b c.md"
+ derived: 'd e f.md'
+ command: "echo hi"
 `)
     if (r._tag === "ok") {
       expect(r.rules[0]?.source).toBe("a b c.md")
@@ -89,9 +91,9 @@ describe("parseRegenerateYaml", () => {
 
   test("ignores trailing `# comments`", () => {
     const r = parseRegenerateYaml(`rules:
-  - source: a # the source
-    derived: b # the derived
-    command: c # cmd
+ - source: a # the source
+ derived: b # the derived
+ command: c # cmd
 `)
     if (r._tag === "ok") {
       expect(r.rules[0]?.source).toBe("a")
@@ -102,9 +104,9 @@ describe("parseRegenerateYaml", () => {
 
   test("F4: `#` inside double-quoted value is NOT treated as comment", () => {
     const r = parseRegenerateYaml(`rules:
-  - source: x
-    derived: y
-    command: "echo hi # not a comment"
+ - source: x
+ derived: y
+ command: "echo hi # not a comment"
 `)
     if (r._tag === "ok") {
       // After quote-strip, command should still contain the `#` segment
@@ -114,9 +116,9 @@ describe("parseRegenerateYaml", () => {
 
   test("F4: `#` inside single-quoted value is NOT treated as comment", () => {
     const r = parseRegenerateYaml(`rules:
-  - source: x
-    derived: y
-    command: 'echo hi # not a comment'
+ - source: x
+ derived: y
+ command: 'echo hi # not a comment'
 `)
     if (r._tag === "ok") {
       expect(r.rules[0]?.command).toBe("echo hi # not a comment")
@@ -125,9 +127,9 @@ describe("parseRegenerateYaml", () => {
 
   test("F4: `#` without leading whitespace is NOT a comment marker", () => {
     const r = parseRegenerateYaml(`rules:
-  - source: x
-    derived: y
-    command: bun#weird-but-not-a-comment
+ - source: x
+ derived: y
+ command: bun#weird-but-not-a-comment
 `)
     if (r._tag === "ok") {
       expect(r.rules[0]?.command).toBe("bun#weird-but-not-a-comment")
@@ -136,8 +138,8 @@ describe("parseRegenerateYaml", () => {
 
   test("incomplete rule (missing field) is dropped", () => {
     const r = parseRegenerateYaml(`rules:
-  - source: a
-    command: c
+ - source: a
+ command: c
 `)
     if (r._tag === "ok") expect(r.rules.length).toBe(0)
   })
@@ -190,10 +192,7 @@ describe("loadRegenerateRules — disk integration", () => {
   test("returns parsed rules when file present", () => {
     const { root, cleanup } = stage()
     try {
-      writeYaml(
-        root,
-        `rules:\n  - source: x\n    derived: y\n    command: z\n`,
-      )
+      writeYaml(root, `rules:\n - source: x\n derived: y\n command: z\n`)
       const rules = loadRegenerateRules(root)
       expect(rules.length).toBe(1)
       expect(rules[0]?.source).toBe("x")

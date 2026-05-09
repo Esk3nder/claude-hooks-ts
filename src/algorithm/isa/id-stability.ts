@@ -2,32 +2,32 @@
  * ID-stability validator for ISC IDs across an ISA edit.
  *
  * NEW DESIGN (this package — not a port). The doctrine rule lives in
- * `~/.claude/PAI/DOCUMENTATION/IsaFormat.md` line 207-209:
+ * this package:
  *
- *   "ID-Stability Rule (NEW v2.7): ISC IDs never re-number on edit. Splits
- *    become `ISC-N.M` (parent preserved); drops become tombstones
- *    (`- [ ] ISC-N: [DROPPED — see Decisions]`). Reconcile depends on this;
- *    renumbering breaks ephemeral feature reconciliation silently."
+ * "ID-Stability Rule (NEW v2.7): ISC IDs never re-number on edit. Splits
+ * become `ISC-N.M` (parent preserved); drops become tombstones
+ * (`- [ ] ISC-N: [DROPPED — see Decisions]`). Reconcile depends on this;
+ * renumbering breaks ephemeral feature reconciliation silently."
  *
- * PAI states the rule but does not ship a hook-side validator for it. This
+ * this package states the rule but does not ship a hook-side validator for it. This
  * module is the doctrinal-rule-as-code: given an ISA's criteria before and
  * after an edit, return the set of IDs that were illegally renumbered.
  *
  * Three legal transitions (no violation):
- *   1. unchanged             — same ID, same description (or any change to text)
- *   2. split (ISC-N → ISC-N.M)   — parent preserved or replaced by children
- *   3. dropped (tombstoned)  — `- [ ] ISC-N: [DROPPED — see Decisions]`
+ * 1. unchanged — same ID, same description (or any change to text)
+ * 2. split (ISC-N → ISC-N.M) — parent preserved or replaced by children
+ * 3. dropped (tombstoned) — `- [ ] ISC-N: [DROPPED — see Decisions]`
  *
  * One illegal transition:
- *   - rename (ISC-N → ISC-K where K != N AND K is not N.<something>)
+ * - rename (ISC-N → ISC-K where K != N AND K is not N.<something>)
  *
  * Detection algorithm:
- *   1. Index befores by id and by descriptionHash.
- *   2. For each before-id that is NOT in afters and NOT tombstoned in afters
- *      and NOT a parent-of-any-after-N.M ID, look for an after-id whose
- *      description hash matches a before description that ALSO has a different
- *      id. Such a (beforeId → afterId) pair is a rename violation.
- *   3. Tombstone form is detected by description matching `^[DROPPED\b`.
+ * 1. Index befores by id and by descriptionHash.
+ * 2. For each before-id that is NOT in afters and NOT tombstoned in afters
+ * and NOT a parent-of-any-after-N.M ID, look for an after-id whose
+ * description hash matches a before description that ALSO has a different
+ * id. Such a (beforeId → afterId) pair is a rename violation.
+ * 3. Tombstone form is detected by description matching `^[DROPPED\b`.
  *
  * The validator works on parsed CriterionEntry arrays (from criteria.ts) so
  * heading-variant tolerance and bracket compat are inherited for free.
@@ -79,8 +79,7 @@ const isTombstoned = (e: CriterionEntry): boolean =>
  * `ISC-CLI-3` matches `ISC-CLI-3.1`.
  */
 const isDescendantOf = (afterId: string, beforeId: string): boolean =>
-  afterId === beforeId ||
-  afterId.startsWith(`${beforeId}.`)
+  afterId === beforeId || afterId.startsWith(`${beforeId}.`)
 
 export const validateIdStability = (
   before: ReadonlyArray<CriterionEntry>,

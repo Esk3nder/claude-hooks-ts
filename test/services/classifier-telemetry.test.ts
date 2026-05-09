@@ -12,14 +12,14 @@ import {
 } from "../../src/services/classifier-telemetry.ts"
 
 describe("buildPromptExcerpt", () => {
-  test("matches PAI prompt.slice(0, 120)", () => {
+  test("matches prompt.slice(0, 120)", () => {
     expect(buildPromptExcerpt("hello")).toBe("hello")
     expect(buildPromptExcerpt("x".repeat(200)).length).toBe(120)
   })
 })
 
 describe("buildRecord", () => {
-  test("produces PAI-shaped record", () => {
+  test("produces canonical-shaped record", () => {
     const r = buildRecord({
       sessionId: "sid",
       prompt: "implement OAuth refresh flow",
@@ -62,7 +62,13 @@ describe("ClassifierTelemetryLive — JSONL append", () => {
       await Effect.runPromise(
         program.pipe(Effect.provide(ClassifierTelemetryLive(root))),
       )
-      const file = join(root, ".claude-hooks", "state", "observability", "mode-classifier.jsonl")
+      const file = join(
+        root,
+        ".claude-hooks",
+        "state",
+        "observability",
+        "mode-classifier.jsonl",
+      )
       expect(existsSync(file)).toBe(true)
       const content = readFileSync(file, "utf8").trim()
       const parsed = JSON.parse(content) as { mode: string; session_id: string }
@@ -95,7 +101,13 @@ describe("ClassifierTelemetryLive — JSONL append", () => {
       await Effect.runPromise(
         program.pipe(Effect.provide(ClassifierTelemetryLive(root))),
       )
-      const file = join(root, ".claude-hooks", "state", "observability", "mode-classifier.jsonl")
+      const file = join(
+        root,
+        ".claude-hooks",
+        "state",
+        "observability",
+        "mode-classifier.jsonl",
+      )
       const lines = readFileSync(file, "utf8").trim().split("\n")
       expect(lines.length).toBe(3)
       for (const line of lines) {

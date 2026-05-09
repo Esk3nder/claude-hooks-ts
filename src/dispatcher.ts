@@ -17,8 +17,14 @@ import { handlePreCompact } from "./events/precompact-snapshot.ts"
 import { handleSessionEnd } from "./events/session-ledger.ts"
 import { handlePostToolUseFailure } from "./events/failure-explainer.ts"
 import { handlePermissionRequest } from "./events/permission-autopilot.ts"
-import { handleSubagentStart, handleSubagentStop } from "./events/subagent-scope-gate.ts"
-import { handleTaskCreated, handleTaskCompleted } from "./events/task-integrity.ts"
+import {
+  handleSubagentStart,
+  handleSubagentStop,
+} from "./events/subagent-scope-gate.ts"
+import {
+  handleTaskCreated,
+  handleTaskCompleted,
+} from "./events/task-integrity.ts"
 import { handleUserPromptExpansion } from "./events/user-prompt-expansion.ts"
 import { handlePostCompact } from "./events/postcompact-ledger.ts"
 import { handleSetup } from "./events/setup.ts"
@@ -80,7 +86,9 @@ const readStdin = (): Effect.Effect<string> =>
   Effect.tryPromise({
     try: async () => {
       if (typeof Bun !== "undefined" && (Bun as { stdin?: unknown }).stdin) {
-        return await (Bun as { stdin: { text: () => Promise<string> } }).stdin.text()
+        return await (
+          Bun as { stdin: { text: () => Promise<string> } }
+        ).stdin.text()
       }
       const chunks: Buffer[] = []
       return await new Promise<string>((resolve) => {
@@ -147,9 +155,7 @@ const readLastGc = (cwd: string): number => {
  * Best-effort approvals gc. Runs AFTER the decision is emitted to stdout so
  * it never delays the hook response. Any failure is swallowed.
  */
-const maybeGcApprovals = (
-  cwd: string,
-): Effect.Effect<void, never, Approvals> =>
+const maybeGcApprovals = (cwd: string): Effect.Effect<void, never, Approvals> =>
   Effect.gen(function* () {
     const now = Date.now()
     const last = readLastGc(cwd)
@@ -212,7 +218,7 @@ const routeByTag = (
  * Per-tag handler timeout in milliseconds. Most events stay on the historical
  * 4s cap because their handlers are local file I/O and finish in <100ms. The
  * UserPromptSubmit cap is raised to accommodate the mode-classifier subprocess
- * (Sonnet via `claude --print`, p95 ~7s, p99 ~12s) PLUS PAI's 25s inference
+ * (Sonnet via `claude --print`, p95 ~7s, p99 ~12s) PLUS this package's 25s inference
  * timeout (PromptProcessing.hook.ts:939). The 30s envelope = 25s classifier
  * timeout + 5s overhead headroom (transcript read, JSONL telemetry, etc.).
  *
@@ -245,9 +251,7 @@ const dispatchPayload = (
   const guarded = baseHandler.pipe(
     Effect.withSpan(`handler.${payload._tag}`),
     Effect.timeout(`${cap} millis`),
-    Effect.catchTag("TimeoutException", () =>
-      Effect.succeed(SAFE_DEFAULT),
-    ),
+    Effect.catchTag("TimeoutException", () => Effect.succeed(SAFE_DEFAULT)),
   ) as Effect.Effect<HookDecision, never, AppServices>
 
   return guarded.pipe(
@@ -264,25 +268,33 @@ export const program = (argv: ReadonlyArray<string>): Effect.Effect<void> =>
   Effect.gen(function* () {
     const action = argv[2]
     if (!action) {
-      yield* Effect.sync(() => { process.stderr.write("dispatcher: missing action argument" + "\n") })
+      yield* Effect.sync(() => {
+        process.stderr.write("dispatcher: missing action argument" + "\n")
+      })
       yield* emit(SAFE_DEFAULT)
       return
     }
     const raw = yield* readStdin()
     if (raw.trim().length === 0) {
-      yield* Effect.sync(() => { process.stderr.write("dispatcher: stdin was empty\n") })
+      yield* Effect.sync(() => {
+        process.stderr.write("dispatcher: stdin was empty\n")
+      })
       yield* emit(SAFE_DEFAULT)
       return
     }
     const parsedE = yield* Effect.either(parseJson(raw))
     if (parsedE._tag === "Left") {
-      yield* Effect.sync(() => { process.stderr.write(`dispatcher: ${parsedE.left.message}` + "\n") })
+      yield* Effect.sync(() => {
+        process.stderr.write(`dispatcher: ${parsedE.left.message}` + "\n")
+      })
       yield* emit(SAFE_DEFAULT)
       return
     }
     const decodedE = yield* Effect.either(decodePayload(parsedE.right))
     if (decodedE._tag === "Left") {
-      yield* Effect.sync(() => { process.stderr.write("dispatcher: payload schema decode failed" + "\n") })
+      yield* Effect.sync(() => {
+        process.stderr.write("dispatcher: payload schema decode failed" + "\n")
+      })
       yield* emit(SAFE_DEFAULT)
       return
     }
@@ -295,9 +307,9 @@ export const program = (argv: ReadonlyArray<string>): Effect.Effect<void> =>
     yield* emit(decision)
     // Best-effort post-emit gc — never blocks or affects the response.
     const cwd =
-      (typeof payload.cwd === "string" && payload.cwd.length > 0
+      typeof payload.cwd === "string" && payload.cwd.length > 0
         ? payload.cwd
-        : process.cwd())
+        : process.cwd()
     yield* maybeGcApprovals(cwd).pipe(
       Effect.provide(layer),
       Effect.catchAll(() => Effect.succeed(undefined)),

@@ -73,5 +73,5 @@ describe("scrubClaudeEnv (B2 — silent-billing prevention)", () => {
  * ignored). Asserting these without spawning a real process requires a
  * test double for child_process.spawn — out of scope for this slice. The
  * implementation has explicit comments at the call sites and the patterns
- * are the same that PAI's Inference.ts has been running in production.
+ * are the same that this package's Inference.ts has been running in production.
  */

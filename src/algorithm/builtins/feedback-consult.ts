@@ -1,17 +1,17 @@
 /**
  * FeedbackMemoryConsult built-in — capability listed in Algorithm v6.3.0
- * line 45 / `~/.claude/PAI/ALGORITHM/capabilities.md` line 13.
+ * line 45 / this package.
  *
  * Doctrine summary: "First step of PLAN at Extended+. Before committing to
  * approach, grep ~/.claude/projects/${HARNESS_USER_DIR}/memory/feedback_*.md
  * by task keywords. Prevents repeating mistakes already documented. Turns
  * the memory system from write-only diary into active guardrail."
  *
- * PAI invokes this via `Bash('rg -l "KEYWORDS" ...')` — model-side. This
+ * this package invokes this via `Bash('rg -l "KEYWORDS" ...')` — model-side. This
  * module is the in-process equivalent: scan a feedback directory for
  * memos whose body matches the supplied keywords, return ranked excerpts.
  *
- * Path adaptation: PAI uses `~/.claude/projects/${HARNESS_USER_DIR}/memory/`
+ * Path adaptation: uses `~/.claude/projects/${HARNESS_USER_DIR}/memory/`
  * — a per-user, harness-injected directory. This package uses
  * `<repo>/.claude-hooks/feedback/` — per-repo, mirrors the established
  * `.claude-hooks/` convention used by checkpoint allowlist, probes, and
@@ -78,7 +78,9 @@ const buildExcerpt = (body: string, re: RegExp): string => {
   const start = before >= 0 ? before + 2 : 0
   const end = after >= 0 ? after : body.length
   const para = body.slice(start, end).trim()
-  return para.length > EXCERPT_CHARS ? `${para.slice(0, EXCERPT_CHARS - 3)}...` : para
+  return para.length > EXCERPT_CHARS
+    ? `${para.slice(0, EXCERPT_CHARS - 3)}...`
+    : para
 }
 
 /**
@@ -112,9 +114,9 @@ export interface ConsultOptions {
  * mtime desc). Best-effort — read errors per-memo are silently skipped.
  *
  * Returns [] when:
- *   - no keywords
- *   - feedback dir absent
- *   - no memos match
+ * - no keywords
+ * - feedback dir absent
+ * - no memos match
  */
 export const consultFeedback = (
   keywords: ReadonlyArray<string>,
@@ -170,7 +172,10 @@ export const renderConsultBlock = (
   if (matches.length === 0) return ""
   const header = `FeedbackMemoryConsult: ${matches.length} prior memo(s) match`
   const body = matches
-    .map((m) => `- ${m.name} (${m.hits} hit${m.hits === 1 ? "" : "s"}): ${m.excerpt.split("\n")[0]?.slice(0, 200) ?? ""}`)
+    .map(
+      (m) =>
+        `- ${m.name} (${m.hits} hit${m.hits === 1 ? "" : "s"}): ${m.excerpt.split("\n")[0]?.slice(0, 200) ?? ""}`,
+    )
     .join("\n")
   return `${header}\n${body}`
 }

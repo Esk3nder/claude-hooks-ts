@@ -1,6 +1,6 @@
 # claude-hooks-ts
 
-A type-safe dispatcher for [Claude Code](https://docs.claude.com/claude-code) hooks — **with the PAI Algorithm primitive wired in.**
+A type-safe dispatcher for [Claude Code](https://docs.claude.com/claude-code) hooks — **with the Algorithm primitive wired in.**
 
 Replaces ad-hoc per-hook shell scripts with a single binary that decodes hook payloads through a strict schema, runs them through declarative policies, and emits the structured JSON Claude Code expects. One control plane for safety, quality, token efficiency, verification gates, audit, **plus mode classification, ISA tracking, capability auditing, and Stop-time completeness gates** that turn an LLM session into a verifiable Algorithm run.
 
@@ -28,7 +28,7 @@ A few things it does out of the box:
 
 ### Algorithm layer (1.0.0)
 
-The PAI Algorithm primitive — ported faithfully from `~/.claude/PAI/ALGORITHM/v6.3.0.md`:
+The Algorithm primitive (v6.3.0):
 
 - **Mode classifier on every prompt.** A Sonnet subprocess (via `claude --print`, OAuth-billed) decides `MINIMAL | NATIVE | ALGORITHM` and a tier `E1`-`E5`. Result emitted as `additionalContext` so the model enters the right cognitive depth automatically. Conservative fail-safe to ALGORITHM E3 on any error.
 - **ISA primitive.** 12-section spec from `IsaFormat.md`, with parsers for frontmatter, criteria (with v5.3-era backward-compat), section walker, ID-stability validator, and tier-completeness gate.
@@ -85,8 +85,8 @@ claude-hooks-install --uninstall --apply
 By default, hooks run via `bun run`. On Linux you can compile to a single binary instead — cuts dispatcher cold-start by ~3x:
 
 ```bash
-bun run build:bin                      # produces dist/claude-hook-<platform>-<arch>
-claude-hooks-install --apply           # auto-detects the binary, wires it directly
+bun run build:bin # produces dist/claude-hook-<platform>-<arch>
+claude-hooks-install --apply # auto-detects the binary, wires it directly
 ```
 
 Force the bun-run path with `--no-binary`. macOS auto-falls back since unsigned compiled binaries are killed by Gatekeeper.
@@ -115,18 +115,18 @@ Project-local config lives at `<project>/.claude-hooks/`:
 
 ```
 .claude-hooks/
-  protected-paths.yaml          # paths requiring confirmation before edit
-  generated-files.yaml          # paths that cannot be edited
-  test-map.yaml                 # changed-file → smallest verify command
-  research-domains.yaml         # whitelisted research source roots
-  checkpoint-repos.txt          # allowlist for ISC auto-commit (opt-in, default empty)
-  probes.ts                     # hot-loadable ISC verification probes (opt-in)
-  regenerate.yaml               # source-changed → regenerate command rules
-  feedback/*.md                 # FeedbackMemoryConsult corpus
-  state/                        # per-session ledgers (managed by hooks)
-  state/observability/          # classifier telemetry JSONL
-  state/work/<slug>/            # task ISAs
-  state/archive/<date>/<slug>/  # archived completed ISAs
+ protected-paths.yaml # paths requiring confirmation before edit
+ generated-files.yaml # paths that cannot be edited
+ test-map.yaml # changed-file → smallest verify command
+ research-domains.yaml # whitelisted research source roots
+ checkpoint-repos.txt # allowlist for ISC auto-commit (opt-in, default empty)
+ probes.ts # hot-loadable ISC verification probes (opt-in)
+ regenerate.yaml # source-changed → regenerate command rules
+ feedback/*.md # FeedbackMemoryConsult corpus
+ state/ # per-session ledgers (managed by hooks)
+ state/observability/ # classifier telemetry JSONL
+ state/work/<slug>/ # task ISAs
+ state/archive/<date>/<slug>/ # archived completed ISAs
 ```
 
 Defaults are baked in. YAML/TS files are optional — when missing, policies fall back to safe defaults.
@@ -143,9 +143,9 @@ When set, the dispatcher skips the Sonnet subprocess and returns deterministic A
 
 ## The Algorithm — what's the point?
 
-The original PAI Algorithm makes a session a **verifiable transition from current state to ideal state.** Done is testable, not declared. The mode classifier picks the right cognitive depth so trivial prompts don't cost an Algorithm run AND substantial work doesn't get a one-shot answer. The ISA records the ideal state as ISCs (one binary tool probe each), the checkpoint records progress as git commits, the probes auto-verify what they can, and the Stop gate refuses to let the model claim "complete" without the receipts.
+The Algorithm makes a session a **verifiable transition from current state to ideal state.** Done is testable, not declared. The mode classifier picks the right cognitive depth so trivial prompts don't cost an Algorithm run AND substantial work doesn't get a one-shot answer. The ISA records the ideal state as ISCs (one binary tool probe each), the checkpoint records progress as git commits, the probes auto-verify what they can, and the Stop gate refuses to let the model claim "complete" without the receipts.
 
-This package ports that primitive into a generic hook runtime so any Claude Code project gets it for free — no PAI install required. PAI users get the same primitive plus their full skill content.
+claude-hooks-ts ships this primitive as a generic hook runtime so any Claude Code project gets it for free — no extra setup required.
 
 ---
 
@@ -154,10 +154,10 @@ This package ports that primitive into a generic hook runtime so any Claude Code
 Tail the per-session ledger live:
 
 ```bash
-claude-hooks-tail                        # follow every session under cwd
-claude-hooks-tail --session <id>         # filter to one session
-claude-hooks-tail --since 2026-01-01     # only events after timestamp
-claude-hooks-tail --cwd /other/project   # tail another project's ledger
+claude-hooks-tail # follow every session under cwd
+claude-hooks-tail --session <id> # filter to one session
+claude-hooks-tail --since 2026-01-01 # only events after timestamp
+claude-hooks-tail --cwd /other/project # tail another project's ledger
 ```
 
 For traces, set `OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318/v1/traces` before launching Claude Code. Spans flow through the Effect tracer to your OTel collector. Without the env var, tracing is fully no-op (zero import cost).
@@ -176,7 +176,7 @@ tail -f .claude-hooks/state/observability/mode-classifier.jsonl | jq .
 bun install
 bun run typecheck
 bun test
-bun run lint:claude-spawn       # CI guard: no direct `claude` spawns outside the chokepoint
+bun run lint:claude-spawn # CI guard: no direct `claude` spawns outside the chokepoint
 ```
 
 Conventions:
@@ -184,7 +184,7 @@ Conventions:
 - Side effects through services in `src/services/`.
 - Policies as pure functions in `src/policies/`.
 - All `claude` subprocesses MUST go through `src/services/claude-subprocess.ts` (env scrubbing). The CI guard refuses to build otherwise.
-- Algorithm-aware code lives under `src/algorithm/`; per-PAI-source citations in code comments where applicable.
+- Algorithm-aware code lives under `src/algorithm/`; per-source citations in code comments where applicable.
 
 ---
 

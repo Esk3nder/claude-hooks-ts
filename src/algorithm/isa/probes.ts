@@ -2,29 +2,29 @@
  * ISC probe registry — hot-loadable user code that verifies ISCs after
  * tool calls finish.
  *
- * NEW DESIGN — no PAI parallel. PAI's CheckpointPerISC.hook.ts only watches
+ * NEW DESIGN — no this package parallel. this package's CheckpointPerISC.hook.ts only watches
  * for `[ ]→[x]` transitions written by the model; this module lets users
  * declare programmatic verifications that flip the checkbox automatically
  * when the test passes. The two systems compose: a probe-flipped checkbox
  * triggers the same checkpoint commit that a model-flipped one does.
  *
  * Privilege model (HONEST disclosure):
- *   - Probes run in the dispatcher process with FULL Node privileges
- *     (filesystem, network, shell, env vars). There is no real sandbox.
- *   - Each probe is wrapped in a 1s Effect.timeout and a catch-all that
- *     treats failure as a non-passing probe (same as a returned `false`).
- *   - The probe file is `<root>/.claude-hooks/probes.ts` — opt-in. Default
- *     install ships zero probes. Loading respects the same trust boundary
- *     the user implicitly grants any code already in their repo.
+ * - Probes run in the dispatcher process with FULL Node privileges
+ * (filesystem, network, shell, env vars). There is no real sandbox.
+ * - Each probe is wrapped in a 1s Effect.timeout and a catch-all that
+ * treats failure as a non-passing probe (same as a returned `false`).
+ * - The probe file is `<root>/.claude-hooks/probes.ts` — opt-in. Default
+ * install ships zero probes. Loading respects the same trust boundary
+ * the user implicitly grants any code already in their repo.
  *
  * Activation flow (planned for slice 2c wiring):
- *   1. PostToolUse fires for any tool the model used.
- *   2. The handler locates the active ISA (via locate.ts), parses Test
- *      Strategy to map iscId → probe-name, finds probes the user defined
- *      that match, runs each in isolation.
- *   3. For passing probes whose target ISC is currently `[ ]`, edits the
- *      ISA in place to flip to `[x]`. That ISA edit then fires PostToolUse
- *      again, where checkpoint.ts notices the transition and commits.
+ * 1. PostToolUse fires for any tool the model used.
+ * 2. The handler locates the active ISA (via locate.ts), parses Test
+ * Strategy to map iscId → probe-name, finds probes the user defined
+ * that match, runs each in isolation.
+ * 3. For passing probes whose target ISC is currently `[ ]`, edits the
+ * ISA in place to flip to `[x]`. That ISA edit then fires PostToolUse
+ * again, where checkpoint.ts notices the transition and commits.
  *
  * Recursion guard: probes module reads ISA but only WRITES on `passed`
  * transitions and only when the matching ISC is currently unchecked.
@@ -42,9 +42,7 @@ import type { CriterionEntry } from "./criteria.ts"
  * was matched against and returns a boolean (or a Promise<boolean>).
  * Sync return is fine; we wrap everything in Effect.tryPromise.
  */
-export type ProbeFn = (
-  criterion: CriterionEntry,
-) => boolean | Promise<boolean>
+export type ProbeFn = (criterion: CriterionEntry) => boolean | Promise<boolean>
 
 export interface ProbesModule {
   readonly probes: Readonly<Record<string, ProbeFn>>
@@ -60,9 +58,9 @@ export const probesPathFor = (root: string = process.cwd()): string =>
 
 /**
  * Hot-load the user's probes module. Returns an empty registry when:
- *   - the file doesn't exist (the common case — opt-in)
- *   - the import throws
- *   - the module's `probes` export is missing or non-object
+ * - the file doesn't exist (the common case — opt-in)
+ * - the import throws
+ * - the module's `probes` export is missing or non-object
  *
  * Fails closed — no probes is the safe default. Errors logged to stderr.
  *
@@ -144,7 +142,7 @@ export const runProbe = (
  * Given the parsed Test Strategy table from an ISA and a probe registry,
  * return the list of (criterion, probeFn) pairs to actually invoke. The
  * Test Strategy section format (per IsaFormat.md line 183) is:
- *   `isc | type | check | threshold | tool`
+ * `isc | type | check | threshold | tool`
  * The `tool` column names the probe. Only criteria currently `[ ]`
  * (status === 'pending') match — completed ones are skipped (idempotent).
  *
@@ -177,8 +175,8 @@ export const matchProbes = (
  * Parse the Test Strategy section body into a `iscId → probeName` map.
  * The body is a markdown pipe table; we tolerate header rows and
  * separator rows (`---|---|...`). A row contributes when:
- *   - first cell starts with `ISC-` (after stripping leading/trailing whitespace)
- *   - last cell is a non-empty token (the probe name)
+ * - first cell starts with `ISC-` (after stripping leading/trailing whitespace)
+ * - last cell is a non-empty token (the probe name)
  *
  * Rows missing either side are silently skipped (best-effort).
  */

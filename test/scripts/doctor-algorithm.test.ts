@@ -1,21 +1,16 @@
 /**
  * Algorithm-aware doctor checks (Phase 5):
- *   - classifier subprocess available
- *   - classifier billing path
- *   - thinking-capability skill stubs installed
- *   - active ISA
+ * - classifier subprocess available
+ * - classifier billing path
+ * - thinking-capability skill stubs installed
+ * - active ISA
  *
  * The script reads from real $HOME for skill counts and uses --cwd for the
  * ISA / state checks. We stage tmpdirs for cwd-side assertions and inspect
  * env-driven branches.
  */
 import { describe, expect, test } from "bun:test"
-import {
-  mkdtempSync,
-  mkdirSync,
-  writeFileSync,
-  rmSync,
-} from "node:fs"
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 
@@ -24,7 +19,11 @@ const SCRIPT = new URL("../../scripts/doctor.ts", import.meta.url).pathname
 interface DoctorRun {
   readonly stdout: string
   readonly exitCode: number
-  readonly results: ReadonlyArray<{ name: string; status: string; detail?: string }>
+  readonly results: ReadonlyArray<{
+    name: string
+    status: string
+    detail?: string
+  }>
 }
 
 const runDoctor = async (
@@ -46,9 +45,17 @@ const runDoctor = async (
   })
   const stdout = await new Response(proc.stdout as ReadableStream).text()
   const exitCode = await proc.exited
-  let results: ReadonlyArray<{ name: string; status: string; detail?: string }> = []
+  let results: ReadonlyArray<{
+    name: string
+    status: string
+    detail?: string
+  }> = []
   try {
-    results = JSON.parse(stdout) as Array<{ name: string; status: string; detail?: string }>
+    results = JSON.parse(stdout) as Array<{
+      name: string
+      status: string
+      detail?: string
+    }>
   } catch {
     // ignore
   }
@@ -171,7 +178,7 @@ describe("doctor — thinking-capability skill stubs", () => {
   test("status reports an integer count when skills exist", async () => {
     const { root, cleanup } = stage()
     try {
-      // The host running tests may have PAI installed (real skills) — we only
+      // The host running tests may have installed (real skills) — we only
       // assert that the check executes and produces either PASS or INFO.
       const r = await runDoctor(root)
       const check = find(r.results, "thinking-capability skill stubs installed")

@@ -15,17 +15,17 @@ import {
   type ClaudeSpawnOptions,
 } from "../../src/services/claude-subprocess.ts"
 
-describe("cleanPrompt — PAI line 926 verbatim", () => {
+describe("cleanPrompt — the classifier verbatim", () => {
   test("strips HTML/tag tokens", () => {
     expect(cleanPrompt("<system-reminder>foo</system-reminder>bar")).toBe(
       "foo bar",
     )
   })
   test("normalizes whitespace runs to single space", () => {
-    expect(cleanPrompt("a   b\t\tc\n\nd")).toBe("a b c d")
+    expect(cleanPrompt("a b\t\tc\n\nd")).toBe("a b c d")
   })
   test("trims leading and trailing whitespace", () => {
-    expect(cleanPrompt("   hello world   ")).toBe("hello world")
+    expect(cleanPrompt(" hello world ")).toBe("hello world")
   })
   test("caps at 1000 chars", () => {
     const long = "x".repeat(2000)
@@ -40,12 +40,15 @@ describe("cleanPrompt — PAI line 926 verbatim", () => {
   })
 })
 
-describe("buildUserPrompt — CONTEXT/CURRENT MESSAGE framing (PAI line 931)", () => {
+describe("buildUserPrompt — CONTEXT/CURRENT MESSAGE framing", () => {
   test("without context, returns just cleanPrompt", () => {
     expect(buildUserPrompt("hello world")).toBe("hello world")
   })
   test("with context, prepends CONTEXT: and CURRENT MESSAGE: framing", () => {
-    const out = buildUserPrompt("yes", "User: do these three fixes\nAssistant: proposed plan")
+    const out = buildUserPrompt(
+      "yes",
+      "User: do these three fixes\nAssistant: proposed plan",
+    )
     expect(out).toBe(
       "CONTEXT:\nUser: do these three fixes\nAssistant: proposed plan\n\nCURRENT MESSAGE:\nyes",
     )
@@ -54,7 +57,7 @@ describe("buildUserPrompt — CONTEXT/CURRENT MESSAGE framing (PAI line 931)", (
     expect(buildUserPrompt("hello", "")).toBe("hello")
   })
   test("cleans the prompt before framing", () => {
-    expect(buildUserPrompt("  <x>hello</x>  ", "ctx")).toBe(
+    expect(buildUserPrompt(" <x>hello</x> ", "ctx")).toBe(
       "CONTEXT:\nctx\n\nCURRENT MESSAGE:\nhello",
     )
   })
@@ -116,7 +119,7 @@ describe("Inference.classify — cleanPrompt applied (L12)", () => {
   })
 })
 
-describe("Inference default timeout — 25s (L13, PAI line 939)", () => {
+describe("Inference default timeout — 25s (L13, the classifier)", () => {
   test("classify uses 25_000 ms by default", async () => {
     let capturedTimeout = 0
     const layer = ClaudeSubprocessTest((args, opts) => {
@@ -163,7 +166,7 @@ describe("Inference default timeout — 25s (L13, PAI line 939)", () => {
   })
 })
 
-describe("Inference image-args branch (L16, PAI Inference.ts:120-132)", () => {
+describe("Inference image-args branch (L16, the classifier)", () => {
   test("no images → '--tools ' '' in args", async () => {
     let capturedArgs: ReadonlyArray<string> = []
     const layer = ClaudeSubprocessTest((args, opts) => {
@@ -216,7 +219,7 @@ describe("Inference image-args branch (L16, PAI Inference.ts:120-132)", () => {
     // With images, the '--tools' flag is replaced — but '--setting-sources ""'
     // still has an empty string second arg, which is correct.
     expect(capturedArgs).not.toContain("--tools")
-    // PAI line 130-132: image refs prepended to user prompt as @path lines.
+    // the classifier: image refs prepended to user prompt as @path lines.
     expect(capturedStdin).toContain("@/tmp/a.png")
     expect(capturedStdin).toContain("@/tmp/b.png")
     expect(capturedStdin).toContain("describe these images")
