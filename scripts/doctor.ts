@@ -355,7 +355,8 @@ const checkLedgerEntries = (cwd: string): CheckResult => {
     return {
       name: "last 5 ledger entries",
       status: "INFO",
-      detail: "no ledger.jsonl files",
+      detail:
+        "no ledger.jsonl yet — expected on a fresh install; populates after the first session",
     };
   }
   const lines: string[] = [];
