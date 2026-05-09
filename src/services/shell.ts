@@ -34,12 +34,48 @@ export const ShellLive = Layer.succeed(
             ["sh", "-c", cmd as unknown as string],
             spawnOpts,
           )
-          const [stdout, stderr] = await Promise.all([
-            new Response(proc.stdout as ReadableStream).text(),
-            new Response(proc.stderr as ReadableStream).text(),
-          ])
-          const exitCode = await proc.exited
-          return { stdout, stderr, exitCode }
+
+          // Honor caller-supplied timeoutMs. Without this, a hung child (e.g. a
+          // formatter that blocks on a TTY) would pin the dispatcher past its
+          // per-tag cap. On timeout: SIGTERM, then SIGKILL 1s later if still
+          // alive, return exitCode=-1 with a marker stderr so callers can
+          // distinguish from normal non-zero exits.
+          const timeoutMs = opts?.timeoutMs
+          let timedOut = false
+          let timeoutId: ReturnType<typeof setTimeout> | undefined
+          let killTimer: ReturnType<typeof setTimeout> | undefined
+          if (typeof timeoutMs === "number" && timeoutMs > 0) {
+            timeoutId = setTimeout(() => {
+              timedOut = true
+              try { proc.kill("SIGTERM") } catch { /* ignore */ }
+              killTimer = setTimeout(() => {
+                try { proc.kill("SIGKILL") } catch { /* ignore */ }
+              }, 1_000)
+              if (typeof killTimer.unref === "function") killTimer.unref()
+            }, timeoutMs)
+            if (typeof timeoutId.unref === "function") timeoutId.unref()
+          }
+
+          try {
+            const [stdout, stderr] = await Promise.all([
+              new Response(proc.stdout as ReadableStream).text(),
+              new Response(proc.stderr as ReadableStream).text(),
+            ])
+            const exitCode = await proc.exited
+            if (timedOut) {
+              return {
+                stdout,
+                stderr: stderr.length > 0
+                  ? `${stderr}\n[shell] timed out after ${timeoutMs}ms`
+                  : `[shell] timed out after ${timeoutMs}ms`,
+                exitCode: -1,
+              }
+            }
+            return { stdout, stderr, exitCode }
+          } finally {
+            if (timeoutId !== undefined) clearTimeout(timeoutId)
+            if (killTimer !== undefined) clearTimeout(killTimer)
+          }
         },
         catch: (cause) =>
           new ShellError({

@@ -42,16 +42,38 @@ export const LedgerLive = (root: string = process.cwd()): Layer.Layer<Ledger> =>
         Effect.tryPromise({
           try: async () => {
             const file = ledgerPath(root);
+            let raw: string;
             try {
-              const raw = await fs.readFile(file, "utf8");
-              const lines = raw.split("\n").filter((l) => l.length > 0);
-              const entries = lines
-                .map((l) => JSON.parse(l) as LedgerEntry)
-                .filter((e) => !sessionId || e.sessionId === sessionId);
-              return entries;
-            } catch {
-              return [];
+              raw = await fs.readFile(file, "utf8");
+            } catch (err) {
+              // ENOENT (no ledger yet) is expected; surface other I/O errors
+              // rather than silently returning [].
+              if (
+                typeof err === "object" &&
+                err !== null &&
+                (err as { code?: string }).code === "ENOENT"
+              ) {
+                return [];
+              }
+              throw err;
             }
+            const entries: LedgerEntry[] = [];
+            for (const line of raw.split("\n")) {
+              if (line.trim().length === 0) continue;
+              // Per-line tolerance: a single corrupt line should not blank
+              // the entire ledger to readers. Log and skip.
+              try {
+                const entry = JSON.parse(line) as LedgerEntry;
+                if (!sessionId || entry.sessionId === sessionId) {
+                  entries.push(entry);
+                }
+              } catch (err) {
+                process.stderr.write(
+                  `ledger.read: skipping malformed line: ${String(err).slice(0, 120)}\n`,
+                );
+              }
+            }
+            return entries;
           },
           catch: (cause) =>
             new LedgerError({ op: "read", message: String(cause), cause }),
