@@ -10,6 +10,9 @@ import { BudgetLive } from "../services/budget.ts"
 import { SessionStateLive } from "../services/session-state.ts"
 import { ApprovalsLive } from "../services/approvals.ts"
 import { ElicitationsLive } from "../services/elicitations.ts"
+import { ClaudeSubprocessLive } from "../services/claude-subprocess.ts"
+import { InferenceLive } from "../services/inference.ts"
+import { ClassifierTelemetryLive } from "../services/classifier-telemetry.ts"
 
 export const AppLive = Layer.mergeAll(
   FileSystemLive,
@@ -23,4 +26,7 @@ export const AppLive = Layer.mergeAll(
   SessionStateLive(),
   ApprovalsLive,
   ElicitationsLive,
+  ClaudeSubprocessLive,
+  InferenceLive,
+  ClassifierTelemetryLive(),
 )

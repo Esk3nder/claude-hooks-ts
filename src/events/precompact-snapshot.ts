@@ -1,4 +1,5 @@
 import { Effect } from "effect"
+import { existsSync, mkdirSync, readFileSync } from "node:fs"
 import * as path from "node:path"
 import type { HookPayload } from "../schema/payloads.ts"
 import type { HookDecision } from "../schema/decisions.ts"
@@ -6,9 +7,101 @@ import { SAFE_DEFAULT } from "../schema/decisions.ts"
 import { FileSystem } from "../services/filesystem.ts"
 import { SessionState, EMPTY_SESSION_STATE } from "../services/session-state.ts"
 import { Project } from "../services/project.ts"
+import { findLatestISA, findProjectIsa } from "../algorithm/isa/locate.ts"
+import { parseSections } from "../algorithm/isa/sections.ts"
+import { parseFrontmatter } from "../algorithm/isa/frontmatter.ts"
+import { countCriteria } from "../algorithm/isa/criteria.ts"
 
 const MAX_INJECT = 1024
 const MAX_LIST = 20
+
+interface IsaSnapshot {
+  readonly path: string
+  readonly kind: "project" | "task"
+  readonly phase: string
+  readonly progress: string
+  readonly goalExcerpt: string
+}
+
+/**
+ * Capture a compact snapshot of the active ISAs (project + latest task)
+ * before compaction so the post-compact model can rehydrate identity even
+ * after the conversation buffer is squashed. Goal excerpt is the first
+ * paragraph of the `## Goal` section (per IsaFormat.md:217-228 the Goal is
+ * the "tightest verbal form" — the highest-leverage thing to keep).
+ */
+const captureIsaSnapshot = (
+  root: string,
+  isaPath: string,
+  kind: "project" | "task",
+): IsaSnapshot | null => {
+  if (!existsSync(isaPath)) return null
+  let content: string
+  try {
+    content = readFileSync(isaPath, "utf-8")
+  } catch {
+    return null
+  }
+  const fm = parseFrontmatter(content) ?? {}
+  const sections = parseSections(content)
+  const goalBody = sections.get("Goal")?.body ?? ""
+  // First paragraph (up to blank line) — keeps the snapshot terse.
+  const firstPara = goalBody.split(/\n\n/, 1)[0]?.trim() ?? ""
+  const counts = countCriteria(content)
+  const computedProgress =
+    counts.total > 0
+      ? `${counts.checked}/${counts.total}`
+      : (fm["progress"] ?? "0/0")
+  return {
+    path: isaPath,
+    kind,
+    phase: fm["phase"] ?? "(unknown)",
+    progress: computedProgress,
+    goalExcerpt:
+      firstPara.length > 280
+        ? `${firstPara.slice(0, 277)}...`
+        : firstPara || "(no Goal section recorded)",
+  }
+  // Note: `root` is unused here but kept in the signature for symmetry
+  // with the locate.ts helpers; future expansion (e.g. capturing relative
+  // path display) will use it.
+  void root
+}
+
+const collectIsas = (root: string): ReadonlyArray<IsaSnapshot> => {
+  const out: IsaSnapshot[] = []
+  const projectPath = findProjectIsa(root)
+  if (projectPath !== null) {
+    const snap = captureIsaSnapshot(root, projectPath, "project")
+    if (snap !== null) out.push(snap)
+  }
+  const taskPath = findLatestISA(root)
+  if (taskPath !== null && taskPath !== projectPath) {
+    const snap = captureIsaSnapshot(root, taskPath, "task")
+    if (snap !== null) out.push(snap)
+  }
+  return out
+}
+
+const fmtIsaSection = (isas: ReadonlyArray<IsaSnapshot>): string => {
+  if (isas.length === 0) return "  (no ISAs found at project root or task work dir)"
+  return isas
+    .map(
+      (s) =>
+        `### ${s.kind} ISA — ${s.path}\n` +
+        `- phase: ${s.phase}\n` +
+        `- progress: ${s.progress}\n` +
+        `- goal: ${s.goalExcerpt}`,
+    )
+    .join("\n\n")
+}
+
+const fmtIsaInline = (isas: ReadonlyArray<IsaSnapshot>): string => {
+  if (isas.length === 0) return "(none)"
+  return isas
+    .map((s) => `${s.kind}@${s.path} [phase=${s.phase}, progress=${s.progress}]`)
+    .join(" | ")
+}
 
 const truncate = (s: string, max: number): string =>
   s.length <= max ? s : s.slice(0, Math.max(0, max - 3)) + "..."
@@ -54,12 +147,17 @@ export const handlePreCompact = (
         ? "  (none)"
         : xs.map((x) => `  - ${x}`).join("\n")
 
+    const isas = collectIsas(root)
+
     const md = [
       "# Pre-compact preservation snapshot",
       "",
       `- session_id: ${payload.session_id}`,
       `- timestamp: ${tsIso}`,
       `- trigger: ${payload.trigger ?? "unknown"}`,
+      "",
+      "## Active ISAs",
+      fmtIsaSection(isas),
       "",
       "## Goal / next required action",
       goal,
@@ -90,6 +188,13 @@ export const handlePreCompact = (
       "",
     ].join("\n")
 
+    // mkdir parent — fs.writeFile (node) does not auto-create. Pre-existing
+    // bug: snapshots silently failed in fresh installs without prior state dir.
+    try {
+      mkdirSync(path.dirname(snapshotPath), { recursive: true })
+    } catch {
+      // best-effort
+    }
     yield* fs
       .writeFile(snapshotPath, md)
       .pipe(Effect.catchAll(() => Effect.succeed(undefined)))
@@ -104,6 +209,7 @@ export const handlePreCompact = (
     const lines = [
       "Preservation context (pre-compact):",
       `- goal/next: ${goal}`,
+      `- active_isas: ${fmtIsaInline(isas)}`,
       `- files_changed: ${head(filesChanged)}`,
       `- commands_run: ${head(commands)}`,
       `- failures: ${head(failures)}`,

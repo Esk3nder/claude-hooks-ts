@@ -1,24 +1,36 @@
 {
   "name": "claude-hooks-ts",
-  "version": "0.0.0",
-  "description": "Type-safe, Effect-based dispatcher for Claude Code hooks.",
+  "version": "1.0.0",
+  "description": "Type-safe, Effect-based dispatcher for Claude Code hooks — with the PAI Algorithm primitive (mode classifier, ISA, phase gates, capability audit) wired in.",
   "type": "module",
-  "private": true,
+  "private": false,
   "license": "MIT",
   "author": "Esk3nder",
   "bin": {
     "claude-hook": "./bin/claude-hook",
     "claude-hooks-install": "./bin/claude-hooks-install",
+    "claude-hooks-init": "./bin/claude-hooks-init",
     "claude-hooks-tail": "./bin/claude-hooks-tail",
     "claude-hooks-doctor": "./bin/claude-hooks-doctor"
   },
+  "files": [
+    "bin/",
+    "scripts/",
+    "src/",
+    "skills/",
+    "docs/",
+    "LICENSE",
+    "README.md"
+  ],
   "scripts": {
     "typecheck": "tsc --noEmit",
     "test": "bun test",
+    "lint:claude-spawn": "bun run scripts/check-claude-spawn.ts",
     "dispatch": "bun run src/dispatcher.ts",
     "install:dry": "bun run scripts/install.ts --dry-run",
     "install:apply": "bun run scripts/install.ts --apply",
-    "build:bin": "bun run scripts/build.ts"
+    "build:bin": "bun run scripts/build.ts",
+    "postinstall": "bun run scripts/postinstall.ts"
   },
   "dependencies": {
     "@effect/opentelemetry": "^0.63.0",

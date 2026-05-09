@@ -9,6 +9,9 @@ import { RedactTest } from "../services/redact.ts"
 import { BudgetTest } from "../services/budget.ts"
 import { SessionStateTest } from "../services/session-state.ts"
 import { ElicitationsTest } from "../services/elicitations.ts"
+import { ClaudeSubprocessTest } from "../services/claude-subprocess.ts"
+import { InferenceTest } from "../services/inference.ts"
+import { ClassifierTelemetryTest } from "../services/classifier-telemetry.ts"
 
 export const AppTest = Layer.mergeAll(
   FileSystemTest(),
@@ -21,4 +24,7 @@ export const AppTest = Layer.mergeAll(
   BudgetTest(),
   SessionStateTest(),
   ElicitationsTest(),
+  ClaudeSubprocessTest(),
+  InferenceTest(),
+  ClassifierTelemetryTest().layer,
 )

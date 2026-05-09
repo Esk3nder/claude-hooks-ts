@@ -35,7 +35,15 @@ describe("cold-start dispatcher (VAL-M5-003)", () => {
         const start = performance.now()
         const proc = Bun.spawn(
           ["bun", DISPATCHER, "UserPromptSubmit"],
-          { stdin: "pipe", stdout: "pipe", stderr: "pipe" },
+          {
+            stdin: "pipe",
+            stdout: "pipe",
+            stderr: "pipe",
+            // Bypass live classifier — this benchmark measures dispatcher
+            // cold-start (Bun + import + Effect + Match), not the classifier
+            // subprocess (which has its own latency telemetry).
+            env: { ...process.env, CLAUDE_HOOKS_DISABLE_CLASSIFIER: "1" },
+          },
         )
         proc.stdin.write(SAMPLE_PAYLOAD)
         await proc.stdin.end()

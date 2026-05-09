@@ -4,6 +4,7 @@ import { handlePostToolUse } from "../../src/events/post-edit-quality.ts"
 import { HookPayload } from "../../src/schema/payloads.ts"
 import { ProjectTest } from "../../src/services/project.ts"
 import { Shell, ShellTest } from "../../src/services/shell.ts"
+import { RedactTest } from "../../src/services/redact.ts"
 import { ShellError } from "../../src/schema/errors.ts"
 
 const decode = (raw: unknown) => Schema.decodeUnknownSync(HookPayload)(raw)
@@ -22,6 +23,7 @@ const recordingShell = () => {
   const calls: string[] = []
   const layer = Layer.mergeAll(
     ProjectTest(),
+    RedactTest(),
     ShellTest((cmd) => {
       calls.push(cmd)
       // Probe via "command -v <name>" — succeed for prettier, fail for ruff
@@ -92,6 +94,7 @@ describe("handlePostToolUse (post-edit-quality)", () => {
   test("never blocks even when shell fails", async () => {
     const layer = Layer.mergeAll(
       ProjectTest(),
+      RedactTest(),
       ShellTest((cmd) => {
         if (cmd.includes("command -v prettier")) {
           return { stdout: "", stderr: "", exitCode: 0 }
@@ -134,7 +137,7 @@ describe("handlePostToolUse — silent failure logging (M9 fix #2)", () => {
             ),
         }),
       )
-      const layer = Layer.mergeAll(ProjectTest(), failingShell)
+      const layer = Layer.mergeAll(ProjectTest(), RedactTest(), failingShell)
       const d = await Effect.runPromise(
         handlePostToolUse(editPayload("/repo/src/foo.ts")).pipe(Effect.provide(layer)),
       )
