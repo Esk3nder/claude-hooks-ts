@@ -8,6 +8,16 @@ import {
   type WorkflowTag,
   classifyPrompt,
 } from "../../src/policies/workflow-classifier.ts"
+import { ClaudeSubprocessTest } from "../../src/services/claude-subprocess.ts"
+import { InferenceTest, FAIL_SAFE } from "../../src/services/inference.ts"
+import { ClassifierTelemetryTest } from "../../src/services/classifier-telemetry.ts"
+
+const inferenceLayer = InferenceTest(() => ({
+  ...FAIL_SAFE,
+  reason: "test default → ALGORITHM E3",
+  latencyMs: 0,
+}))
+const subprocLayer = ClaudeSubprocessTest()
 
 const decode = (raw: unknown) => Schema.decodeUnknownSync(HookPayload)(raw)
 
@@ -40,7 +50,14 @@ describe("handleUserPromptSubmit", () => {
         hook_event_name: "UserPromptSubmit",
         prompt: samplePromptForTag(tag),
       })
-      const d = await Effect.runPromise(handleUserPromptSubmit(payload).pipe(Effect.provide(SessionStateTest())))
+      const d = await Effect.runPromise(
+        handleUserPromptSubmit(payload).pipe(
+          Effect.provide(SessionStateTest()),
+          Effect.provide(inferenceLayer),
+          Effect.provide(subprocLayer),
+          Effect.provide(ClassifierTelemetryTest().layer),
+        ),
+      )
       const out = d as {
         hookSpecificOutput: { hookEventName: string; additionalContext: string }
       }
@@ -58,7 +75,14 @@ describe("handleUserPromptSubmit", () => {
       session_id: "s",
       hook_event_name: "Stop",
     })
-    const d = await Effect.runPromise(handleUserPromptSubmit(payload).pipe(Effect.provide(SessionStateTest())))
+    const d = await Effect.runPromise(
+      handleUserPromptSubmit(payload).pipe(
+        Effect.provide(SessionStateTest()),
+        Effect.provide(inferenceLayer),
+        Effect.provide(subprocLayer),
+        Effect.provide(ClassifierTelemetryTest().layer),
+      ),
+    )
     expect(d).toEqual({})
   })
 })

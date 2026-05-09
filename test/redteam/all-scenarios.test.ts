@@ -26,6 +26,10 @@ const dispatch = async (
     stdin: "pipe",
     stdout: "pipe",
     stderr: "pipe",
+    // Redteam scenarios validate dispatcher policy, not the live classifier.
+    // Bypass the claude subprocess so UserPromptSubmit returns deterministic
+    // fail-safe (ALGORITHM E3) without the ~5s spawn cost.
+    env: { ...process.env, CLAUDE_HOOKS_DISABLE_CLASSIFIER: "1" },
   })
   proc.stdin.write(JSON.stringify(payload))
   await proc.stdin.end()

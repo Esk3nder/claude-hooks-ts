@@ -44,8 +44,24 @@ import type { Shell } from "./services/shell.ts"
 import type { Git } from "./services/git.ts"
 import type { Project } from "./services/project.ts"
 import type { SessionState } from "./services/session-state.ts"
+import type { ClaudeSubprocess } from "./services/claude-subprocess.ts"
+import type { Inference } from "./services/inference.ts"
+import type { ClassifierTelemetry } from "./services/classifier-telemetry.ts"
+import type { Redact } from "./services/redact.ts"
 
-type AppServices = FileSystem | Shell | Git | Project | SessionState | Approvals | Elicitations | PolicyConfig
+type AppServices =
+  | FileSystem
+  | Shell
+  | Git
+  | Project
+  | SessionState
+  | Approvals
+  | Elicitations
+  | PolicyConfig
+  | ClaudeSubprocess
+  | Inference
+  | ClassifierTelemetry
+  | Redact
 
 /**
  * Test-only override: replace one event handler with an arbitrary Effect.
@@ -192,20 +208,43 @@ const routeByTag = (
     }),
   )(payload)
 
+/**
+ * Per-tag handler timeout in milliseconds. Most events stay on the historical
+ * 4s cap because their handlers are local file I/O and finish in <100ms. The
+ * UserPromptSubmit cap is raised to accommodate the mode-classifier subprocess
+ * (Sonnet via `claude --print`, p95 ~7s, p99 ~12s) PLUS PAI's 25s inference
+ * timeout (PromptProcessing.hook.ts:939). The 30s envelope = 25s classifier
+ * timeout + 5s overhead headroom (transcript read, JSONL telemetry, etc.).
+ *
+ * To raise a tag's cap: add an entry here and a redteam test that proves the
+ * old cap would have fired. Don't raise globally — a slow handler on any
+ * other tag is a bug, not a budget request.
+ */
+const HANDLER_TIMEOUT_MS: Partial<Record<HookPayload["_tag"], number>> = {
+  UserPromptSubmit: 30_000,
+}
+const DEFAULT_HANDLER_TIMEOUT_MS = 4_000
+
+const handlerTimeoutFor = (tag: HookPayload["_tag"]): number =>
+  HANDLER_TIMEOUT_MS[tag] ?? DEFAULT_HANDLER_TIMEOUT_MS
+
 const dispatchPayload = (
   _action: string,
   payload: HookPayload,
 ): Effect.Effect<HookDecision, never, AppServices> => {
   const hang = testHangEvent()
+  const cap = handlerTimeoutFor(payload._tag)
+  // Hang test sleeps 1s past the per-tag cap so the timeout always fires.
+  const hangSleepMs = cap + 1_000
   const baseHandler: Effect.Effect<HookDecision, never, AppServices> =
     hang !== null && hang === payload._tag
-      ? Effect.sleep("5 seconds").pipe(Effect.as(SAFE_DEFAULT))
+      ? Effect.sleep(`${hangSleepMs} millis`).pipe(Effect.as(SAFE_DEFAULT))
       : routeByTag(payload)
 
-  // Per-handler 4s cap → on timeout, fall back to safe default ({}).
+  // Per-handler cap (per-tag) → on timeout, fall back to safe default ({}).
   const guarded = baseHandler.pipe(
     Effect.withSpan(`handler.${payload._tag}`),
-    Effect.timeout("4 seconds"),
+    Effect.timeout(`${cap} millis`),
     Effect.catchTag("TimeoutException", () =>
       Effect.succeed(SAFE_DEFAULT),
     ),

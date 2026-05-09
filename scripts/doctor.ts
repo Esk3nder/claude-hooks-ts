@@ -419,6 +419,167 @@ const formatHuman = (results: CheckResult[]): string => {
   return lines.join("\n") + "\n";
 };
 
+/**
+ * Classifier env check — is `claude` on PATH AND is the disable-bypass not set?
+ * The classifier is the gate that promotes prompts to ALGORITHM mode; if
+ * `claude` isn't installed OR the bypass env var is on, the package quietly
+ * runs in fail-safe (everything → ALGORITHM E3) without ever invoking
+ * Sonnet. That's safe but undermines the design.
+ */
+const checkClassifierEnv = (): CheckResult => {
+  const claudeBin = Bun.which("claude");
+  const bypass =
+    process.env["CLAUDE_HOOKS_DISABLE_CLASSIFIER"] === "1" ||
+    process.env["CLAUDE_HOOKS_DISABLE_CLASSIFIER"] === "true";
+  if (claudeBin === null) {
+    return {
+      name: "classifier subprocess available",
+      status: "INFO",
+      detail:
+        "`claude` not on PATH — classifier will fail-safe to ALGORITHM E3 every prompt. Install Claude Code to enable proper mode classification.",
+    };
+  }
+  if (bypass) {
+    return {
+      name: "classifier subprocess available",
+      status: "INFO",
+      detail:
+        "CLAUDE_HOOKS_DISABLE_CLASSIFIER=1 — classifier subprocess is bypassed; every prompt becomes fail-safe ALGORITHM E3. Unset to re-enable.",
+    };
+  }
+  return {
+    name: "classifier subprocess available",
+    status: "PASS",
+    detail: `claude=${claudeBin}, bypass=off`,
+  };
+};
+
+/**
+ * Classifier auth check — which credential will the subprocess actually use?
+ * The chokepoint scrubs ANTHROPIC_API_KEY/AUTH_TOKEN from the spawn env,
+ * but we want to surface to the user that subscription billing is in play.
+ * Loud warning when API keys are present in env (their work won't be billed
+ * as expected even though we scrub — they may be mis-configuring elsewhere).
+ */
+const checkClassifierAuth = (): CheckResult => {
+  const hasApiKey = typeof process.env["ANTHROPIC_API_KEY"] === "string";
+  const hasAuthToken = typeof process.env["ANTHROPIC_AUTH_TOKEN"] === "string";
+  const hasOauthToken = typeof process.env["CLAUDE_CODE_OAUTH_TOKEN"] === "string";
+  if (hasApiKey || hasAuthToken) {
+    return {
+      name: "classifier billing path",
+      status: "INFO",
+      detail: `ANTHROPIC_${hasApiKey ? "API_KEY" : "AUTH_TOKEN"} is set in env. The chokepoint scrubs it before spawn so classifier work routes through OAuth/keychain, but other tools you spawn manually will still pick it up.`,
+    };
+  }
+  if (hasOauthToken) {
+    return {
+      name: "classifier billing path",
+      status: "PASS",
+      detail: "CLAUDE_CODE_OAUTH_TOKEN present — subscription billing.",
+    };
+  }
+  return {
+    name: "classifier billing path",
+    status: "INFO",
+    detail:
+      "No CLAUDE_CODE_OAUTH_TOKEN, no ANTHROPIC_API_KEY/AUTH_TOKEN — classifier will use whatever credential the `claude` CLI's keychain login provides.",
+  };
+};
+
+/**
+ * Skill bundle check — count algorithm_capability: thinking SKILL.md files
+ * in ~/.claude/skills/<Name>/ AND ~/.claude/skills/_bundled/<Name>/ so the
+ * user can see the phantom-audit substrate.
+ */
+const checkSkillBundle = (): CheckResult => {
+  const home = os.homedir();
+  const roots = [
+    path.join(home, ".claude", "skills"),
+    path.join(home, ".claude", "skills", "_bundled"),
+  ];
+  let count = 0;
+  for (const root of roots) {
+    if (!fs.existsSync(root)) continue;
+    let entries: ReadonlyArray<string> = [];
+    try {
+      entries = fs.readdirSync(root);
+    } catch {
+      continue;
+    }
+    for (const name of entries) {
+      const skillFile = path.join(root, name, "SKILL.md");
+      if (!fs.existsSync(skillFile)) continue;
+      try {
+        const body = fs.readFileSync(skillFile, "utf-8");
+        if (/^algorithm_capability:\s*thinking\s*$/m.test(body)) count += 1;
+      } catch {
+        // best-effort
+      }
+    }
+  }
+  return {
+    name: "thinking-capability skill stubs installed",
+    status: count > 0 ? "PASS" : "INFO",
+    detail:
+      count > 0
+        ? `${count} skill(s) declare algorithm_capability: thinking under ~/.claude/skills/`
+        : "no skill declares algorithm_capability: thinking — phantom audit gate has nothing to enforce against. Run `claude-hooks-init --install-skills` to install the bundled stubs.",
+  };
+};
+
+/**
+ * Active ISA check — is there a project ISA at cwd or a latest task ISA in
+ * .claude-hooks/state/work/? Reports phase + progress so the user can see at
+ * a glance what state the work is in.
+ */
+const checkActiveIsa = (cwd: string): CheckResult => {
+  const projectIsa = path.join(cwd, "ISA.md");
+  const taskIsaDir = path.join(cwd, ".claude-hooks", "state", "work");
+  const candidates: string[] = [];
+  if (fs.existsSync(projectIsa)) candidates.push(projectIsa);
+  if (fs.existsSync(taskIsaDir)) {
+    let entries: ReadonlyArray<string> = [];
+    try {
+      entries = fs.readdirSync(taskIsaDir);
+    } catch {
+      // fall through
+    }
+    for (const slug of entries) {
+      const isa = path.join(taskIsaDir, slug, "ISA.md");
+      if (fs.existsSync(isa)) candidates.push(isa);
+    }
+  }
+  if (candidates.length === 0) {
+    return {
+      name: "active ISA",
+      status: "INFO",
+      detail: "no ISA at <cwd>/ISA.md or .claude-hooks/state/work/<slug>/ISA.md — Algorithm gates noop.",
+    };
+  }
+  // Report the FIRST one (project preferred, then any task ISA).
+  const path0 = candidates[0]!;
+  let body = "";
+  try {
+    body = fs.readFileSync(path0, "utf-8");
+  } catch {
+    return {
+      name: "active ISA",
+      status: "INFO",
+      detail: `found ${path0} but couldn't read it`,
+    };
+  }
+  const phaseMatch = body.match(/^phase:\s*(.+)$/m);
+  const progressMatch = body.match(/^progress:\s*(.+)$/m);
+  const phase = phaseMatch?.[1]?.trim() ?? "(unknown)";
+  const progress = progressMatch?.[1]?.trim() ?? "(unknown)";
+  return {
+    name: "active ISA",
+    status: "PASS",
+    detail: `${path0} | phase=${phase} | progress=${progress}${candidates.length > 1 ? ` | (+${candidates.length - 1} more)` : ""}`,
+  };
+};
+
 export const runDoctor = async (
   argv: ReadonlyArray<string>,
   out: NodeJS.WritableStream = process.stdout,
@@ -456,6 +617,12 @@ export const runDoctor = async (
   }
 
   results.push(checkLedgerEntries(args.cwd));
+
+  // Algorithm-aware checks (Phase 5).
+  results.push(checkClassifierEnv());
+  results.push(checkClassifierAuth());
+  results.push(checkSkillBundle());
+  results.push(checkActiveIsa(args.cwd));
 
   const otel = await checkOtelEndpoint();
   if (otel !== null) results.push(otel);
