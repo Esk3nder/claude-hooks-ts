@@ -1,39 +1,29 @@
 /**
- * ISA filesystem locator — port of this package's `~/.claude/hooks/lib/isa-utils.ts`
- * lines 22-68 with one path adaptation called out below.
+ * ISA filesystem locator. Two canonical homes for ISAs:
  *
- * Functions ported (verbatim semantics):
- * - findArtifactPath(slug) — the classifier
- * - findLatestISA(root?) — the classifier
+ * - **Per-task ISAs** at `<repo>/.claude-hooks/state/work/<slug>/ISA.md` —
+ *   one per discrete task. `findArtifactPath(slug)` resolves a single
+ *   slug; `findLatestISA(root?)` returns the most-recently-modified one
+ *   across all slugs.
+ * - **Project ISAs** at `<repo>/ISA.md` — for things with persistent
+ *   identity (an application, CLI tool, library, or this package's own
+ *   Algorithm). Resolved by `findProjectIsa(cwd)`.
  *
- * Functions added (NEW DESIGN, doctrine line 56-57 of IsaFormat.md):
- * - findProjectIsa(cwd) — `<project>/ISA.md` at the repo root, the
- * second canonical home for project ISAs
- * - isIsaFilePath(path) — does this absolute path point to an ISA?
+ * `isIsaFilePath(path)` is a tail-only filename match used by PostToolUse
+ * handlers to filter Edit/Write events to ISA targets regardless of
+ * directory.
  *
- * Path adaptation (the only divergence canonically):
- * this package's WORK_DIR is this package (per-user, single root).
- * This package's WORK_DIR is `<repo>/.claude-hooks/state/work/` (per-repo,
- * mirrors `services/session-state.ts` pattern). Both store one
- * `{slug}/ISA.md` per task; the directory layout under `{slug}` is
- * identical. The `root` parameter overrides the default for tests and
- * for tools that operate against a specific project root.
- *
- * Legacy PRD.md fallback is preserved per the classifier: pre-v4.1.0 ISAs
- * lived under `PRD.md`. The fallback is read-only — new ISAs always write
- * `ISA.md`.
+ * Legacy `PRD.md` fallback is read-only: pre-v4.1.0 ISAs lived under
+ * that filename. New ISAs always write `ISA.md`.
  */
 
 import { existsSync, readdirSync, statSync } from "node:fs"
 import { join } from "node:path"
 
-/**
- * Canonical artifact filename. The classifier verbatim. Algorithm v4.1.0
- * renamed PRD → ISA; the legacy fallback is read-only.
- */
+/** Canonical artifact filename. Algorithm v4.1.0 renamed PRD → ISA. */
 export const ARTIFACT_FILENAME = "ISA.md"
 
-/** the classifier verbatim — pre-v4.1.0 sessions still ship PRD.md. */
+/** Read-only fallback for pre-v4.1.0 sessions. */
 export const LEGACY_ARTIFACT_FILENAME = "PRD.md"
 
 /**
@@ -50,10 +40,8 @@ export const workDirFor = (root: string = process.cwd()): string =>
 /**
  * Resolve the ideal-state artifact path for a session slug. Read order:
  * `ISA.md` (canonical) → `PRD.md` (legacy). Returns null if neither file
- * exists.
- *
- * Mirror of the classifier. The single read-fallback site for any caller
- * that wants per-session artifacts.
+ * exists. Single read-fallback site for any caller that wants per-session
+ * artifacts.
  */
 export const findArtifactPath = (
   slug: string,
@@ -73,8 +61,8 @@ export const findArtifactPath = (
  * `PRD.md`. Returns null when the work dir doesn't exist or contains no
  * artifacts.
  *
- * Mirror of the classifier. Best-effort: per-directory stat errors are
- * swallowed so one corrupt entry doesn't poison the scan.
+ * Best-effort: per-directory stat errors are swallowed so one corrupt
+ * entry doesn't poison the scan.
  */
 export const findLatestISA = (root: string = process.cwd()): string | null => {
   const workDir = workDirFor(root)
@@ -105,11 +93,6 @@ export const findLatestISA = (root: string = process.cwd()): string | null => {
 
 /**
  * Locate the project ISA — `<root>/ISA.md` — when the repo carries one.
- * Project ISAs are the second canonical home from `IsaFormat.md` lines
- * 56-57: a thing with persistent identity (application, CLI tool, library,
- * the Algorithm itself) keeps its ISA at the project root as system of
- * record.
- *
  * Returns null when no `ISA.md` exists at the root. Does NOT search up
  * (no `git rev-parse`-style ancestor walk) — caller passes the root
  * explicitly. The project-detection layer lives elsewhere.
@@ -123,9 +106,8 @@ export const findProjectIsa = (root: string = process.cwd()): string | null => {
  * Does `filePath` point to an ISA file (canonical or legacy)? Used by
  * PostToolUse handlers to filter Edit/Write events to ISA files only.
  *
- * implements canonical behavior ISASync.hook.ts lines 44-46 detection logic: matches
- * either filename at the path's tail, regardless of which directory the
- * file lives in (project root, MEMORY/WORK/, .claude-hooks/state/work/,
+ * Matches either filename at the path's tail, regardless of which
+ * directory the file lives in (project root, .claude-hooks/state/work/,
  * or a user-defined location).
  */
 export const isIsaFilePath = (filePath: string): boolean => {

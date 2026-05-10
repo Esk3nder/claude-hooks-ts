@@ -106,7 +106,14 @@ const evaluateBash = (input: unknown): PolicyDecision => {
 
 const evaluateRead = (input: unknown): PolicyDecision => {
   const decoded = Schema.decodeUnknownEither(ReadInput)(input)
-  if (decoded._tag === "Left") return { kind: "passthrough" }
+  if (decoded._tag === "Left") {
+    process.stderr.write("pretool-policy: read input schema mismatch\n")
+    return {
+      kind: "ask",
+      reason:
+        "Read input did not match expected schema; confirming for safety so secret-path checks aren't silently bypassed.",
+    }
+  }
   return reducePolicies(collectPathPolicies(decoded.right.file_path, "read"))
 }
 
@@ -123,7 +130,14 @@ const evaluateEditOrWrite = (input: unknown): PolicyDecision => {
   if (tryMulti._tag === "Right") {
     return reducePolicies(collectPathPolicies(tryMulti.right.file_path, "write"))
   }
-  return { kind: "passthrough" }
+  process.stderr.write(
+    "pretool-policy: edit/write input matched no known schema\n",
+  )
+  return {
+    kind: "ask",
+    reason:
+      "Edit/Write input did not match any known schema; confirming for safety so write-path checks aren't silently bypassed.",
+  }
 }
 
 const evaluateForTool = (
@@ -230,11 +244,21 @@ export const handlePreToolUse = (
         const acceptedMkdirDirs: string[] = []
         if (expectedDir !== null) acceptedMkdirDirs.push(expectedDir)
         const expectedDirRelative = dirname(record.expected_isa_path)
+        const pushIfNew = (d: string): void => {
+          if (d.length > 0 && !acceptedMkdirDirs.includes(d)) {
+            acceptedMkdirDirs.push(d)
+          }
+        }
+        // The model can spell relative paths several common ways. Accept
+        // the bare relative form AND a leading `./` form (`./foo/bar`),
+        // since the engagement-gate's whitelist is exact-string.
+        pushIfNew(expectedDirRelative)
         if (
-          expectedDirRelative.length > 0 &&
-          !acceptedMkdirDirs.includes(expectedDirRelative)
+          expectedDirRelative !== "." &&
+          !expectedDirRelative.startsWith("./") &&
+          !expectedDirRelative.startsWith("/")
         ) {
-          acceptedMkdirDirs.push(expectedDirRelative)
+          pushIfNew(`./${expectedDirRelative}`)
         }
         const anyAcceptedIsaExists =
           expectedIsaExists || projectIsaExists

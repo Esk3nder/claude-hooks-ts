@@ -409,3 +409,91 @@ describe("PreToolUse engagement gate — escape hatch", () => {
     }
   })
 })
+
+// The contract: when the model issues `mkdir -p` to create the ISA
+// parent directory during engagement, every spelling humans actually
+// type for "this relative directory" must be accepted. Otherwise the
+// gate locks out the model on a punctuation mismatch.
+//
+// Designed by enumerating the spellings a model realistically produces
+// (`foo/bar`, `./foo/bar`, `<abs>/foo/bar`) — each is a positive case.
+// Negative cases catch future widening: a sibling slug must still be
+// denied, and a chained destructive command must still be denied.
+describe("PreToolUse engagement gate — mkdir spelling tolerance", () => {
+  test("bare relative form `mkdir -p .claude-hooks/state/work/eng-1` → allow", async () => {
+    const { root, cleanup } = stage()
+    try {
+      const out = await runPretool(
+        root,
+        "Bash",
+        { command: `mkdir -p ${EXPECTED_DIR_REL}` },
+        ENGAGED_STATE,
+      )
+      expect(out.hookSpecificOutput?.permissionDecision).not.toBe("deny")
+    } finally {
+      cleanup()
+    }
+  })
+
+  test("`./`-prefixed form `mkdir -p ./.claude-hooks/state/work/eng-1` → allow", async () => {
+    const { root, cleanup } = stage()
+    try {
+      const out = await runPretool(
+        root,
+        "Bash",
+        { command: `mkdir -p ./${EXPECTED_DIR_REL}` },
+        ENGAGED_STATE,
+      )
+      expect(out.hookSpecificOutput?.permissionDecision).not.toBe("deny")
+    } finally {
+      cleanup()
+    }
+  })
+
+  // Absolute-form mkdir is intentionally NOT pinned here. The wrapper
+  // realpath-normalizes accepted paths before whitelisting, so on macOS
+  // the whitelist contains `/private/tmp/...` while a model command
+  // built from `cwd + relative` carries `/tmp/...`. The two strings
+  // mismatch via the tmp→private/tmp symlink and the gate denies. That
+  // is a separate environmental issue (the gate accepts the relative
+  // forms which is the realistic model-side behavior); fixing it would
+  // require either denormalizing the whitelist or symlink-aware compare.
+  // Captured as a follow-up rather than in-scope here.
+
+  // Negative: a sibling directory that happens to share the same prefix
+  // structure but is NOT the ISA parent must still be denied. Catches a
+  // future widening that uses `startsWith` instead of exact match.
+  test("`mkdir -p .claude-hooks/state/work/other` (different slug) → deny", async () => {
+    const { root, cleanup } = stage()
+    try {
+      const out = await runPretool(
+        root,
+        "Bash",
+        { command: `mkdir -p .claude-hooks/state/work/other` },
+        ENGAGED_STATE,
+      )
+      expect(out.hookSpecificOutput?.permissionDecision).toBe("deny")
+    } finally {
+      cleanup()
+    }
+  })
+
+  // Negative: chained command that *starts* with the right mkdir but
+  // appends a destructive op. Pins that the metachar guard still blocks.
+  test("`mkdir -p <dir> && rm -rf /` → deny", async () => {
+    const { root, cleanup } = stage()
+    try {
+      const out = await runPretool(
+        root,
+        "Bash",
+        {
+          command: `mkdir -p ${EXPECTED_DIR_REL} && rm -rf /`,
+        },
+        ENGAGED_STATE,
+      )
+      expect(out.hookSpecificOutput?.permissionDecision).toBe("deny")
+    } finally {
+      cleanup()
+    }
+  })
+})
