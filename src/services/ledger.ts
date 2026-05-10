@@ -20,7 +20,45 @@ export interface LedgerApi {
 
 export class Ledger extends Context.Tag("Ledger")<Ledger, LedgerApi>() {}
 
-const ledgerPath = (root: string) => path.join(root, ".claude", "ledger.jsonl");
+const sessionDir = (root: string, sessionId: string) =>
+  path.join(root, ".claude-hooks", "state", sessionId);
+
+const ledgerPath = (root: string, sessionId: string) =>
+  path.join(sessionDir(root, sessionId), "ledger.jsonl");
+
+const stateRoot = (root: string) => path.join(root, ".claude-hooks", "state");
+
+const parseLines = (raw: string): LedgerEntry[] => {
+  const entries: LedgerEntry[] = [];
+  for (const line of raw.split("\n")) {
+    if (line.trim().length === 0) continue;
+    try {
+      entries.push(JSON.parse(line) as LedgerEntry);
+    } catch (err) {
+      process.stderr.write(
+        `ledger.read: skipping malformed line: ${String(err).slice(0, 120)}\n`,
+      );
+    }
+  }
+  return entries;
+};
+
+const readSessionFile = async (file: string): Promise<LedgerEntry[]> => {
+  let raw: string;
+  try {
+    raw = await fs.readFile(file, "utf8");
+  } catch (err) {
+    if (
+      typeof err === "object" &&
+      err !== null &&
+      (err as { code?: string }).code === "ENOENT"
+    ) {
+      return [];
+    }
+    throw err;
+  }
+  return parseLines(raw);
+};
 
 export const LedgerLive = (root: string = process.cwd()): Layer.Layer<Ledger> =>
   Layer.succeed(
@@ -29,7 +67,7 @@ export const LedgerLive = (root: string = process.cwd()): Layer.Layer<Ledger> =>
       append: (entry) =>
         Effect.tryPromise({
           try: async () => {
-            const file = ledgerPath(root);
+            const file = ledgerPath(root, entry.sessionId);
             await fs.mkdir(path.dirname(file), { recursive: true });
             await withFileLock(file, async () => {
               await fs.appendFile(file, JSON.stringify(entry) + "\n", "utf8");
@@ -41,13 +79,14 @@ export const LedgerLive = (root: string = process.cwd()): Layer.Layer<Ledger> =>
       read: (sessionId) =>
         Effect.tryPromise({
           try: async () => {
-            const file = ledgerPath(root);
-            let raw: string;
+            if (sessionId !== undefined) {
+              return await readSessionFile(ledgerPath(root, sessionId));
+            }
+            // Aggregate across every session directory under state/.
+            let dirs: string[] = [];
             try {
-              raw = await fs.readFile(file, "utf8");
+              dirs = await fs.readdir(stateRoot(root));
             } catch (err) {
-              // ENOENT (no ledger yet) is expected; surface other I/O errors
-              // rather than silently returning [].
               if (
                 typeof err === "object" &&
                 err !== null &&
@@ -57,23 +96,12 @@ export const LedgerLive = (root: string = process.cwd()): Layer.Layer<Ledger> =>
               }
               throw err;
             }
-            const entries: LedgerEntry[] = [];
-            for (const line of raw.split("\n")) {
-              if (line.trim().length === 0) continue;
-              // Per-line tolerance: a single corrupt line should not blank
-              // the entire ledger to readers. Log and skip.
-              try {
-                const entry = JSON.parse(line) as LedgerEntry;
-                if (!sessionId || entry.sessionId === sessionId) {
-                  entries.push(entry);
-                }
-              } catch (err) {
-                process.stderr.write(
-                  `ledger.read: skipping malformed line: ${String(err).slice(0, 120)}\n`,
-                );
-              }
+            const all: LedgerEntry[] = [];
+            for (const d of dirs) {
+              const file = path.join(stateRoot(root), d, "ledger.jsonl");
+              all.push(...(await readSessionFile(file)));
             }
-            return entries;
+            return all;
           },
           catch: (cause) =>
             new LedgerError({ op: "read", message: String(cause), cause }),
