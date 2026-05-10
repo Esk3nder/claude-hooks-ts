@@ -2,12 +2,16 @@ import { describe, expect, test } from "bun:test"
 import { Effect, Schema } from "effect"
 import { handlePreToolUse } from "../../src/events/pretool-policy.ts"
 import { HookPayload } from "../../src/schema/payloads.ts"
+import { SessionStateTest } from "../../src/services/session-state.ts"
 import {
   shouldRewrite,
   rewriteTestCommand,
   hasPipeOrRedirect,
   isTestLikeCommand,
 } from "../../src/policies/test-output-rewrite.ts"
+
+const runPretool = (p: ReturnType<typeof preBash>) =>
+  Effect.runPromise(handlePreToolUse(p).pipe(Effect.provide(SessionStateTest())))
 
 const decode = (raw: unknown) => Schema.decodeUnknownSync(HookPayload)(raw)
 
@@ -63,7 +67,7 @@ describe("test-output-rewrite policy (VAL-M5-002)", () => {
   })
 
   test("PreToolUse Bash 'npm test' returns updatedInput with rewritten command", async () => {
-    const d = await Effect.runPromise(handlePreToolUse(preBash("npm test")))
+    const d = await runPretool(preBash("npm test"))
     const out = d as {
       hookSpecificOutput?: {
         permissionDecision?: string
@@ -76,9 +80,7 @@ describe("test-output-rewrite policy (VAL-M5-002)", () => {
   })
 
   test("PreToolUse Bash already-piped command is left alone (no updatedInput)", async () => {
-    const d = await Effect.runPromise(
-      handlePreToolUse(preBash("npm test | head -50")),
-    )
+    const d = await runPretool(preBash("npm test | head -50"))
     const out = d as {
       hookSpecificOutput?: { updatedInput?: unknown }
     }
@@ -86,12 +88,12 @@ describe("test-output-rewrite policy (VAL-M5-002)", () => {
   })
 
   test("PreToolUse Bash non-test command unchanged", async () => {
-    const d = await Effect.runPromise(handlePreToolUse(preBash("ls -la")))
+    const d = await runPretool(preBash("ls -la"))
     expect(d).toEqual({})
   })
 
   test("PreToolUse Bash destructive command still denied (rewrite does not override)", async () => {
-    const d = await Effect.runPromise(handlePreToolUse(preBash("rm -rf /")))
+    const d = await runPretool(preBash("rm -rf /"))
     const out = d as {
       hookSpecificOutput?: { permissionDecision?: string }
     }
