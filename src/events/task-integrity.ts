@@ -76,9 +76,16 @@ export const handleTaskCompleted = (
   Effect.sync(() => {
     if (payload._tag !== "TaskCompleted") return SAFE_DEFAULT
 
-    // Existing acceptance/evidence field requirement (pre-existing behavior).
-    const ac = payload.acceptance_criteria
-    const ev = payload.evidence
+    // Acceptance/evidence may arrive top-level (rich harness contract) or
+    // under payload.metadata (current Claude Code TaskUpdate surface, which
+    // has no first-class AC/evidence parameters). Read from either; runtime
+    // checks below do the narrowing.
+    const meta = payload.metadata as
+      | { acceptance_criteria?: unknown; evidence?: unknown }
+      | undefined
+
+    const ac = payload.acceptance_criteria ?? meta?.acceptance_criteria
+    const ev = payload.evidence ?? meta?.evidence
     const missingAc = typeof ac !== "string" || ac.trim().length === 0
     const missingEv = !Array.isArray(ev) || ev.length === 0
 

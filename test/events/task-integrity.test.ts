@@ -288,3 +288,158 @@ describe("3c — TaskCompleted ISC-evidence requirement", () => {
     }
   })
 })
+
+describe("metadata-fallback for AC/evidence (harness-bridge)", () => {
+  // A — raw wire payload with metadata decodes (no _tag baked in)
+  test("A: TaskCompleted raw wire payload with metadata decodes", () => {
+    const p = decode({
+      session_id: "s",
+      hook_event_name: "TaskCompleted",
+      task_id: "t1",
+      metadata: {
+        acceptance_criteria: "done means tests pass",
+        evidence: ["bun test exit 0"],
+      },
+    })
+    expect(p._tag).toBe("TaskCompleted")
+  })
+
+  // B — metadata fallback approves
+  test("B: metadata.acceptance_criteria + metadata.evidence → no-op", async () => {
+    const p = decode({
+      session_id: "s",
+      hook_event_name: "TaskCompleted",
+      task_id: "t1",
+      metadata: {
+        acceptance_criteria: "Task is done when tests pass",
+        evidence: ["bun test exit 0"],
+      },
+    })
+    const d = await Effect.runPromise(handleTaskCompleted(p))
+    expect(d).toEqual({})
+  })
+
+  // C — top-level still approves (regression check on existing behavior)
+  test("C: top-level acceptance_criteria + evidence → no-op", async () => {
+    const p = decode({
+      session_id: "s",
+      hook_event_name: "TaskCompleted",
+      task_id: "t1",
+      acceptance_criteria: "Task is done",
+      evidence: ["evidence-1"],
+    })
+    const d = await Effect.runPromise(handleTaskCompleted(p))
+    expect(d).toEqual({})
+  })
+
+  // D — mixed sources approve (?? coalesces nullish only)
+  test("D1: top-level acceptance_criteria + metadata.evidence → no-op", async () => {
+    const p = decode({
+      session_id: "s",
+      hook_event_name: "TaskCompleted",
+      task_id: "t1",
+      acceptance_criteria: "top-level AC",
+      metadata: { evidence: ["from metadata"] },
+    })
+    const d = await Effect.runPromise(handleTaskCompleted(p))
+    expect(d).toEqual({})
+  })
+
+  test("D2: metadata.acceptance_criteria + top-level evidence → no-op", async () => {
+    const p = decode({
+      session_id: "s",
+      hook_event_name: "TaskCompleted",
+      task_id: "t1",
+      metadata: { acceptance_criteria: "from metadata" },
+      evidence: ["top-level"],
+    })
+    const d = await Effect.runPromise(handleTaskCompleted(p))
+    expect(d).toEqual({})
+  })
+
+  // E — invalid metadata still blocks
+  test("E1: metadata.acceptance_criteria whitespace → block", async () => {
+    const p = decode({
+      session_id: "s",
+      hook_event_name: "TaskCompleted",
+      task_id: "t1",
+      metadata: {
+        acceptance_criteria: "   ",
+        evidence: ["bun test exit 0"],
+      },
+    })
+    const d = await Effect.runPromise(handleTaskCompleted(p))
+    expect("decision" in d).toBe(true)
+    if ("decision" in d) {
+      expect(d.decision).toBe("block")
+      expect(d.reason).toContain("acceptance_criteria")
+    }
+  })
+
+  test("E2: metadata.evidence empty array → block", async () => {
+    const p = decode({
+      session_id: "s",
+      hook_event_name: "TaskCompleted",
+      task_id: "t1",
+      metadata: {
+        acceptance_criteria: "done",
+        evidence: [],
+      },
+    })
+    const d = await Effect.runPromise(handleTaskCompleted(p))
+    expect("decision" in d).toBe(true)
+    if ("decision" in d) {
+      expect(d.decision).toBe("block")
+      expect(d.reason).toContain("evidence")
+    }
+  })
+
+  test("E3: metadata.acceptance_criteria missing (only evidence under metadata) → block", async () => {
+    const p = decode({
+      session_id: "s",
+      hook_event_name: "TaskCompleted",
+      task_id: "t1",
+      metadata: { evidence: ["x"] },
+    })
+    const d = await Effect.runPromise(handleTaskCompleted(p))
+    expect("decision" in d).toBe(true)
+    if ("decision" in d) {
+      expect(d.decision).toBe("block")
+      expect(d.reason).toContain("acceptance_criteria")
+    }
+  })
+
+  test("E4: metadata.evidence missing (only AC under metadata) → block", async () => {
+    const p = decode({
+      session_id: "s",
+      hook_event_name: "TaskCompleted",
+      task_id: "t1",
+      metadata: { acceptance_criteria: "done" },
+    })
+    const d = await Effect.runPromise(handleTaskCompleted(p))
+    expect("decision" in d).toBe(true)
+    if ("decision" in d) {
+      expect(d.decision).toBe("block")
+      expect(d.reason).toContain("evidence")
+    }
+  })
+
+  test("E5: empty top-level AC string DOES NOT fall through to metadata (?? coalesces nullish only)", async () => {
+    // ?? only coalesces null/undefined. An empty string at top-level means
+    // metadata is NOT consulted, so missingAc=true → block.
+    const p = decode({
+      session_id: "s",
+      hook_event_name: "TaskCompleted",
+      task_id: "t1",
+      acceptance_criteria: "",
+      evidence: [],
+      metadata: {
+        acceptance_criteria: "would-have-saved-us",
+        evidence: ["x"],
+      },
+    })
+    const d = await Effect.runPromise(handleTaskCompleted(p))
+    expect("decision" in d).toBe(true)
+    if ("decision" in d) expect(d.decision).toBe("block")
+  })
+})

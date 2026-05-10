@@ -190,6 +190,9 @@ export const TaskCompleted = variant("TaskCompleted", {
   status: Schema.optional(Schema.String),
   acceptance_criteria: Schema.optional(Schema.String),
   evidence: Schema.optional(Schema.Array(Schema.String)),
+  metadata: Schema.optional(
+    Schema.Record({ key: Schema.String, value: Schema.Unknown }),
+  ),
 })
 
 /**
