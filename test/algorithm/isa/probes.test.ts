@@ -272,6 +272,55 @@ describe("resolveProbe / probe spec — per-probe timeout configuration", () => 
     expect(result).toBe(true)
     expect(elapsed).toBeGreaterThanOrEqual(1_400)
   }, 10_000)
+
+  // Edge-case pins: nullish coalescing (`?? PROBE_TIMEOUT_MS`) does NOT
+  // catch 0 or negative numbers, so those values pass through verbatim.
+  // These tests pin the current behavior so a future "treat 0 as default"
+  // refactor doesn't silently change the contract.
+  test("resolveProbe: timeoutMs=0 passes through (downstream = instant timeout)", () => {
+    const fn: ProbeFn = () => true
+    const r = resolveProbe({ fn, timeoutMs: 0 })
+    expect(r.timeoutMs).toBe(0)
+  })
+
+  test("resolveProbe: negative timeoutMs passes through (downstream behavior undefined)", () => {
+    const fn: ProbeFn = () => true
+    const r = resolveProbe({ fn, timeoutMs: -1 })
+    expect(r.timeoutMs).toBe(-1)
+  })
+
+  test("loadProbes: rejects spec with fn=null (not callable)", async () => {
+    const { root, cleanup } = stage()
+    try {
+      writeProbesFile(
+        root,
+        `export const probes = {
+          "broken-null-fn": { fn: null, timeoutMs: 5000 },
+        }`,
+      )
+      const out = await loadProbes(root)
+      expect(Object.keys(out)).toEqual([])
+    } finally {
+      cleanup()
+    }
+  })
+
+  test("loadProbes: rejects null entry verbatim (not a spec, not a function)", async () => {
+    const { root, cleanup } = stage()
+    try {
+      writeProbesFile(
+        root,
+        `export const probes = {
+          "good": () => true,
+          "nullish": null,
+        }`,
+      )
+      const out = await loadProbes(root)
+      expect(Object.keys(out)).toEqual(["good"])
+    } finally {
+      cleanup()
+    }
+  })
 })
 
 describe("parseTestStrategy — pipe-table → iscId→probeName map", () => {
