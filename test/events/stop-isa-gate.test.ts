@@ -252,6 +252,109 @@ describe("Stop ISA gate — completeness check on phase: complete", () => {
     }
   })
 
+  // T1.4 — the canonical `tier: E<N>` frontmatter shape was previously
+  // ignored by the gate (tierFromEffort only recognized `effort:` codes
+  // like "advanced"). With no recognized tier, checkCompleteness was
+  // skipped entirely on every ISA following the documented format —
+  // half of the gate was dead code on the canonical shape.
+  test("E3 task ISA with `tier: E3` frontmatter and missing sections → BLOCK", async () => {
+    const { root, cleanup } = stage()
+    try {
+      writeTaskIsa(
+        root,
+        "20260509_tier",
+        `---
+task: x
+slug: 20260509_tier
+tier: E3
+phase: complete
+progress: 1/1
+mode: interactive
+started: 2026-05-09T00:00:00Z
+updated: 2026-05-09T00:00:00Z
+---
+
+## Goal
+ship
+
+## Criteria
+- [x] ISC-1: did
+`,
+      )
+      const out = await runStop(root)
+      expect(out.decision).toBe("block")
+      expect(out.reason ?? "").toContain("Tier Completeness Gate")
+      expect(out.reason ?? "").toContain("E3")
+    } finally {
+      cleanup()
+    }
+  })
+
+  test("E3 task ISA with `tier: 3` (numeric form) and missing sections → BLOCK", async () => {
+    const { root, cleanup } = stage()
+    try {
+      writeTaskIsa(
+        root,
+        "20260509_tn",
+        `---
+task: x
+slug: 20260509_tn
+tier: 3
+phase: complete
+progress: 1/1
+mode: interactive
+started: 2026-05-09T00:00:00Z
+updated: 2026-05-09T00:00:00Z
+---
+
+## Goal
+ship
+
+## Criteria
+- [x] ISC-1: did
+`,
+      )
+      const out = await runStop(root)
+      expect(out.decision).toBe("block")
+      expect(out.reason ?? "").toContain("Tier Completeness Gate")
+    } finally {
+      cleanup()
+    }
+  })
+
+  test("`tier:` and `effort:` agree → uses one consistent tier (no double-fire)", async () => {
+    const { root, cleanup } = stage()
+    try {
+      // Both fields present, both name E1. Should still block as PROJECT-ISA
+      // floor of 3 (consistent with the existing E1 PROJECT ISA test).
+      writeProjectIsa(
+        root,
+        `---
+task: x
+slug: 20260509_both
+tier: E1
+effort: standard
+phase: complete
+progress: 1/1
+mode: interactive
+started: 2026-05-09T00:00:00Z
+updated: 2026-05-09T00:00:00Z
+---
+
+## Goal
+ship
+
+## Criteria
+- [x] ISC-1: did
+`,
+      )
+      const out = await runStop(root)
+      expect(out.decision).toBe("block")
+    } finally {
+      cleanup()
+    }
+  })
+
   test("ISA phase: build (not complete) → gate doesn't fire", async () => {
     const { root, cleanup } = stage()
     try {

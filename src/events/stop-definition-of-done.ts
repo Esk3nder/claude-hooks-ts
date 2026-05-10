@@ -44,6 +44,34 @@ const tierFromEffort = (effort: string | undefined): Tier | null => {
   }
 }
 
+/**
+ * Map ISA frontmatter `tier` field to numeric tier. Accepts `E1`–`E5`
+ * (canonical short form per IsaFormat.md) or bare `1`–`5`. Returns null
+ * for missing / unrecognized values.
+ *
+ * Pre-existing `tierFromEffort` reads only the legacy `effort:` field
+ * (`standard` / `extended` / etc.). Canonical ISAs use `tier: E3`, so
+ * relying on `effort` alone made the Tier Completeness Gate dead code
+ * for the documented format. Caller now consults both via `parseTier`.
+ */
+const tierFromTier = (tier: string | undefined): Tier | null => {
+  if (typeof tier !== "string") return null
+  const m = tier.trim().match(/^[Ee]?([1-5])$/)
+  if (m === null || m[1] === undefined) return null
+  const n = Number(m[1]) as 1 | 2 | 3 | 4 | 5
+  return n
+}
+
+/**
+ * Resolve tier from frontmatter, preferring the canonical `tier:` field
+ * over the legacy `effort:` field. If both are present and disagree,
+ * prefer `tier:` (canonical) — the legacy field is best-effort
+ * back-compat, not authoritative.
+ */
+const parseTier = (fm: Record<string, string>): Tier | null => {
+  return tierFromTier(fm["tier"]) ?? tierFromEffort(fm["effort"])
+}
+
 interface IsaGateBlock {
   readonly _tag: "block"
   readonly reason: string
@@ -86,7 +114,7 @@ const checkIsaGate = (cwd: string): IsaGateBlock | IsaGateNoop => {
   if (phase !== "complete") return { _tag: "noop" }
 
   // Phase claims complete — apply both gates.
-  const tier = tierFromEffort(fm["effort"])
+  const tier = parseTier(fm)
   const isProjectIsa = projectIsa !== null
   if (tier !== null) {
     const report = checkCompleteness(content, tier, { isProjectIsa })
