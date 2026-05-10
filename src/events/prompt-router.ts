@@ -116,7 +116,7 @@ const EFFORT_BY_TIER: Record<1 | 2 | 3 | 4 | 5, string> = {
  * (SessionState.expected_isa_path) so directive text and gate behavior agree.
  */
 export const expectedIsaPathFor = (sessionId: string): string =>
-  `.claude-hooks/state/work/${sessionId}/ISA.md`
+  `.claude-hooks/work/${sessionId}/ISA.md`
 
 const engageDirectiveFor = (
   c: Classification,

@@ -11,17 +11,17 @@
  * second canonical home for project ISAs
  * - isIsaFilePath(path) — does this absolute path point to an ISA?
  *
- * Path adaptation (the only divergence canonically):
- * this package's WORK_DIR is this package (per-user, single root).
- * This package's WORK_DIR is `<repo>/.claude-hooks/state/work/` (per-repo,
- * mirrors `services/session-state.ts` pattern). Both store one
- * `{slug}/ISA.md` per task; the directory layout under `{slug}` is
- * identical. The `root` parameter overrides the default for tests and
- * for tools that operate against a specific project root.
- *
- * Legacy PRD.md fallback is preserved per the classifier: pre-v4.1.0 ISAs
- * lived under `PRD.md`. The fallback is read-only — new ISAs always write
- * `ISA.md`.
+ * Path layout:
+ * - Canonical (writable): `<repo>/.claude-hooks/work/<slug>/ISA.md`. Lives
+ *   OUTSIDE `.claude-hooks/state/` so task ISAs are tracked by git as
+ *   evidence trails. The `root` parameter overrides the default for
+ *   tests and for tools that operate against a specific project root.
+ * - Legacy (read-only fallback): `<repo>/.claude-hooks/state/work/<slug>/`.
+ *   Pre-Option-B installs wrote here; locator readers continue to scan
+ *   it so in-flight sessions keep working through the migration. New
+ *   ISAs are never written here.
+ * - Legacy PRD.md filename fallback is preserved: pre-v4.1.0 ISAs lived
+ *   under `PRD.md`. Read-only, both dirs.
  */
 
 import { existsSync, readdirSync, statSync } from "node:fs"
@@ -37,67 +37,95 @@ export const ARTIFACT_FILENAME = "ISA.md"
 export const LEGACY_ARTIFACT_FILENAME = "PRD.md"
 
 /**
- * Default work-directory path relative to a project root. Mirrors the
- * existing `.claude-hooks/state/...` convention used by
- * `services/session-state.ts:101` (`statePath`).
+ * Default (canonical) work-directory path relative to a project root.
+ * Lives at `.claude-hooks/work/` — OUTSIDE `.claude-hooks/state/` so
+ * task ISAs are tracked by git as evidence trails. State (per-session
+ * JSON, locks, telemetry) stays under `.claude-hooks/state/` and remains
+ * gitignored.
  */
-const WORK_SUBPATH = [".claude-hooks", "state", "work"] as const
+const WORK_SUBPATH = [".claude-hooks", "work"] as const
 
-/** Compute the work directory for a given project root. */
+/**
+ * Legacy work-directory path. Pre-Option-B installs wrote task ISAs at
+ * `.claude-hooks/state/work/`, which was caught by the `.gitignore` on
+ * `.claude-hooks/state/` and lost their evidence-trail value. Locator
+ * functions read from this path as a fallback so already-running
+ * sessions keep working through the migration; new ISAs always write
+ * to the canonical path above.
+ */
+const LEGACY_WORK_SUBPATH = [".claude-hooks", "state", "work"] as const
+
+/** Compute the canonical (tracked) work directory for a given project root. */
 export const workDirFor = (root: string = process.cwd()): string =>
   join(root, ...WORK_SUBPATH)
 
+/** Compute the legacy (gitignored) work directory for a given project root.
+ *  Used by readers as a fallback when no artifact exists at the canonical
+ *  path. Writers should NEVER target this directory. */
+export const legacyWorkDirFor = (root: string = process.cwd()): string =>
+  join(root, ...LEGACY_WORK_SUBPATH)
+
 /**
  * Resolve the ideal-state artifact path for a session slug. Read order:
- * `ISA.md` (canonical) → `PRD.md` (legacy). Returns null if neither file
- * exists.
- *
- * Mirror of the classifier. The single read-fallback site for any caller
- * that wants per-session artifacts.
+ *   1. `<canonical>/<slug>/ISA.md`     (new tracked location)
+ *   2. `<canonical>/<slug>/PRD.md`     (canonical legacy filename)
+ *   3. `<legacy>/<slug>/ISA.md`        (pre-Option-B path)
+ *   4. `<legacy>/<slug>/PRD.md`        (pre-Option-B + pre-v4.1.0)
+ * Returns null if none exist.
  */
 export const findArtifactPath = (
   slug: string,
   root: string = process.cwd(),
 ): string | null => {
-  const dir = join(workDirFor(root), slug)
-  const isa = join(dir, ARTIFACT_FILENAME)
-  if (existsSync(isa)) return isa
-  const legacy = join(dir, LEGACY_ARTIFACT_FILENAME)
-  if (existsSync(legacy)) return legacy
+  const candidates = [
+    join(workDirFor(root), slug, ARTIFACT_FILENAME),
+    join(workDirFor(root), slug, LEGACY_ARTIFACT_FILENAME),
+    join(legacyWorkDirFor(root), slug, ARTIFACT_FILENAME),
+    join(legacyWorkDirFor(root), slug, LEGACY_ARTIFACT_FILENAME),
+  ]
+  for (const c of candidates) {
+    if (existsSync(c)) return c
+  }
   return null
 }
 
 /**
- * Scan the work directory for the most-recently-modified artifact across
- * all session slugs. Prefers `ISA.md` per directory, falls back to legacy
- * `PRD.md`. Returns null when the work dir doesn't exist or contains no
- * artifacts.
+ * Scan both canonical and legacy work directories for the most-recently-
+ * modified artifact across all session slugs. Prefers `ISA.md` per
+ * directory, falls back to legacy `PRD.md`. Returns null when no
+ * artifacts exist anywhere.
  *
- * Mirror of the classifier. Best-effort: per-directory stat errors are
- * swallowed so one corrupt entry doesn't poison the scan.
+ * Best-effort: per-directory stat errors are swallowed so one corrupt
+ * entry doesn't poison the scan.
  */
 export const findLatestISA = (root: string = process.cwd()): string | null => {
-  const workDir = workDirFor(root)
-  if (!existsSync(workDir)) return null
+  const slugSeen = new Set<string>()
   let latest: string | null = null
   let latestMtime = 0
-  let entries: ReadonlyArray<string>
-  try {
-    entries = readdirSync(workDir)
-  } catch {
-    return null
-  }
-  for (const dir of entries) {
-    const candidate = findArtifactPath(dir, root)
-    if (candidate === null) continue
+  for (const workDir of [workDirFor(root), legacyWorkDirFor(root)]) {
+    if (!existsSync(workDir)) continue
+    let entries: ReadonlyArray<string>
     try {
-      const s = statSync(candidate)
-      if (s.mtimeMs > latestMtime) {
-        latestMtime = s.mtimeMs
-        latest = candidate
-      }
+      entries = readdirSync(workDir)
     } catch {
-      // best-effort — skip unreadable entry
+      continue
+    }
+    for (const slug of entries) {
+      // Same slug under both dirs → prefer canonical (already evaluated
+      // since we iterate canonical first). Skip the legacy duplicate.
+      if (slugSeen.has(slug)) continue
+      slugSeen.add(slug)
+      const candidate = findArtifactPath(slug, root)
+      if (candidate === null) continue
+      try {
+        const s = statSync(candidate)
+        if (s.mtimeMs > latestMtime) {
+          latestMtime = s.mtimeMs
+          latest = candidate
+        }
+      } catch {
+        // best-effort — skip unreadable entry
+      }
     }
   }
   return latest
@@ -125,8 +153,8 @@ export const findProjectIsa = (root: string = process.cwd()): string | null => {
  *
  * implements canonical behavior ISASync.hook.ts lines 44-46 detection logic: matches
  * either filename at the path's tail, regardless of which directory the
- * file lives in (project root, MEMORY/WORK/, .claude-hooks/state/work/,
- * or a user-defined location).
+ * file lives in (project root, MEMORY/WORK/, .claude-hooks/work/, the
+ * legacy .claude-hooks/state/work/, or a user-defined location).
  */
 export const isIsaFilePath = (filePath: string): boolean => {
   if (typeof filePath !== "string" || filePath.length === 0) return false

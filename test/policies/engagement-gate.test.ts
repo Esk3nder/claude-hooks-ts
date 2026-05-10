@@ -7,8 +7,8 @@
 import { describe, expect, test } from "bun:test"
 import { evaluateEngagementGate } from "../../src/policies/engagement-gate.ts"
 
-const EXPECTED_ABS = "/repo/.claude-hooks/state/work/sess-1/ISA.md"
-const EXPECTED_DIR = "/repo/.claude-hooks/state/work/sess-1"
+const EXPECTED_ABS = "/repo/.claude-hooks/work/sess-1/ISA.md"
+const EXPECTED_DIR = "/repo/.claude-hooks/work/sess-1"
 const PROJECT_ISA_ABS = "/repo/ISA.md"
 
 const baseCtx = {
@@ -17,8 +17,8 @@ const baseCtx = {
   acceptedWritePaths: [EXPECTED_ABS],
   acceptedEditPaths: [EXPECTED_ABS],
   acceptedMkdirDirs: [EXPECTED_DIR],
-  displayIsaPath: ".claude-hooks/state/work/sess-1/ISA.md",
-  displayMkdirDir: ".claude-hooks/state/work/sess-1",
+  displayIsaPath: ".claude-hooks/work/sess-1/ISA.md",
+  displayMkdirDir: ".claude-hooks/work/sess-1",
   resolvedToolFilePath: null as string | null,
 }
 
@@ -150,7 +150,7 @@ describe("evaluateEngagementGate — deny cases", () => {
     expect(v.kind).toBe("deny")
     if (v.kind === "deny") {
       expect(v.reason).toContain("ALGORITHM engagement is required")
-      expect(v.reason).toContain(".claude-hooks/state/work/sess-1/ISA.md")
+      expect(v.reason).toContain(".claude-hooks/work/sess-1/ISA.md")
       expect(v.reason).toContain("CLAUDE_HOOKS_DISABLE_ISA_PRETOOL_GATE")
     }
   })

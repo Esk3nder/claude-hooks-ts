@@ -40,7 +40,7 @@ describe("PostToolUse engaged-marker", () => {
           engagement_required: true,
           last_mode: "ALGORITHM",
           last_tier: 3,
-          expected_isa_path: ".claude-hooks/state/work/engaged-1/ISA.md",
+          expected_isa_path: ".claude-hooks/work/engaged-1/ISA.md",
         },
       ],
     ])
@@ -48,7 +48,7 @@ describe("PostToolUse engaged-marker", () => {
     const record = await Effect.runPromise(
       Effect.gen(function* () {
         yield* handlePostToolUse(
-          editPayload("/repo/.claude-hooks/state/work/engaged-1/ISA.md", sid),
+          editPayload("/repo/.claude-hooks/work/engaged-1/ISA.md", sid),
         )
         const s = yield* SessionState
         return yield* s.get(sid)

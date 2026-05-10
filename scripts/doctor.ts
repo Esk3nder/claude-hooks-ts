@@ -533,15 +533,20 @@ const checkSkillBundle = (): CheckResult => {
 
 /**
  * Active ISA check — is there a project ISA at cwd or a latest task ISA in
- * .claude-hooks/state/work/? Reports phase + progress so the user can see at
- * a glance what state the work is in.
+ * .claude-hooks/work/ (canonical) or .claude-hooks/state/work/ (legacy)?
+ * Reports phase + progress so the user can see at a glance what state the
+ * work is in.
  */
 const checkActiveIsa = (cwd: string): CheckResult => {
   const projectIsa = path.join(cwd, "ISA.md");
-  const taskIsaDir = path.join(cwd, ".claude-hooks", "state", "work");
+  const taskIsaDirs = [
+    path.join(cwd, ".claude-hooks", "work"),
+    path.join(cwd, ".claude-hooks", "state", "work"),
+  ];
   const candidates: string[] = [];
   if (fs.existsSync(projectIsa)) candidates.push(projectIsa);
-  if (fs.existsSync(taskIsaDir)) {
+  for (const taskIsaDir of taskIsaDirs) {
+    if (!fs.existsSync(taskIsaDir)) continue;
     let entries: ReadonlyArray<string> = [];
     try {
       entries = fs.readdirSync(taskIsaDir);
@@ -557,7 +562,7 @@ const checkActiveIsa = (cwd: string): CheckResult => {
     return {
       name: "active ISA",
       status: "INFO",
-      detail: "no ISA at <cwd>/ISA.md or .claude-hooks/state/work/<slug>/ISA.md — Algorithm gates noop.",
+      detail: "no ISA at <cwd>/ISA.md or .claude-hooks/work/<slug>/ISA.md — Algorithm gates noop.",
     };
   }
   // Report the FIRST one (project preferred, then any task ISA).
@@ -649,7 +654,7 @@ const checkProbeRegistry = async (
     return {
       name: "probe registry vs ISA tool columns",
       status: "INFO",
-      detail: `${probesFile} exports ${probeKeys.length} probe(s) but no ISA at <cwd>/ISA.md or .claude-hooks/state/work/<slug>/ISA.md to validate against.`,
+      detail: `${probesFile} exports ${probeKeys.length} probe(s) but no ISA at <cwd>/ISA.md or .claude-hooks/work/<slug>/ISA.md to validate against.`,
     };
   }
 
