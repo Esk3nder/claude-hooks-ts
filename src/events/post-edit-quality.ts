@@ -213,7 +213,20 @@ export const handlePostToolUse = (
         if (strategyMap.size === 0) return
         const registry = await loadProbes()
         if (Object.keys(registry).length === 0) return
-        const matches = matchProbes(criteria, strategyMap, registry)
+        const matches = matchProbes(
+          criteria,
+          strategyMap,
+          registry,
+          (miss) => {
+            const known =
+              miss.registeredNames.length === 0
+                ? "registry is empty"
+                : `registry has [${miss.registeredNames.join(", ")}]`
+            process.stderr.write(
+              `[probes] ${miss.iscId} declares probe '${miss.probeName}' but ${known} — check that probes.ts exports a key matching the ISA's 'tool' column\n`,
+            )
+          },
+        )
         let anyFlipped = false
         for (const m of matches) {
           const passed = await Effect.runPromise(runProbe(m.probe, m.criterion))

@@ -146,7 +146,13 @@ export const runProbe = (
  * The `tool` column names the probe. Only criteria currently `[ ]`
  * (status === 'pending') match — completed ones are skipped (idempotent).
  *
- * Pure function — no I/O, easy to test.
+ * Pure function — no I/O by default. The optional `onMiss` callback is
+ * invoked when an ISA declares a probe (`tool` column) that is not present
+ * in the registry — a silent skip otherwise, which is a known footgun:
+ * a typo in `probes.ts` (e.g. keying by ISC id instead of by tool name)
+ * yields zero matches and zero observable signal until a downstream
+ * gate fires. Callers can pass a logger to make the miss observable;
+ * tests can pass a recorder to assert on the miss.
  */
 export interface ProbeMatch {
   readonly criterion: CriterionEntry
@@ -154,18 +160,32 @@ export interface ProbeMatch {
   readonly probe: ProbeFn
 }
 
+export interface ProbeMiss {
+  readonly iscId: string
+  readonly probeName: string
+  readonly registeredNames: ReadonlyArray<string>
+}
+
 export const matchProbes = (
   criteria: ReadonlyArray<CriterionEntry>,
   testStrategy: ReadonlyMap<string, string>, // iscId → probe name
   registry: Readonly<Record<string, ProbeFn>>,
+  onMiss?: (miss: ProbeMiss) => void,
 ): ReadonlyArray<ProbeMatch> => {
   const matches: ProbeMatch[] = []
+  let registeredNames: ReadonlyArray<string> | undefined
   for (const c of criteria) {
     if (c.status !== "pending") continue
     const probeName = testStrategy.get(c.id)
     if (probeName === undefined) continue
     const probe = registry[probeName]
-    if (probe === undefined) continue
+    if (probe === undefined) {
+      if (onMiss !== undefined) {
+        registeredNames ??= Object.keys(registry)
+        onMiss({ iscId: c.id, probeName, registeredNames })
+      }
+      continue
+    }
     matches.push({ criterion: c, probeName, probe })
   }
   return matches

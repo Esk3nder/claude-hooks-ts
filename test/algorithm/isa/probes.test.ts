@@ -283,4 +283,62 @@ describe("matchProbes — pure pairing function", () => {
     const criteria = [c("ISC-1")]
     expect(matchProbes(criteria, new Map(), registry).length).toBe(0)
   })
+
+  test("invokes onMiss when ISA declares a probe absent from the registry", () => {
+    const criteria = [c("ISC-1"), c("ISC-2")]
+    const ts = new Map([
+      ["ISC-1", "p-true"],
+      ["ISC-2", "tests-pass"],
+    ])
+    const misses: Array<{
+      iscId: string
+      probeName: string
+      registeredNames: ReadonlyArray<string>
+    }> = []
+    const matches = matchProbes(criteria, ts, registry, (m) => {
+      misses.push({ ...m })
+    })
+    expect(matches.map((m) => m.criterion.id)).toEqual(["ISC-1"])
+    expect(misses.length).toBe(1)
+    expect(misses[0]?.iscId).toBe("ISC-2")
+    expect(misses[0]?.probeName).toBe("tests-pass")
+    expect([...(misses[0]?.registeredNames ?? [])].sort()).toEqual([
+      "p-false",
+      "p-true",
+    ])
+  })
+
+  test("does not invoke onMiss for completed criteria or undeclared probes", () => {
+    const criteria = [
+      c("ISC-1", "x", "completed"),
+      c("ISC-2"), // pending but no testStrategy entry
+    ]
+    const ts = new Map([["ISC-1", "tests-pass"]])
+    const misses: string[] = []
+    matchProbes(criteria, ts, registry, (m) => {
+      misses.push(m.iscId)
+    })
+    expect(misses).toEqual([])
+  })
+
+  test("does not invoke onMiss when probe is found", () => {
+    const criteria = [c("ISC-1")]
+    const ts = new Map([["ISC-1", "p-true"]])
+    let called = false
+    matchProbes(criteria, ts, registry, () => {
+      called = true
+    })
+    expect(called).toBe(false)
+  })
+
+  test("onMiss reports an empty registeredNames list when registry is empty", () => {
+    const criteria = [c("ISC-1")]
+    const ts = new Map([["ISC-1", "tests-pass"]])
+    const misses: Array<ReadonlyArray<string>> = []
+    matchProbes(criteria, ts, {}, (m) => {
+      misses.push(m.registeredNames)
+    })
+    expect(misses.length).toBe(1)
+    expect(misses[0]).toEqual([])
+  })
 })
