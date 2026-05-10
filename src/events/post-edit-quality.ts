@@ -20,6 +20,7 @@ import {
   matchProbes,
   parseTestStrategy,
   probesPathFor,
+  resolveProbe,
   runProbe,
 } from "../algorithm/isa/probes.ts"
 import { Redact } from "../services/redact.ts"
@@ -257,7 +258,10 @@ export const handlePostToolUse = (
         )
         let anyFlipped = false
         for (const m of matches) {
-          const passed = await Effect.runPromise(runProbe(m.probe, m.criterion))
+          const { fn, timeoutMs } = resolveProbe(m.probe)
+          const passed = await Effect.runPromise(
+            runProbe(fn, m.criterion, timeoutMs),
+          )
           if (passed && flipIscCheckbox(isa, m.criterion.id)) {
             anyFlipped = true
           }
