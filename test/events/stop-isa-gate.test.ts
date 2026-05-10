@@ -322,6 +322,179 @@ ship
     }
   })
 
+  // Boundary tests for tierFromTier — pin the regex for E0/E6/lowercase/
+  // garbage values. parseTier silently falls back to tierFromEffort when
+  // `tier:` is unrecognized; if both fields are missing/garbage, the
+  // tier-completeness arm is skipped (count gate may still fire).
+  test("`tier: E0` is unrecognized → tier gate skipped (count gate may still fire)", async () => {
+    const { root, cleanup } = stage()
+    try {
+      writeTaskIsa(
+        root,
+        "20260509_t0",
+        `---
+task: x
+slug: 20260509_t0
+tier: E0
+phase: complete
+progress: 0/1
+mode: interactive
+started: 2026-05-09T00:00:00Z
+updated: 2026-05-09T00:00:00Z
+---
+
+## Goal
+ship
+
+## Criteria
+- [ ] ISC-1: not done
+`,
+      )
+      const out = await runStop(root)
+      expect(out.decision).toBe("block")
+      expect(out.reason ?? "").toContain("ISC criteria")
+      expect(out.reason ?? "").not.toContain("Tier Completeness Gate")
+    } finally {
+      cleanup()
+    }
+  })
+
+  test("`tier: E6` (out of range) is unrecognized → tier gate skipped", async () => {
+    const { root, cleanup } = stage()
+    try {
+      writeTaskIsa(
+        root,
+        "20260509_t6",
+        `---
+task: x
+slug: 20260509_t6
+tier: E6
+phase: complete
+progress: 0/1
+mode: interactive
+started: 2026-05-09T00:00:00Z
+updated: 2026-05-09T00:00:00Z
+---
+
+## Goal
+ship
+
+## Criteria
+- [ ] ISC-1: not done
+`,
+      )
+      const out = await runStop(root)
+      expect(out.decision).toBe("block")
+      expect(out.reason ?? "").toContain("ISC criteria")
+      expect(out.reason ?? "").not.toContain("Tier Completeness Gate")
+    } finally {
+      cleanup()
+    }
+  })
+
+  test("invalid `tier:` falls back to `effort:` when present", async () => {
+    const { root, cleanup } = stage()
+    try {
+      // `tier: garbage` → tierFromTier returns null. `effort: advanced`
+      // takes over → tier 3. Project ISA → floor stays 3 → block on
+      // missing E3 sections.
+      writeProjectIsa(
+        root,
+        `---
+task: x
+slug: 20260509_fallback
+tier: garbage
+effort: advanced
+phase: complete
+progress: 1/1
+mode: interactive
+started: 2026-05-09T00:00:00Z
+updated: 2026-05-09T00:00:00Z
+---
+
+## Goal
+ship
+
+## Criteria
+- [x] ISC-1: did
+`,
+      )
+      const out = await runStop(root)
+      expect(out.decision).toBe("block")
+      expect(out.reason ?? "").toContain("Tier Completeness Gate")
+    } finally {
+      cleanup()
+    }
+  })
+
+  test("when `tier:` and `effort:` disagree, canonical `tier:` wins", async () => {
+    const { root, cleanup } = stage()
+    try {
+      // `tier: E1` says E1; `effort: comprehensive` says E5. Canonical wins → E1.
+      // Task ISA → E1 stays E1 (no project floor). Phase complete + all ISCs
+      // checked + Goal+Criteria present → completeness passes at E1.
+      // If `effort:` had won (E5), this would block on missing E5 sections.
+      writeTaskIsa(
+        root,
+        "20260509_disagree",
+        `---
+task: x
+slug: 20260509_disagree
+tier: E1
+effort: comprehensive
+phase: complete
+progress: 1/1
+mode: interactive
+started: 2026-05-09T00:00:00Z
+updated: 2026-05-09T00:00:00Z
+---
+
+## Goal
+ship
+
+## Criteria
+- [x] ISC-1: did
+`,
+      )
+      const out = await runStop(root)
+      expect(out).toEqual({})
+    } finally {
+      cleanup()
+    }
+  })
+
+  test("`tier: e3` (lowercase prefix) is recognized same as `tier: E3`", async () => {
+    const { root, cleanup } = stage()
+    try {
+      writeTaskIsa(
+        root,
+        "20260509_lower",
+        `---
+task: x
+slug: 20260509_lower
+tier: e3
+phase: complete
+progress: 1/1
+mode: interactive
+started: 2026-05-09T00:00:00Z
+updated: 2026-05-09T00:00:00Z
+---
+
+## Goal
+ship
+
+## Criteria
+- [x] ISC-1: did
+`,
+      )
+      const out = await runStop(root)
+      expect(out.decision).toBe("block")
+      expect(out.reason ?? "").toContain("Tier Completeness Gate")
+    } finally {
+      cleanup()
+    }
+  })
+
   test("`tier:` and `effort:` agree → uses one consistent tier (no double-fire)", async () => {
     const { root, cleanup } = stage()
     try {
