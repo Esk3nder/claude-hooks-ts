@@ -131,6 +131,38 @@ Project-local config lives at `<project>/.claude-hooks/`:
 
 Defaults are baked in. YAML/TS files are optional — when missing, policies fall back to safe defaults.
 
+### ISC probes
+
+`probes.ts` is the only opt-in hook that runs your code. The registry is keyed by the **`tool` column** of the ISA's Test Strategy table — not by the ISC id. Mismatch → no probe runs → ISC stays unchecked.
+
+```ts
+// .claude-hooks/probes.ts
+export const probes = {
+  // The KEY here ("tests-pass") matches the `tool` column in the row
+  // BELOW, not the ISC id ("ISC-1"). ISC ids are row labels; tool names
+  // are the lookup key, so one probe can serve many ISCs.
+  "tests-pass": async () => {
+    const { execFileSync } = await import("node:child_process")
+    try {
+      execFileSync("bun", ["test", "--bail"], { stdio: "ignore", timeout: 800 })
+      return true
+    } catch { return false }
+  },
+}
+```
+
+```md
+<!-- ISA.md -->
+## Test Strategy
+| isc   | type | check | threshold | tool        |
+| ----- | ---- | ----- | --------- | ----------- |
+| ISC-1 | bun  | smoke | n/a       | tests-pass  |
+
+- [ ] ISC-1 — bun test passes
+```
+
+`claude-hooks-doctor` flags probe keys that match no tool column and gives a footgun-specific hint when the orphan key looks like an `ISC-…` id.
+
 ### Disable the classifier
 
 ```bash

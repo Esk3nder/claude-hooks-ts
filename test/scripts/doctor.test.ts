@@ -204,4 +204,133 @@ describe("doctor CLI", () => {
     expect(text).toContain("2 entries");
     expect(res.code).toBe(0);
   }, 15000);
+
+  const writeIsa = (cwd: string, body: string): void => {
+    fs.writeFileSync(path.join(cwd, "ISA.md"), body, "utf8");
+  };
+
+  const writeProbes = (cwd: string, body: string): void => {
+    const dir = path.join(cwd, ".claude-hooks");
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, "probes.ts"), body, "utf8");
+  };
+
+  const baseSettings = (target: string): void => {
+    const realShim = path.join(REPO_ROOT, "bin", "claude-hook");
+    writeSettingsWithDispatcher(target, realShim);
+  };
+
+  test("FAIL when probe key matches no ISA tool column (ISC-id footgun)", async () => {
+    writeIsa(
+      tmpDir,
+      [
+        "---",
+        "slug: t",
+        "phase: in_progress",
+        "tier: E3",
+        "---",
+        "## Problem",
+        "Verify gates fire.",
+        "## Test Strategy",
+        "| isc   | type | check | threshold | tool       |",
+        "| ----- | ---- | ----- | --------- | ---------- |",
+        "| ISC-1 | bun  | smoke | n/a       | tests-pass |",
+        "## Verification",
+        "- [ ] ISC-1",
+      ].join("\n"),
+    );
+    writeProbes(tmpDir, `export const probes = { "ISC-1": async () => true }\n`);
+    const target = path.join(tmpDir, "settings.json");
+    baseSettings(target);
+    const res = await runDoctor(["--target", target, "--cwd", tmpDir]);
+    const text = stripAnsi(res.stdout);
+    expect(text).toContain("[FAIL] probe registry vs ISA tool columns");
+    expect(text).toContain("ISC-1");
+    expect(text).toContain("'tests-pass'");
+    expect(text).toContain("NOT the 'isc' column");
+    expect(res.code).toBe(1);
+  }, 15000);
+
+  test("PASS when probe key matches the ISA tool column", async () => {
+    writeIsa(
+      tmpDir,
+      [
+        "---",
+        "slug: t",
+        "phase: in_progress",
+        "tier: E3",
+        "---",
+        "## Problem",
+        "Verify gates fire.",
+        "## Test Strategy",
+        "| isc   | type | check | threshold | tool       |",
+        "| ----- | ---- | ----- | --------- | ---------- |",
+        "| ISC-1 | bun  | smoke | n/a       | tests-pass |",
+        "## Verification",
+        "- [ ] ISC-1",
+      ].join("\n"),
+    );
+    writeProbes(
+      tmpDir,
+      `export const probes = { "tests-pass": async () => true }\n`,
+    );
+    const target = path.join(tmpDir, "settings.json");
+    baseSettings(target);
+    const res = await runDoctor(["--target", target, "--cwd", tmpDir]);
+    const text = stripAnsi(res.stdout);
+    expect(text).toContain("[PASS] probe registry vs ISA tool columns");
+    expect(text).toContain("tests-pass");
+    expect(res.code).toBe(0);
+  }, 15000);
+
+  test("FAIL when probes.ts present but ISA has no Test Strategy section", async () => {
+    writeIsa(
+      tmpDir,
+      [
+        "---",
+        "slug: t",
+        "phase: in_progress",
+        "tier: E3",
+        "---",
+        "## Problem",
+        "Verify.",
+        "## Verification",
+        "- [ ] ISC-1",
+      ].join("\n"),
+    );
+    writeProbes(
+      tmpDir,
+      `export const probes = { "tests-pass": async () => true }\n`,
+    );
+    const target = path.join(tmpDir, "settings.json");
+    baseSettings(target);
+    const res = await runDoctor(["--target", target, "--cwd", tmpDir]);
+    const text = stripAnsi(res.stdout);
+    expect(text).toContain("[FAIL] probe registry vs ISA tool columns");
+    expect(text).toContain("'## Test Strategy'");
+    expect(text).toContain("tests-pass");
+    expect(res.code).toBe(1);
+  }, 15000);
+
+  test("INFO when probes.ts present but no ISA exists", async () => {
+    writeProbes(
+      tmpDir,
+      `export const probes = { "tests-pass": async () => true }\n`,
+    );
+    const target = path.join(tmpDir, "settings.json");
+    baseSettings(target);
+    const res = await runDoctor(["--target", target, "--cwd", tmpDir]);
+    const text = stripAnsi(res.stdout);
+    expect(text).toContain("[INFO] probe registry vs ISA tool columns");
+    expect(text).toContain("no ISA");
+    expect(res.code).toBe(0);
+  }, 15000);
+
+  test("no probe-registry line when probes.ts is absent", async () => {
+    const target = path.join(tmpDir, "settings.json");
+    baseSettings(target);
+    const res = await runDoctor(["--target", target, "--cwd", tmpDir]);
+    const text = stripAnsi(res.stdout);
+    expect(text).not.toContain("probe registry vs ISA tool columns");
+  }, 15000);
 });
