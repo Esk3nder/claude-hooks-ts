@@ -14,6 +14,7 @@ import {
   allowlistPathFor,
   expandPath,
   isGitRepo,
+  isPathInside,
   hasChanges,
   loadAllowlist,
   loadState,
@@ -294,6 +295,138 @@ describe("isGitRepo / hasChanges — the classifier", () => {
       initGitRepo(repo)
       writeFileSync(join(repo, "x.txt"), "hi", "utf-8")
       expect(hasChanges(repo)).toBe(true)
+    } finally {
+      cleanup()
+    }
+  })
+})
+
+// Direct unit tests for the new isPathInside helper. End-to-end coverage
+// goes through runCheckpoint, but the helper has its own boundary
+// cases worth pinning so a future refactor can't silently change them.
+describe("isPathInside — containment helper", () => {
+  test("equal paths → true", () => {
+    expect(isPathInside("/a/b", "/a/b")).toBe(true)
+  })
+  test("child path → true", () => {
+    expect(isPathInside("/a", "/a/b")).toBe(true)
+    expect(isPathInside("/a", "/a/b/c.txt")).toBe(true)
+  })
+  test("trailing slash on parent → still true", () => {
+    expect(isPathInside("/a/", "/a/b")).toBe(true)
+  })
+  test("sibling path → false", () => {
+    expect(isPathInside("/a", "/b")).toBe(false)
+  })
+  test("ancestor (parent given as child) → false", () => {
+    expect(isPathInside("/a/b", "/a")).toBe(false)
+  })
+  test("prefix-not-path → false (e.g. /a vs /abc)", () => {
+    expect(isPathInside("/a", "/abc")).toBe(false)
+    expect(isPathInside("/a", "/abc/d")).toBe(false)
+  })
+  test("relative paths are resolved against cwd before comparison", () => {
+    // Using absolute on both sides to keep the test deterministic.
+    // Documents intent: callers should pass absolute paths.
+    expect(isPathInside("/a", "/a/x")).toBe(true)
+  })
+})
+
+// T1.2 — explicit multi-repo coverage of the "at-least-one-success"
+// sidecar rule. The single-repo tests pin the boundary cases (empty
+// allowlist, missing repo); these pin the partial-success and total-
+// failure cases where multiple repos disagree.
+describe("runCheckpoint — multi-repo sidecar semantics (T1.2)", () => {
+  const isaContents = (criteriaBlock: string): string => `---
+task: x
+slug: 20260509_x
+phase: build
+---
+
+## Goal
+ship
+
+## Criteria
+${criteriaBlock}
+`
+
+  test("≥1 repo commits + 1 repo skipped (ISA outside) → ISC IS recorded", () => {
+    const { root, cleanup } = stage()
+    try {
+      const inside = join(root, "inside-repo")
+      const outside = join(root, "outside-repo")
+      initGitRepo(inside)
+      initGitRepo(outside)
+      writeAllowlist(root, `${inside}\n${outside}\n`)
+
+      // ISA lives inside `inside`; `outside` is skipped with stderr.
+      const isa = join(inside, ARTIFACT_FILENAME)
+      writeFileSync(isa, isaContents("- [x] ISC-1: x"), "utf-8")
+
+      const r = runCheckpoint(isa, root)
+      expect(r.commits.length).toBe(1)
+      expect(r.commits[0]?.repo).toBe(inside)
+
+      const state = loadState(join(inside, STATE_FILENAME))
+      expect(state.committed_iscs).toContain("ISC-1")
+    } finally {
+      cleanup()
+    }
+  })
+
+  test("0 repos commit (ISA outside ALL allowlisted repos) → ISC NOT recorded", () => {
+    const { root, cleanup } = stage()
+    try {
+      const repoA = join(root, "repo-a")
+      const repoB = join(root, "repo-b")
+      initGitRepo(repoA)
+      initGitRepo(repoB)
+      writeAllowlist(root, `${repoA}\n${repoB}\n`)
+
+      // ISA outside BOTH repos.
+      const slug = "20260509_outside_all"
+      const isaDir = join(root, ".claude-hooks", "state", "work", slug)
+      mkdirSync(isaDir, { recursive: true })
+      const isa = join(isaDir, ARTIFACT_FILENAME)
+      writeFileSync(isa, isaContents("- [x] ISC-1: x"), "utf-8")
+
+      const r = runCheckpoint(isa, root)
+      expect(r.commits.length).toBe(0)
+
+      const state = loadState(join(isaDir, STATE_FILENAME))
+      // Crucial: future runs should retry, not skip-because-already-done.
+      expect(state.committed_iscs).not.toContain("ISC-1")
+    } finally {
+      cleanup()
+    }
+  })
+
+  test("commitInRepo returns null on every repo → ISC NOT recorded", () => {
+    const { root, cleanup } = stage()
+    try {
+      // Project-root ISA in a fresh repo with no changes to commit (the
+      // ISA file is identical to a prior committed snapshot, so
+      // `git commit` will fail on each call).
+      const repo = join(root, "repo-empty")
+      initGitRepo(repo)
+      const isa = join(repo, ARTIFACT_FILENAME)
+      writeFileSync(isa, isaContents("- [x] ISC-1: x"), "utf-8")
+      execFileSync("git", ["-C", repo, "add", ARTIFACT_FILENAME], {
+        stdio: "ignore",
+      })
+      execFileSync(
+        "git",
+        ["-C", repo, "commit", "-m", "seed", "--no-verify"],
+        { stdio: "ignore" },
+      )
+      writeAllowlist(root, `${repo}\n`)
+
+      // ISA file unchanged since seed → hasChangesForFile returns false →
+      // commitInRepo never runs → 0 commits → sidecar should NOT mark.
+      const r = runCheckpoint(isa, root)
+      expect(r.commits.length).toBe(0)
+      const state = loadState(join(repo, STATE_FILENAME))
+      expect(state.committed_iscs).not.toContain("ISC-1")
     } finally {
       cleanup()
     }
