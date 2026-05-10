@@ -15,6 +15,8 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import * as os from "node:os";
+import { loadProbes, parseTestStrategy } from "../src/algorithm/isa/probes.ts";
+import { parseSections } from "../src/algorithm/isa/sections.ts";
 
 interface CliArgs {
   target: string;
@@ -581,6 +583,132 @@ const checkActiveIsa = (cwd: string): CheckResult => {
   };
 };
 
+/**
+ * Probe registry vs. ISA tool-column check.
+ *
+ * Common misconfiguration: a user looks at an ISA's Test Strategy table —
+ * `| ISC-1 | bun | smoke | n/a | tests-pass |` — and writes
+ * `probes = { "ISC-1": ... }` because the row's leading id reads as the
+ * obvious key. The runtime registry is keyed by the *tool* column
+ * (`"tests-pass"`), so the probe never matches and ISCs never auto-flip.
+ * This check surfaces the mismatch loudly and points the user at the right
+ * key, including a footgun-specific hint when an orphan key looks like an
+ * ISC id.
+ *
+ * Returns null when probes.ts is absent (opt-in; nothing to validate).
+ */
+const collectIsaPaths = (cwd: string): string[] => {
+  const out: string[] = [];
+  const projectIsa = path.join(cwd, "ISA.md");
+  if (fs.existsSync(projectIsa)) out.push(projectIsa);
+  const taskIsaDir = path.join(cwd, ".claude-hooks", "state", "work");
+  if (fs.existsSync(taskIsaDir)) {
+    let entries: ReadonlyArray<string> = [];
+    try {
+      entries = fs.readdirSync(taskIsaDir);
+    } catch {
+      return out;
+    }
+    for (const slug of entries) {
+      const isa = path.join(taskIsaDir, slug, "ISA.md");
+      if (fs.existsSync(isa)) out.push(isa);
+    }
+  }
+  return out;
+};
+
+const checkProbeRegistry = async (
+  cwd: string,
+): Promise<CheckResult | null> => {
+  const probesFile = path.join(cwd, ".claude-hooks", "probes.ts");
+  if (!fs.existsSync(probesFile)) return null;
+
+  const isaPaths = collectIsaPaths(cwd);
+
+  let registry: Readonly<Record<string, unknown>> = {};
+  try {
+    registry = await loadProbes(cwd);
+  } catch (err) {
+    return {
+      name: "probe registry vs ISA tool columns",
+      status: "FAIL",
+      detail: `${probesFile}: load failed (${String(err).slice(0, 120)})`,
+    };
+  }
+  const probeKeys = Object.keys(registry);
+
+  if (probeKeys.length === 0) {
+    return {
+      name: "probe registry vs ISA tool columns",
+      status: "INFO",
+      detail: `${probesFile} present but exports zero probes — nothing to verify.`,
+    };
+  }
+
+  if (isaPaths.length === 0) {
+    return {
+      name: "probe registry vs ISA tool columns",
+      status: "INFO",
+      detail: `${probesFile} exports ${probeKeys.length} probe(s) but no ISA at <cwd>/ISA.md or .claude-hooks/state/work/<slug>/ISA.md to validate against.`,
+    };
+  }
+
+  const expectedTools = new Set<string>();
+  let isasWithTestStrategy = 0;
+  for (const isaPath of isaPaths) {
+    let body: string;
+    try {
+      body = fs.readFileSync(isaPath, "utf8");
+    } catch {
+      continue;
+    }
+    const sections = parseSections(body);
+    const tsBody = sections.get("Test Strategy")?.body ?? "";
+    if (tsBody.length === 0) continue;
+    isasWithTestStrategy += 1;
+    for (const tool of parseTestStrategy(tsBody).values()) {
+      expectedTools.add(tool);
+    }
+  }
+
+  if (isasWithTestStrategy === 0) {
+    return {
+      name: "probe registry vs ISA tool columns",
+      status: "FAIL",
+      detail:
+        `${probesFile} exports ${probeKeys.length} probe(s) but no ISA has a '## Test Strategy' section — ` +
+        `the runtime never matches a probe to an ISC. Add a Test Strategy table with rows like: ` +
+        `'| ISC-1 | bun | smoke | n/a | ${probeKeys[0]} |'`,
+    };
+  }
+
+  const orphans = probeKeys.filter((k) => !expectedTools.has(k));
+  if (orphans.length === 0) {
+    const expectedSample = [...expectedTools].slice(0, 3).join(", ");
+    return {
+      name: "probe registry vs ISA tool columns",
+      status: "PASS",
+      detail: `${probeKeys.length} probe(s) all match an ISA tool column (e.g. ${expectedSample})`,
+    };
+  }
+
+  const iscShaped = orphans.filter((k) => /^ISC-/i.test(k));
+  const expectedSample = [...expectedTools]
+    .slice(0, 3)
+    .map((t) => `'${t}'`)
+    .join(", ");
+  const hint =
+    iscShaped.length > 0
+      ? ` Probe keys must match the ISA's 'tool' column (e.g. ${expectedSample}), NOT the 'isc' column. Found '${iscShaped[0]}' shaped like an ISC id — rename it to the tool name from the same Test Strategy row.`
+      : ` Expected one of: ${expectedSample}.`;
+
+  return {
+    name: "probe registry vs ISA tool columns",
+    status: "FAIL",
+    detail: `${orphans.length}/${probeKeys.length} probe key(s) match no ISA tool column: [${orphans.join(", ")}].${hint}`,
+  };
+};
+
 export const runDoctor = async (
   argv: ReadonlyArray<string>,
   out: NodeJS.WritableStream = process.stdout,
@@ -624,6 +752,9 @@ export const runDoctor = async (
   results.push(checkClassifierAuth());
   results.push(checkSkillBundle());
   results.push(checkActiveIsa(args.cwd));
+
+  const probeCheck = await checkProbeRegistry(args.cwd);
+  if (probeCheck !== null) results.push(probeCheck);
 
   const otel = await checkOtelEndpoint();
   if (otel !== null) results.push(otel);

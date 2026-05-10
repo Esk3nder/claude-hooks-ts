@@ -92,8 +92,18 @@ const PROBES_STARTER = `// claude-hooks ISC probes — auto-verifies ISCs after 
 //
 // The Test Strategy section in your ISA names a probe per ISC like:
 //
+//     ## Test Strategy
 //     | isc   | type | check | threshold | tool        |
+//     | ----- | ---- | ----- | --------- | ----------- |
 //     | ISC-1 | bun  | smoke | n/a       | tests-pass  |
+//
+// IMPORTANT: each KEY in the \`probes\` map below MUST match the value of
+// the row's \`tool\` column ("tests-pass" in the example above) — NOT the
+// \`isc\` id. The id ("ISC-1") is just the row label; the registry is
+// keyed by tool name so multiple ISCs can share one probe and a single
+// probe can be reused across ISAs. Mismatch → no probe runs → ISC stays
+// unchecked. \`claude-hooks-doctor\` warns when a probe key matches no
+// tool column, including a hint when the orphan key looks like an ISC id.
 //
 // When PostToolUse fires (any tool, not just edits), each probe whose ISC
 // is currently \`[ ]\` runs. A return value of \`true\` flips the checkbox to
