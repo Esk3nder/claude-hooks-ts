@@ -137,6 +137,40 @@ describe("findArtifactPath / findLatestISA — legacy path fallback", () => {
       cleanup()
     }
   })
+
+  // Pin the location-wins-over-filename precedence design choice. Without
+  // these tests the migration rule is implicit in the candidate-list
+  // ordering and could be silently inverted by a refactor.
+  test("findArtifactPath prefers canonical PRD over legacy ISA (location > filename)", () => {
+    const { root, cleanup } = stage()
+    try {
+      // Canonical: PRD only. Legacy: ISA.md.
+      const canonicalDir = join(workDirFor(root), "foo")
+      mkdirSync(canonicalDir, { recursive: true })
+      const canonicalPrd = join(canonicalDir, LEGACY_ARTIFACT_FILENAME)
+      writeFileSync(canonicalPrd, "## Goal\nfoo\n", "utf8")
+      writeIsaAt(legacyWorkDirFor(root), "foo", 1)
+      // Canonical PRD wins per design: location is the primary axis,
+      // filename only matters as a tiebreaker within a location.
+      expect(findArtifactPath("foo", root)).toBe(canonicalPrd)
+    } finally {
+      cleanup()
+    }
+  })
+
+  test("findLatestISA prefers canonical for same slug even when legacy mtime is newer", () => {
+    const { root, cleanup } = stage()
+    try {
+      // Same slug in both locations; legacy is the more-recently-touched
+      // file but canonical must still win — disk position is the
+      // post-migration system of record.
+      const canonical = writeIsaAt(workDirFor(root), "shared", 1_000_000)
+      writeIsaAt(legacyWorkDirFor(root), "shared", 2_000_000)
+      expect(findLatestISA(root)).toBe(canonical)
+    } finally {
+      cleanup()
+    }
+  })
 })
 
 describe("findArtifactPath — the classifier mirror", () => {
