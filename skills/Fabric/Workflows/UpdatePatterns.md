@@ -17,19 +17,14 @@ go install github.com/danielmiessler/fabric@latest
 
 ## Workflow Steps
 
-### Step 1: Send Voice Notification
-
-```bash
-```
-
-### Step 2: Check Current Pattern Count
+### Step 1: Check Current Pattern Count
 
 ```bash
 CURRENT_COUNT=$(ls -1 ~/.claude/skills/Fabric/Patterns/ 2>/dev/null | wc -l | tr -d ' ')
 echo "Current patterns: $CURRENT_COUNT"
 ```
 
-### Step 3: Update via Fabric CLI
+### Step 2: Update via Fabric CLI
 
 The fabric CLI handles pulling the latest patterns from the upstream repository:
 
@@ -39,7 +34,7 @@ fabric -U
 
 This updates patterns in `~/.config/fabric/patterns/`.
 
-### Step 4: Sync to Skill Directory
+### Step 3: Sync to Skill Directory
 
 Copy updated patterns to the Fabric skill's local storage:
 
@@ -47,7 +42,7 @@ Copy updated patterns to the Fabric skill's local storage:
 rsync -av --delete ~/.config/fabric/patterns/ ~/.claude/skills/Fabric/Patterns/
 ```
 
-### Step 5: Report Results
+### Step 4: Report Results
 
 ```bash
 NEW_COUNT=$(ls -1 ~/.claude/skills/Fabric/Patterns/ 2>/dev/null | wc -l | tr -d ' ')
@@ -61,7 +56,7 @@ if [ "$NEW_COUNT" -gt "$CURRENT_COUNT" ]; then
 fi
 ```
 
-### Step 6: Verify Key Patterns Exist
+### Step 5: Verify Key Patterns Exist
 
 Confirm critical patterns are present:
 

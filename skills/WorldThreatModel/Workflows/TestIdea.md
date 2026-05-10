@@ -28,7 +28,7 @@ Detect from user prompt:
 
 ## Workflow Steps
 
-### Step 0: Validate Models Exist
+### Step 1: Validate Models Exist
 
 ```
 Check <your-claude-dir>/skills/WorldThreatModel/Models/ for all 11 model files.
@@ -36,6 +36,79 @@ If any missing: "World models incomplete. Run 'update world models' first."
 If models older than 30 days: warn user but proceed.
 ```
 
-### Step 1: Voice Notification
+### Step 2: Extract and Decompose the Idea
 
-```bash
+Before hitting it with world models, decompose the idea:
+
+1. **State the idea** in 1-2 sentences
+2. **Identify core assumptions** the idea relies on (market conditions, technology state, cultural norms, regulatory environment, competitive landscape)
+3. **Identify success dependencies** — what must remain true for this to work?
+
+For **Standard and Deep tiers:** Invoke FirstPrinciples skill to classify assumptions:
+- Hard constraints (physics, demographics, math)
+- Soft constraints (policy, regulation, cultural norms)
+- Assumptions (unvalidated beliefs the idea depends on)
+
+### Step 3: Run Against World Models
+
+Read all 11 model files from `<your-claude-dir>/skills/WorldThreatModel/Models/`.
+
+#### Fast Tier (~2 min)
+Single-agent analysis:
+1. Read all 11 models sequentially
+2. For each horizon, generate: Verdict (🟢/🟡/🔴) + 2-3 bullet points
+3. Write Executive Verdict
+4. Output using abbreviated format from OutputFormat.md
+
+#### Standard Tier (~10 min)
+Parallel agent analysis:
+1. Spawn up to 11 parallel agents (Task tool, `run_in_background: true`)
+2. Each agent:
+   - Reads ONE world model document
+   - Analyzes the idea against that specific horizon
+   - Tests each assumption against the horizon's conditions
+   - Returns: Verdict, Key Factors, Analysis, Assumptions Tested
+3. After all agents return, invoke **RedTeam skill** with:
+   - Prompt: "Attack this idea across all time horizons. Here are the per-horizon analyses: {results}"
+   - Extract adversarial findings per horizon
+4. Synthesize Cross-Horizon Synthesis section
+5. Output using full format from OutputFormat.md
+
+#### Deep Tier (up to 1 hr)
+Full capability invocation:
+1. **FirstPrinciples** (if not already run): Full deconstruct → challenge → reconstruct cycle on the idea
+2. **Research update check**: For each horizon, run quick Research check for any new developments that affect this specific idea
+3. **Parallel horizon analysis**: Same as Standard but with deeper prompts and longer analysis per horizon
+4. **RedTeam** (32 agents): Full adversarial analysis of the idea across all horizons
+5. **Council**: Multi-agent debate on the idea's long-term viability
+   - Prompt: "Debate the viability of {idea} across time horizons from 6 months to 50 years. Consider: {per-horizon results}"
+   - Extract Council Deliberation section
+6. Synthesize all findings
+7. Output using complete format from OutputFormat.md (all sections)
+
+### Step 4: Format Output
+
+Use the template in `OutputFormat.md` (loaded from skill root). Ensure:
+- Each horizon is clearly separated with its own section header
+- Verdicts use consistent emoji indicators
+- Confidence levels reflect model confidence × analysis certainty
+- Adversarial findings attribute to specific horizon contexts
+
+## Output Format
+
+See `OutputFormat.md` in the skill root directory.
+
+## Integration Points
+
+| Skill | Tier | Purpose |
+|-------|------|---------|
+| **FirstPrinciples** | Standard, Deep | Decompose idea assumptions before testing |
+| **RedTeam** | Standard, Deep | Adversarial attack on idea across horizons |
+| **Council** | Deep only | Multi-perspective debate on viability |
+| **Research** | Deep only | Quick refresh of horizon-relevant current events |
+
+## Error Handling
+
+- If a parallel agent fails: continue with remaining agents, note missing horizon in output
+- If a skill invocation fails: degrade gracefully (e.g., skip Council section, note in footer)
+- If models are stale (>90 days): prominently warn in header, recommend update
