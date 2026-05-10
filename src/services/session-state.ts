@@ -22,6 +22,11 @@ export interface SessionStateRecord {
   readonly subagent_starts: ReadonlyArray<string>;
   readonly subagent_stops: ReadonlyArray<string>;
   readonly last_workflow: string | null;
+  readonly last_mode: string | null;
+  readonly last_tier: number | null;
+  readonly engagement_required: boolean;
+  readonly expected_isa_path: string | null;
+  readonly isa_engaged_at: string | null;
 }
 
 export const EMPTY_SESSION_STATE: SessionStateRecord = {
@@ -37,6 +42,11 @@ export const EMPTY_SESSION_STATE: SessionStateRecord = {
   subagent_starts: [],
   subagent_stops: [],
   last_workflow: null,
+  last_mode: null,
+  last_tier: null,
+  engagement_required: false,
+  expected_isa_path: null,
+  isa_engaged_at: null,
 };
 
 export type AppendableKey =
@@ -173,6 +183,23 @@ const parseRecord = (raw: string): SessionStateRecord => {
       last_workflow:
         typeof get("last_workflow") === "string"
           ? (get("last_workflow") as string)
+          : null,
+      last_mode:
+        typeof get("last_mode") === "string"
+          ? (get("last_mode") as string)
+          : null,
+      last_tier:
+        typeof get("last_tier") === "number"
+          ? (get("last_tier") as number)
+          : null,
+      engagement_required: get("engagement_required") === true,
+      expected_isa_path:
+        typeof get("expected_isa_path") === "string"
+          ? (get("expected_isa_path") as string)
+          : null,
+      isa_engaged_at:
+        typeof get("isa_engaged_at") === "string"
+          ? (get("isa_engaged_at") as string)
           : null,
     };
   } catch {

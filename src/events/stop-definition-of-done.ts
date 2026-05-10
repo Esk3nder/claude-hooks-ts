@@ -188,6 +188,44 @@ export const handleStop = (
       return out
     }
 
+    // Engagement absence gate (last among blocking gates) — when ALGORITHM
+    // tier ≥ 3 was classified upstream, the run MUST have produced an ISA.
+    // Absence is the failure mode the prompt-router engagement directive
+    // is designed to prevent; here we make it a real gate instead of a hint.
+    // Runs LAST so workflow-specific gates (research source-ledger, files-
+    // changed-without-verification) get to fire on their own more-actionable
+    // reasons first; this gate is the doctrinal fallback. Fires once per
+    // session via stop_blocked_once.
+    if (record.engagement_required) {
+      const projectIsa = findProjectIsa(cwd)
+      const taskIsa = findLatestISA(cwd)
+      const hasAnyIsa =
+        (projectIsa !== null && existsSync(projectIsa)) ||
+        (taskIsa !== null && existsSync(taskIsa))
+      if (!hasAnyIsa) {
+        yield* state
+          .update(payload.session_id, { stop_blocked_once: true })
+          .pipe(Effect.catchAll(() => Effect.succeed(undefined)))
+        const tierLabel =
+          typeof record.last_tier === "number"
+            ? `E${record.last_tier}`
+            : "E3+"
+        const expected =
+          record.expected_isa_path ?? "<.claude-hooks/state/work/<slug>/ISA.md>"
+        const out: HookDecision = {
+          decision: "block",
+          reason:
+            `ALGORITHM ${tierLabel} run is finishing without an ISA. ` +
+            `Create it now at \`${expected}\` (or at \`<repo>/ISA.md\` if ` +
+            `this is a project-level effort) with at minimum frontmatter ` +
+            `(\`effort:\`, \`phase:\`), \`## Goal\`, and \`## Criteria\`. ` +
+            `The downstream verification gates only fire on a real artifact; ` +
+            `Stop will not block again on this session.`,
+        }
+        return out
+      }
+    }
+
     // 4b doc-integrity regen: best-effort run of declarative regenerate.yaml
     // rules whose `source` glob matched any file changed this session. Runs
     // AFTER all blocking gates pass so we don't waste regen work on a

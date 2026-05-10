@@ -64,7 +64,7 @@ describe("Red-team scenarios (10/10)", () => {
           tool_name: "Bash",
           tool_input: { command: "rm -rf /tmp/safe" },
         }),
-      ),
+      ).pipe(Effect.provide(SessionStateTest())),
     )
     const out = d as {
       hookSpecificOutput?: { permissionDecision?: string }
@@ -90,7 +90,7 @@ describe("Red-team scenarios (10/10)", () => {
             new_string: "b",
           },
         }),
-      ),
+      ).pipe(Effect.provide(SessionStateTest())),
     )
     const out = d as {
       hookSpecificOutput?: { permissionDecision?: string }
@@ -114,7 +114,7 @@ describe("Red-team scenarios (10/10)", () => {
             content: "x",
           },
         }),
-      ),
+      ).pipe(Effect.provide(SessionStateTest())),
     )
     const out = d as {
       hookSpecificOutput?: { permissionDecision?: string; permissionDecisionReason?: string }
@@ -242,7 +242,7 @@ describe("Red-team scenarios (10/10)", () => {
             new_string: "b",
           },
         }),
-      ),
+      ).pipe(Effect.provide(SessionStateTest())),
     )
     const out = d as {
       hookSpecificOutput?: { permissionDecision?: string }
@@ -250,5 +250,116 @@ describe("Red-team scenarios (10/10)", () => {
     expect(["ask", "deny"]).toContain(
       out.hookSpecificOutput?.permissionDecision ?? "",
     )
+  })
+
+  // 11. loglens E2E: ALGORITHM E3+ prompt → ENGAGE directive in additionalContext
+  // Reproduces the original defect (ALGORITHM E3 classifier with no engagement
+  // reflex). After the fix, UserPromptSubmit must inject a deterministic
+  // ENGAGE directive carrying ALGORITHM_ENGAGEMENT_REQUIRED=true and the
+  // expected ISA path.
+  test("#11 loglens-style ALGORITHM E3 prompt emits ENGAGE directive", async () => {
+    const out = (await dispatch("UserPromptSubmit", {
+      _tag: "UserPromptSubmit",
+      hook_event_name: "UserPromptSubmit",
+      session_id: "rt11-loglens",
+      prompt:
+        "implement a log-analysis CLI in TypeScript with three subcommands: tail, stats, query",
+    })) as {
+      hookSpecificOutput?: { additionalContext?: string }
+    }
+    const ctx = out.hookSpecificOutput?.additionalContext ?? ""
+    expect(ctx).toContain("MODE: ALGORITHM")
+    expect(ctx).toContain("ENGAGE: ALGORITHM_ENGAGEMENT_REQUIRED=true")
+    expect(ctx).toContain("ISA_PATH=.claude-hooks/state/work/rt11-loglens/ISA.md")
+    expect(ctx).toContain("MANDATORY FIRST ACTION")
+    expect(ctx).toMatch(/Required sections for E[3-5]:/)
+  })
+
+  // 12. Red-team "do not create ISA": adversarial agent skips the ENGAGE
+  // directive and tries to start coding directly. PreToolUse must hard-deny.
+  test("#12 ALGORITHM E3 + Write to non-ISA file without scaffolding → deny", async () => {
+    const sid = `rt12-bypass-${Date.now()}`
+    // Step 1: classifier sets engagement_required.
+    await dispatch("UserPromptSubmit", {
+      _tag: "UserPromptSubmit",
+      hook_event_name: "UserPromptSubmit",
+      session_id: sid,
+      prompt: "build a multi-file authentication system",
+    })
+    // Step 2: agent tries to bypass by writing source code directly.
+    const out = (await dispatch("PreToolUse", {
+      _tag: "PreToolUse",
+      hook_event_name: "PreToolUse",
+      session_id: sid,
+      cwd: REPO_ROOT,
+      tool_name: "Write",
+      tool_input: {
+        file_path: "/tmp/never-written-by-redteam-test.ts",
+        content: "export const x = 1",
+      },
+    })) as {
+      hookSpecificOutput?: { permissionDecision?: string; permissionDecisionReason?: string }
+    }
+    expect(out.hookSpecificOutput?.permissionDecision).toBe("deny")
+    expect(out.hookSpecificOutput?.permissionDecisionReason ?? "").toContain(
+      "ALGORITHM engagement is required",
+    )
+  })
+
+  // 13. Red-team Bash bypass: ALGORITHM E3 + agent tries `bun test` (no ISA)
+  // → deny. Verifies the gate rejects mutating Bash even when the command
+  // is innocuous-looking.
+  test("#13 ALGORITHM E3 + Bash 'bun test' without ISA → deny", async () => {
+    const sid = `rt13-bash-${Date.now()}`
+    await dispatch("UserPromptSubmit", {
+      _tag: "UserPromptSubmit",
+      hook_event_name: "UserPromptSubmit",
+      session_id: sid,
+      prompt: "refactor the dispatcher into smaller modules",
+    })
+    const out = (await dispatch("PreToolUse", {
+      _tag: "PreToolUse",
+      hook_event_name: "PreToolUse",
+      session_id: sid,
+      cwd: REPO_ROOT,
+      tool_name: "Bash",
+      tool_input: { command: "bun test" },
+    })) as {
+      hookSpecificOutput?: { permissionDecision?: string }
+    }
+    expect(out.hookSpecificOutput?.permissionDecision).toBe("deny")
+  })
+
+  // 14. Compliant flow: ALGORITHM E3 + agent writes the ISA at the
+  // expected path → allow. Confirms the gate doesn't block legitimate work.
+  test("#14 ALGORITHM E3 + Write to expected ISA path → allow", async () => {
+    const sid = `rt14-comply-${Date.now()}`
+    await dispatch("UserPromptSubmit", {
+      _tag: "UserPromptSubmit",
+      hook_event_name: "UserPromptSubmit",
+      session_id: sid,
+      prompt: "design a streaming pipeline",
+    })
+    const out = (await dispatch("PreToolUse", {
+      _tag: "PreToolUse",
+      hook_event_name: "PreToolUse",
+      session_id: sid,
+      cwd: REPO_ROOT,
+      tool_name: "Write",
+      tool_input: {
+        file_path: path.join(
+          REPO_ROOT,
+          ".claude-hooks",
+          "state",
+          "work",
+          sid,
+          "ISA.md",
+        ),
+        content: "---\neffort: advanced\nphase: observe\n---\n",
+      },
+    })) as {
+      hookSpecificOutput?: { permissionDecision?: string }
+    }
+    expect(out.hookSpecificOutput?.permissionDecision).not.toBe("deny")
   })
 })

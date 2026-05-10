@@ -3,6 +3,7 @@ import { Effect, Schema } from "effect"
 import { handlePreToolUse } from "../../src/events/pretool-policy.ts"
 import { HookPayload } from "../../src/schema/payloads.ts"
 import { PreToolUseDecision } from "../../src/schema/decisions.ts"
+import { SessionStateTest } from "../../src/services/session-state.ts"
 
 const payload = (toolName: string, toolInput: unknown) => {
   const raw = {
@@ -18,7 +19,11 @@ const payload = (toolName: string, toolInput: unknown) => {
 }
 
 const run = async (toolName: string, toolInput: unknown) => {
-  const result = await Effect.runPromise(handlePreToolUse(payload(toolName, toolInput)))
+  const result = await Effect.runPromise(
+    handlePreToolUse(payload(toolName, toolInput)).pipe(
+      Effect.provide(SessionStateTest()),
+    ),
+  )
   return result as Record<string, unknown>
 }
 
