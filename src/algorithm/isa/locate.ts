@@ -72,6 +72,14 @@ export const legacyWorkDirFor = (root: string = process.cwd()): string =>
  *   3. `<legacy>/<slug>/ISA.md`        (pre-Option-B path)
  *   4. `<legacy>/<slug>/PRD.md`        (pre-Option-B + pre-v4.1.0)
  * Returns null if none exist.
+ *
+ * Precedence design: when the same slug exists in canonical AND legacy
+ * locations, canonical location wins even if the legacy artifact uses
+ * `ISA.md` while the canonical one uses `PRD.md` (priority 2 over 3),
+ * and even if the legacy artifact has a newer mtime (see findLatestISA).
+ * Canonical location is the system of record post-Option-B; the legacy
+ * fallback exists strictly to keep in-flight sessions reading their
+ * original artifact, not to compete with canonical.
  */
 export const findArtifactPath = (
   slug: string,

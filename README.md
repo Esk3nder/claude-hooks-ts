@@ -38,7 +38,7 @@ The Algorithm primitive (v6.3.0):
 - **TaskCompleted ISC-evidence requirement.** Task can't be marked complete if the active ISA still has unchecked criteria or an empty Verification section.
 - **Capability phantom audit.** Closed enumeration of 19 thinking-capability names from Algorithm v6.3.0 doctrine. `auditCapabilityNames(selected)` rejects paraphrases.
 - **Compaction preserves ISA context.** PreCompact snapshot includes active ISAs; PostCompact rehydrates them as additionalContext.
-- **Session-end archive.** ISAs in `phase: complete` are archived to `.claude-hooks/state/archive/<YYYY-MM-DD>/<slug>/ISA.md`.
+- **Session-end archive.** ISAs in `phase: complete` are archived (copied) to `.claude-hooks/archive/<YYYY-MM-DD>/<slug>/ISA.md` — tracked, OUTSIDE `state/`, so completed-work evidence persists in source-controlled history.
 - **Doc-integrity regen.** Declarative `<repo>/.claude-hooks/regenerate.yaml` rules run at Stop when source files changed.
 - **Telemetry.** Every classification logged to `.claude-hooks/state/observability/mode-classifier.jsonl` for weekly audit (classifier-vs-fail-safe ratio, latency p50/p95).
 
@@ -127,13 +127,16 @@ Project-local config lives at `<project>/.claude-hooks/`:
  probes.ts # hot-loadable ISC verification probes (`init --probes`)
  regenerate.yaml # source-changed → regenerate command rules (`init --regenerate`)
  feedback/*.md # FeedbackMemoryConsult corpus (`init --feedback-dir`)
- state/ # per-session ledgers (auto-created; managed by hooks)
- state/observability/ # classifier telemetry JSONL
- state/work/<slug>/ # task ISAs
- state/archive/<date>/<slug>/ # archived completed ISAs
+ work/<slug>/ # task ISAs (TRACKED — evidence trail)
+ archive/<date>/<slug>/ # archived completed ISAs (TRACKED)
+ state/ # runtime-only: per-session ledgers, locks, telemetry (gitignored)
+ state/observability/ # classifier telemetry JSONL (gitignored)
+ state/work/<slug>/ # legacy task ISA location (read-only fallback for in-flight sessions)
 ```
 
 Only `state/` is auto-created by `claude-hooks-init`. Every other file is optional — defaults are baked in, and policies fall back to safe defaults when a file is missing. Use the `init` flags above to scaffold a starter file, or just create one by hand.
+
+> **ISAs are tracked by git.** Active task ISAs under `work/<slug>/ISA.md` and archived ISAs under `archive/<date>/<slug>/ISA.md` are committed to source control as evidence trails. Do **not** include secrets, customer data, or other sensitive content in ISA bodies — anything you write there will be reviewable in PRs and persistent in history. Only `state/` is gitignored.
 
 ### ISC probes
 
