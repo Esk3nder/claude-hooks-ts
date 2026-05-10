@@ -6,5 +6,10 @@ dist/
 .env.*
 !.env.example
 
+# Volatile runtime state: per-session JSON, locks, telemetry, and the
+# legacy pre-Option-B task work dir. Tracked work products live under
+# .claude-hooks/work/ and .claude-hooks/archive/ (NOT inside state/) so
+# they survive in source control as evidence trails. Do NOT add work/
+# or archive/ to this list.
 .claude-hooks/state/
 *.bak.*

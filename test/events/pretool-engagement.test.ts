@@ -22,8 +22,8 @@ import {
 
 const decode = (raw: unknown) => Schema.decodeUnknownSync(HookPayload)(raw)
 
-const EXPECTED_ISA_REL = ".claude-hooks/state/work/eng-1/ISA.md"
-const EXPECTED_DIR_REL = ".claude-hooks/state/work/eng-1"
+const EXPECTED_ISA_REL = ".claude-hooks/work/eng-1/ISA.md"
+const EXPECTED_DIR_REL = ".claude-hooks/work/eng-1"
 
 const stage = (): { root: string; cleanup: () => void } => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "chts-engage-pre-"))
@@ -284,7 +284,6 @@ describe("PreToolUse engagement gate — path normalization & traversal", () => 
         "sibling",
         "..",
         ".claude-hooks",
-        "state",
         "work",
         "eng-1",
         "ISA.md",
@@ -305,7 +304,7 @@ describe("PreToolUse engagement gate — path normalization & traversal", () => 
     const { root, cleanup } = stage()
     try {
       // Real expected path on disk.
-      const realDir = path.join(root, ".claude-hooks", "state", "work", "eng-1")
+      const realDir = path.join(root, ".claude-hooks", "work", "eng-1")
       fs.mkdirSync(realDir, { recursive: true })
       // Symlink under a different prefix that points to realDir.
       const linkDir = path.join(root, "linked-eng-1")
@@ -336,7 +335,6 @@ describe("PreToolUse engagement gate — path normalization & traversal", () => 
       const realExpectedDir = path.join(
         root,
         ".claude-hooks",
-        "state",
         "work",
         "eng-1",
       )

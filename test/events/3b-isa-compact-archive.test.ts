@@ -7,7 +7,8 @@
  *   - PostCompact reads the latest snapshot for the session and emits the
  *     ISA section as additionalContext.
  *   - SessionEnd archives ISAs whose `phase: complete` to
- *     `.claude-hooks/state/archive/<YYYY-MM-DD>/<slug>/ISA.md`.
+ *     `.claude-hooks/archive/<YYYY-MM-DD>/<slug>/ISA.md` (tracked, NOT under
+ *     `.claude-hooks/state/` so it survives in source-controlled history).
  */
 import { describe, expect, test } from "bun:test"
 import { Effect, Layer, Schema } from "effect"
@@ -51,7 +52,7 @@ const writeProjectIsa = (root: string, content: string): void => {
 }
 
 const writeTaskIsa = (root: string, slug: string, content: string): string => {
-  const dir = join(root, ".claude-hooks", "state", "work", slug)
+  const dir = join(root, ".claude-hooks", "work", slug)
   mkdirSync(dir, { recursive: true })
   const file = join(dir, "ISA.md")
   writeFileSync(file, content, "utf-8")
@@ -295,12 +296,12 @@ describe("SessionEnd archives `phase: complete` ISAs", () => {
           Effect.provide(projectAt(root)),
         ),
       )
-      // Find archive dir — date is today's YYYY-MM-DD
+      // Find archive dir — date is today's YYYY-MM-DD; under tracked
+      // .claude-hooks/archive/ (NOT .claude-hooks/state/archive/).
       const today = new Date().toISOString().slice(0, 10)
       const archived = join(
         root,
         ".claude-hooks",
-        "state",
         "archive",
         today,
         "project",
@@ -334,7 +335,6 @@ describe("SessionEnd archives `phase: complete` ISAs", () => {
       const archived = join(
         root,
         ".claude-hooks",
-        "state",
         "archive",
         today,
         "20260509_taskdone",

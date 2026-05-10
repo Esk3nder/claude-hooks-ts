@@ -2,7 +2,9 @@
  * Stop ISA-completeness gate (slice 2d).
  *
  * Asserts the new ISA-aware branch in `events/stop-definition-of-done.ts`:
- * if a project ISA at <cwd>/ISA.md or task ISA under <cwd>/.claude-hooks/state/work/{slug}/
+ * if a project ISA at <cwd>/ISA.md or task ISA under <cwd>/.claude-hooks/work/{slug}/
+ * (or the legacy <cwd>/.claude-hooks/state/work/{slug}/ — these tests still
+ * write to the legacy path to exercise the backward-compatible read path)
  * declares `phase: complete` but the Tier Completeness Gate (IsaFormat.md:191-201)
  * or the criteria-checked count says otherwise, Stop is BLOCKED with a
  * model-actionable reason.
@@ -423,12 +425,12 @@ describe("Stop engagement absence-is-failure gate", () => {
         engagement_required: true,
         last_mode: "ALGORITHM",
         last_tier: 3,
-        expected_isa_path: ".claude-hooks/state/work/test-stop/ISA.md",
+        expected_isa_path: ".claude-hooks/work/test-stop/ISA.md",
       })
       expect(out.decision).toBe("block")
       expect(out.reason ?? "").toContain("ALGORITHM E3")
       expect(out.reason ?? "").toContain(
-        ".claude-hooks/state/work/test-stop/ISA.md",
+        ".claude-hooks/work/test-stop/ISA.md",
       )
       expect(out.reason ?? "").toMatch(/Goal|Criteria/)
     } finally {
@@ -445,7 +447,7 @@ describe("Stop engagement absence-is-failure gate", () => {
         engagement_required: true,
         last_mode: "ALGORITHM",
         last_tier: 3,
-        expected_isa_path: ".claude-hooks/state/work/test-stop/ISA.md",
+        expected_isa_path: ".claude-hooks/work/test-stop/ISA.md",
       })
       // Phase is `observe`, not `complete`, so the completeness gate noops too.
       // The engagement gate must accept the project ISA as satisfaction.
@@ -464,7 +466,7 @@ describe("Stop engagement absence-is-failure gate", () => {
         engagement_required: true,
         last_mode: "ALGORITHM",
         last_tier: 4,
-        expected_isa_path: ".claude-hooks/state/work/test-stop/ISA.md",
+        expected_isa_path: ".claude-hooks/work/test-stop/ISA.md",
       })
       expect(out).toEqual({})
     } finally {
@@ -492,7 +494,7 @@ describe("Stop engagement absence-is-failure gate", () => {
         engagement_required: true,
         last_mode: "ALGORITHM",
         last_tier: 3,
-        expected_isa_path: ".claude-hooks/state/work/test-stop/ISA.md",
+        expected_isa_path: ".claude-hooks/work/test-stop/ISA.md",
         stop_blocked_once: true,
       })
       expect(out).toEqual({})

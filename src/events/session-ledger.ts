@@ -21,9 +21,16 @@ interface ArchiveCandidate {
 
 /**
  * Find ISAs that have transitioned to `phase: complete` and propose archive
- * destinations under `.claude-hooks/state/archive/<YYYY-MM-DD>/<slug>/ISA.md`.
- * Both project-root and latest task ISAs are considered; project ISAs use
- * "project" as the slug since they have no per-slug directory.
+ * destinations under `.claude-hooks/archive/<YYYY-MM-DD>/<slug>/ISA.md`.
+ *
+ * The archive lives OUTSIDE `.claude-hooks/state/` so completed-work
+ * evidence is tracked in source control alongside the active task ISAs
+ * under `.claude-hooks/work/`. Putting archives back under `state/`
+ * would defeat the Option-B migration: active ISA gets tracked, then
+ * the archived copy lands in ignored state and the trail is lost.
+ *
+ * Both project-root and latest task ISAs are considered; project ISAs
+ * use "project" as the slug since they have no per-slug directory.
  *
  * Pure: reads files but does not write. The handler does the writes.
  */
@@ -38,8 +45,9 @@ const findCompletedIsas = (root: string, dateIso: string): ArchiveCandidate[] =>
   }
   const taskIsa = findLatestISA(root)
   if (taskIsa !== null && taskIsa !== projectIsa) {
-    // Task ISA path: <root>/.claude-hooks/state/work/<slug>/ISA.md
-    // Slug = the directory containing the file.
+    // Task ISA path: <root>/.claude-hooks/work/<slug>/ISA.md (or the
+    // legacy <root>/.claude-hooks/state/work/<slug>/ISA.md for in-flight
+    // pre-migration sessions). Slug = the directory containing the file.
     const slug = basename(dirname(taskIsa))
     considered.push({ path: taskIsa, slug })
   }
@@ -59,7 +67,6 @@ const findCompletedIsas = (root: string, dateIso: string): ArchiveCandidate[] =>
     const archivePath = pathJoin(
       root,
       ".claude-hooks",
-      "state",
       "archive",
       date,
       slug,

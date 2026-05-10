@@ -270,7 +270,7 @@ describe("Red-team scenarios (10/10)", () => {
     const ctx = out.hookSpecificOutput?.additionalContext ?? ""
     expect(ctx).toContain("MODE: ALGORITHM")
     expect(ctx).toContain("ENGAGE: ALGORITHM_ENGAGEMENT_REQUIRED=true")
-    expect(ctx).toContain("ISA_PATH=.claude-hooks/state/work/rt11-loglens/ISA.md")
+    expect(ctx).toContain("ISA_PATH=.claude-hooks/work/rt11-loglens/ISA.md")
     expect(ctx).toContain("MANDATORY FIRST ACTION")
     expect(ctx).toMatch(/Required sections for E[3-5]:/)
   })
@@ -350,7 +350,6 @@ describe("Red-team scenarios (10/10)", () => {
         file_path: path.join(
           REPO_ROOT,
           ".claude-hooks",
-          "state",
           "work",
           sid,
           "ISA.md",

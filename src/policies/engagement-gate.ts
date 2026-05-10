@@ -123,7 +123,7 @@ const denyReason = (
   displayIsaPath: string | null,
   displayMkdirDir: string | null,
 ): string => {
-  const path = displayIsaPath ?? "<.claude-hooks/state/work/<slug>/ISA.md>"
+  const path = displayIsaPath ?? "<.claude-hooks/work/<slug>/ISA.md>"
   const dir = displayMkdirDir ?? "<isa-dir>"
   return (
     `ALGORITHM engagement is required before implementation.\n` +
