@@ -6,7 +6,11 @@ import { SAFE_DEFAULT } from "../schema/decisions.ts"
 import { Project } from "../services/project.ts"
 import { Shell } from "../services/shell.ts"
 import { makeShellCommand } from "../schema/branded.ts"
-import { isIsaFilePath, findLatestISA } from "../algorithm/isa/locate.ts"
+import {
+  isIsaFilePath,
+  findLatestISA,
+  findProjectIsa,
+} from "../algorithm/isa/locate.ts"
 import { runCheckpoint } from "../algorithm/isa/checkpoint.ts"
 import { parseSections } from "../algorithm/isa/sections.ts"
 import { parseCriteriaList } from "../algorithm/isa/criteria.ts"
@@ -200,7 +204,12 @@ export const handlePostToolUse = (
     yield* Effect.tryPromise({
       try: async () => {
         if (!existsSync(probesPathFor())) return
-        const isa = findLatestISA()
+        // Prefer the most-recent state/work/<slug>/ISA.md, but fall back to
+        // <root>/ISA.md — the second canonical home per IsaFormat.md
+        // lines 56-57. Without this fallback, project-root ISAs (the form
+        // the README documents) are invisible to the probe runner even
+        // though the doctor and TaskCompleted/Stop gates find them fine.
+        const isa = findLatestISA() ?? findProjectIsa()
         if (isa === null) return
         if (!existsSync(isa)) return
         const content = readFileSync(isa, "utf-8")

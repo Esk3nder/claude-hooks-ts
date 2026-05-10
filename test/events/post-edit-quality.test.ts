@@ -1,5 +1,8 @@
 import { describe, expect, test } from "bun:test"
 import { Effect, Layer, Schema } from "effect"
+import * as fs from "node:fs"
+import * as os from "node:os"
+import * as path from "node:path"
 import { handlePostToolUse } from "../../src/events/post-edit-quality.ts"
 import { HookPayload } from "../../src/schema/payloads.ts"
 import { ProjectTest } from "../../src/services/project.ts"
@@ -148,6 +151,68 @@ describe("handlePostToolUse — silent failure logging (M9 fix #2)", () => {
       expect(joined).toContain("sh")
     } finally {
       ;(process.stderr.write as unknown) = origWrite
+    }
+  })
+})
+
+/**
+ * Regression: probe runner only scanned `<root>/.claude-hooks/state/work/<slug>/ISA.md`
+ * via findLatestISA(). Project-root ISAs (the second canonical home per
+ * IsaFormat.md lines 56-57 — what the README documents) were invisible to the
+ * probe runner even though the doctor and TaskCompleted/Stop gates found them.
+ * Result: probe → ISC-flip → checkpoint chain was dead for any user following
+ * the documented setup. Fix is `findLatestISA() ?? findProjectIsa()`.
+ */
+describe("probe runner: project-root ISA discovery", () => {
+  test("flips ISC when only <root>/ISA.md exists (no state/work/)", async () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "probe-root-isa-"))
+    const origCwd = process.cwd()
+    try {
+      fs.mkdirSync(path.join(tmp, ".claude-hooks"), { recursive: true })
+      fs.writeFileSync(
+        path.join(tmp, ".claude-hooks", "probes.ts"),
+        'export const probes = { "tests-pass": async () => true }\n',
+      )
+      const isa = path.join(tmp, "ISA.md")
+      fs.writeFileSync(
+        isa,
+        `---
+slug: probe-root-isa-test
+phase: in_progress
+tier: E3
+---
+# ISA
+## Problem
+Verify probe runner finds project-root ISA.
+## Ideal State Criteria
+- [ ] ISC-1 — placeholder probe returns true
+## Test Strategy
+| isc   | type | check | threshold | tool       |
+|-------|------|-------|-----------|------------|
+| ISC-1 | bun  | smoke | n/a       | tests-pass |
+## Verification
+Run \`bun test\`.
+`,
+      )
+      process.chdir(tmp)
+      const { layer } = recordingShell()
+      const payload = decode({
+        _tag: "PostToolUse",
+        session_id: "probe-root-test",
+        hook_event_name: "PostToolUse",
+        tool_name: "Edit",
+        tool_input: { file_path: path.join(tmp, "scratch.txt") },
+        tool_response: { success: true },
+      })
+      await Effect.runPromise(
+        handlePostToolUse(payload).pipe(Effect.provide(layer)),
+      )
+      const after = fs.readFileSync(isa, "utf8")
+      expect(after).toContain("- [x] ISC-1")
+      expect(after).not.toContain("- [ ] ISC-1")
+    } finally {
+      process.chdir(origCwd)
+      fs.rmSync(tmp, { recursive: true, force: true })
     }
   })
 })
