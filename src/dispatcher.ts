@@ -40,6 +40,7 @@ import { handleElicitation } from "./events/elicitation.ts"
 import { handleElicitationResult } from "./events/elicitation-result.ts"
 import { Approvals, shouldGc } from "./services/approvals.ts"
 import { Elicitations } from "./services/elicitations.ts"
+import { Ledger } from "./services/ledger.ts"
 import { PolicyConfig } from "./services/policy-config.ts"
 import { StdinParseError } from "./schema/errors.ts"
 import { AppLive } from "./layers/live.ts"
@@ -63,6 +64,7 @@ type AppServices =
   | SessionState
   | Approvals
   | Elicitations
+  | Ledger
   | PolicyConfig
   | ClaudeSubprocess
   | Inference
@@ -123,6 +125,31 @@ const emit = (decision: HookDecision): Effect.Effect<void> =>
     }
     process.stdout.write(JSON.stringify(decision))
   })
+
+/**
+ * Append the dispatched decision to the per-session ledger. Best-effort: any
+ * I/O failure is swallowed so the hook response (already on stdout via emit)
+ * is never delayed or compromised by ledger problems.
+ */
+const appendLedger = (
+  payload: HookPayload,
+  decision: HookDecision,
+): Effect.Effect<void, never, Ledger> =>
+  Effect.flatMap(Ledger, (l) =>
+    l.append({
+      timestamp: Date.now(),
+      event: payload._tag,
+      sessionId: payload.session_id,
+      data: decision,
+    }),
+  ).pipe(
+    Effect.tapError((err) =>
+      Effect.sync(() => {
+        process.stderr.write(`dispatcher: ledger append failed: ${String(err)}\n`)
+      }),
+    ),
+    Effect.catchAll(() => Effect.succeed(undefined)),
+  )
 
 const parseJson = (raw: string): Effect.Effect<unknown, StdinParseError> =>
   Effect.try({
@@ -305,6 +332,9 @@ export const program = (argv: ReadonlyArray<string>): Effect.Effect<void> =>
       dispatchPayload(action, payload).pipe(Effect.provide(layer)),
     )
     yield* emit(decision)
+    // Persist decision to per-session ledger.jsonl. Best-effort and post-emit
+    // so a slow/failing ledger never blocks the hook response.
+    yield* appendLedger(payload, decision).pipe(Effect.provide(layer))
     // Best-effort post-emit gc — never blocks or affects the response.
     const cwd =
       typeof payload.cwd === "string" && payload.cwd.length > 0

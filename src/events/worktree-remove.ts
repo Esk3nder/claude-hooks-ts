@@ -36,20 +36,40 @@ const findMainRepo = (worktreePath: string): string | null => {
 }
 
 /**
+ * Walk a directory tree, returning every regular file ending in `.jsonl`.
+ * Used to capture both top-level legacy ledgers and per-session
+ * `state/<sessionId>/ledger.jsonl` files before archival.
+ */
+const collectJsonlFiles = (root: string): string[] => {
+  const out: string[] = []
+  const walk = (dir: string): void => {
+    let ents: fs.Dirent[]
+    try {
+      ents = fs.readdirSync(dir, { withFileTypes: true })
+    } catch {
+      return
+    }
+    for (const ent of ents) {
+      const p = path.join(dir, ent.name)
+      if (ent.isDirectory()) walk(p)
+      else if (ent.isFile() && ent.name.endsWith(".jsonl")) out.push(p)
+    }
+  }
+  walk(root)
+  return out
+}
+
+/**
  * Best-effort: archive every `*.jsonl` under `<worktreePath>/.claude-hooks/state/`
- * into `<mainRepo>/.claude-hooks/state/archived/<basename>-<ISO>/`. Then run
- * `git worktree remove --force` (best-effort, non-fatal).
+ * (recursively, so per-session subdirs are captured) into
+ * `<mainRepo>/.claude-hooks/state/archived/<basename>-<ISO>/`, preserving
+ * relative paths. Then run `git worktree remove --force` (best-effort,
+ * non-fatal).
  */
 const archiveAndRemove = (worktreePath: string, mainRepo: string): void => {
   const stateDir = path.join(worktreePath, ".claude-hooks", "state")
-  let entries: fs.Dirent[] = []
-  try {
-    entries = fs.readdirSync(stateDir, { withFileTypes: true })
-  } catch {
-    entries = []
-  }
-  const jsonl = entries.filter((e) => e.isFile() && e.name.endsWith(".jsonl"))
-  if (jsonl.length > 0) {
+  const found = collectJsonlFiles(stateDir)
+  if (found.length > 0) {
     const stamp = new Date().toISOString().replace(/[:.]/g, "-")
     const base = path.basename(worktreePath)
     const archiveDir = path.join(
@@ -61,10 +81,11 @@ const archiveAndRemove = (worktreePath: string, mainRepo: string): void => {
     )
     try {
       fs.mkdirSync(archiveDir, { recursive: true })
-      for (const ent of jsonl) {
-        const from = path.join(stateDir, ent.name)
-        const to = path.join(archiveDir, ent.name)
+      for (const from of found) {
+        const rel = path.relative(stateDir, from)
+        const to = path.join(archiveDir, rel)
         try {
+          fs.mkdirSync(path.dirname(to), { recursive: true })
           fs.copyFileSync(from, to)
         } catch (e) {
           process.stderr.write(
