@@ -10,9 +10,15 @@
  * env-driven branches.
  */
 import { describe, expect, test } from "bun:test"
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs"
+import {
+  mkdtempSync,
+  mkdirSync,
+  writeFileSync,
+  rmSync,
+  symlinkSync,
+} from "node:fs"
 import { tmpdir } from "node:os"
-import { join } from "node:path"
+import { dirname, join } from "node:path"
 
 const SCRIPT = new URL("../../scripts/doctor.ts", import.meta.url).pathname
 
@@ -85,6 +91,36 @@ describe("doctor — classifier subprocess available", () => {
       expect(check?.status).toBe("INFO")
       expect(check?.detail ?? "").toContain("CLAUDE_HOOKS_DISABLE_CLASSIFIER")
     } finally {
+      cleanup()
+    }
+  })
+
+  test("bypass set AND `claude` not on PATH → still INFO bypass message (CI scenario)", async () => {
+    // Regression: previous order checked PATH first, so in CI where
+    // `claude` isn't installed the function returned the PATH-missing
+    // INFO and never reached the bypass branch — the test for the bypass
+    // message then failed in CI but passed locally. The fix prioritizes
+    // bypass because it's actionable regardless of install state.
+    //
+    // Simulate "claude not on PATH" by pointing PATH at a tmpdir that
+    // contains only a symlink to bun (so the doctor subprocess itself
+    // still launches), with no claude binary or symlink anywhere on it.
+    const { root, cleanup } = stage()
+    const fakePathDir = mkdtempSync(join(tmpdir(), "chts-fakepath-"))
+    try {
+      const realBun = Bun.which("bun")
+      if (realBun !== null) {
+        symlinkSync(realBun, join(fakePathDir, "bun"))
+      }
+      const r = await runDoctor(root, {
+        CLAUDE_HOOKS_DISABLE_CLASSIFIER: "1",
+        PATH: fakePathDir,
+      })
+      const check = find(r.results, "classifier subprocess available")
+      expect(check?.status).toBe("INFO")
+      expect(check?.detail ?? "").toContain("CLAUDE_HOOKS_DISABLE_CLASSIFIER")
+    } finally {
+      rmSync(fakePathDir, { recursive: true, force: true })
       cleanup()
     }
   })
