@@ -88,7 +88,7 @@ describe("handleUserPromptSubmit", () => {
       d as { hookSpecificOutput: { additionalContext: string } }
     ).hookSpecificOutput.additionalContext
     expect(ctx).toContain("ENGAGE: ALGORITHM_ENGAGEMENT_REQUIRED=true")
-    expect(ctx).toContain("ISA_PATH=.claude-hooks/state/work/abc-123/ISA.md")
+    expect(ctx).toContain("ISA_PATH=.claude-hooks/work/abc-123/ISA.md")
     expect(ctx).toContain("MANDATORY FIRST ACTION")
     expect(ctx).toContain("Required sections for E3:")
     expect(ctx).toContain("Problem")
@@ -167,7 +167,7 @@ describe("handleUserPromptSubmit", () => {
     expect(record.last_mode).toBe("ALGORITHM")
     expect(record.last_tier).toBe(3)
     expect(record.expected_isa_path).toBe(
-      ".claude-hooks/state/work/track-me/ISA.md",
+      ".claude-hooks/work/track-me/ISA.md",
     )
   })
 

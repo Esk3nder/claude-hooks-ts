@@ -15,6 +15,7 @@ import {
   findLatestISA,
   findProjectIsa,
   isIsaFilePath,
+  legacyWorkDirFor,
   workDirFor,
 } from "../../../src/algorithm/isa/locate.ts"
 
@@ -55,11 +56,120 @@ describe("constants — the classifier", () => {
 })
 
 describe("workDirFor", () => {
-  test("computes <root>/.claude-hooks/state/work", () => {
-    expect(workDirFor("/tmp/x")).toBe("/tmp/x/.claude-hooks/state/work")
+  test("computes <root>/.claude-hooks/work (new tracked location)", () => {
+    expect(workDirFor("/tmp/x")).toBe("/tmp/x/.claude-hooks/work")
   })
   test("defaults to process.cwd()", () => {
-    expect(workDirFor()).toBe(`${process.cwd()}/.claude-hooks/state/work`)
+    expect(workDirFor()).toBe(`${process.cwd()}/.claude-hooks/work`)
+  })
+})
+
+describe("legacyWorkDirFor", () => {
+  test("computes <root>/.claude-hooks/state/work (legacy ignored location)", () => {
+    expect(legacyWorkDirFor("/tmp/x")).toBe("/tmp/x/.claude-hooks/state/work")
+  })
+  test("defaults to process.cwd()", () => {
+    expect(legacyWorkDirFor()).toBe(
+      `${process.cwd()}/.claude-hooks/state/work`,
+    )
+  })
+})
+
+describe("findArtifactPath / findLatestISA — legacy path fallback", () => {
+  const writeIsaAt = (
+    base: string,
+    slug: string,
+    mtime: number,
+  ): string => {
+    const dir = join(base, slug)
+    mkdirSync(dir, { recursive: true })
+    const file = join(dir, ARTIFACT_FILENAME)
+    writeFileSync(file, `## Goal\n${slug}\n`, "utf8")
+    utimesSync(file, mtime, mtime)
+    return file
+  }
+
+  test("findArtifactPath reads from new path first", () => {
+    const { root, cleanup } = stage()
+    try {
+      const expected = writeIsaAt(workDirFor(root), "abc", 1)
+      expect(findArtifactPath("abc", root)).toBe(expected)
+    } finally {
+      cleanup()
+    }
+  })
+
+  test("findArtifactPath falls back to legacy state/work/ when new path absent", () => {
+    const { root, cleanup } = stage()
+    try {
+      const expected = writeIsaAt(legacyWorkDirFor(root), "old-sess", 1)
+      expect(findArtifactPath("old-sess", root)).toBe(expected)
+    } finally {
+      cleanup()
+    }
+  })
+
+  test("findArtifactPath prefers new path over legacy when both exist", () => {
+    const { root, cleanup } = stage()
+    try {
+      writeIsaAt(legacyWorkDirFor(root), "both", 1)
+      const newPath = writeIsaAt(workDirFor(root), "both", 1)
+      expect(findArtifactPath("both", root)).toBe(newPath)
+    } finally {
+      cleanup()
+    }
+  })
+
+  test("findLatestISA scans both new and legacy work dirs", () => {
+    const { root, cleanup } = stage()
+    try {
+      const oldOne = writeIsaAt(legacyWorkDirFor(root), "older", 1_000_000)
+      // newer ISA in NEW location should win on mtime
+      const newer = writeIsaAt(workDirFor(root), "newer", 2_000_000)
+      // also some older one in NEW location
+      writeIsaAt(workDirFor(root), "ancient", 100)
+      expect(findLatestISA(root)).toBe(newer)
+      // sanity: legacy is reachable
+      rmSync(newer, { force: true })
+      rmSync(join(workDirFor(root), "ancient"), { recursive: true, force: true })
+      expect(findLatestISA(root)).toBe(oldOne)
+    } finally {
+      cleanup()
+    }
+  })
+
+  // Pin the location-wins-over-filename precedence design choice. Without
+  // these tests the migration rule is implicit in the candidate-list
+  // ordering and could be silently inverted by a refactor.
+  test("findArtifactPath prefers canonical PRD over legacy ISA (location > filename)", () => {
+    const { root, cleanup } = stage()
+    try {
+      // Canonical: PRD only. Legacy: ISA.md.
+      const canonicalDir = join(workDirFor(root), "foo")
+      mkdirSync(canonicalDir, { recursive: true })
+      const canonicalPrd = join(canonicalDir, LEGACY_ARTIFACT_FILENAME)
+      writeFileSync(canonicalPrd, "## Goal\nfoo\n", "utf8")
+      writeIsaAt(legacyWorkDirFor(root), "foo", 1)
+      // Canonical PRD wins per design: location is the primary axis,
+      // filename only matters as a tiebreaker within a location.
+      expect(findArtifactPath("foo", root)).toBe(canonicalPrd)
+    } finally {
+      cleanup()
+    }
+  })
+
+  test("findLatestISA prefers canonical for same slug even when legacy mtime is newer", () => {
+    const { root, cleanup } = stage()
+    try {
+      // Same slug in both locations; legacy is the more-recently-touched
+      // file but canonical must still win — disk position is the
+      // post-migration system of record.
+      const canonical = writeIsaAt(workDirFor(root), "shared", 1_000_000)
+      writeIsaAt(legacyWorkDirFor(root), "shared", 2_000_000)
+      expect(findLatestISA(root)).toBe(canonical)
+    } finally {
+      cleanup()
+    }
   })
 })
 

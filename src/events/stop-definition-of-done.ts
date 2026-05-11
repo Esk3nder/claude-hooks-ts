@@ -211,7 +211,7 @@ export const handleStop = (
             ? `E${record.last_tier}`
             : "E3+"
         const expected =
-          record.expected_isa_path ?? "<.claude-hooks/state/work/<slug>/ISA.md>"
+          record.expected_isa_path ?? "<.claude-hooks/work/<slug>/ISA.md>"
         const out: HookDecision = {
           decision: "block",
           reason:
