@@ -25,7 +25,7 @@ interface CliArgs {
   json: boolean;
 }
 
-type Status = "PASS" | "FAIL" | "INFO";
+type Status = "PASS" | "FAIL" | "WARN" | "INFO";
 
 interface CheckResult {
   name: string;
@@ -615,13 +615,17 @@ const collectIsaPaths = (cwd: string): string[] => {
   const out: string[] = [];
   const projectIsa = path.join(cwd, "ISA.md");
   if (fs.existsSync(projectIsa)) out.push(projectIsa);
-  const taskIsaDir = path.join(cwd, ".claude-hooks", "state", "work");
-  if (fs.existsSync(taskIsaDir)) {
+  const taskIsaDirs = [
+    path.join(cwd, ".claude-hooks", "work"),
+    path.join(cwd, ".claude-hooks", "state", "work"),
+  ];
+  for (const taskIsaDir of taskIsaDirs) {
+    if (!fs.existsSync(taskIsaDir)) continue;
     let entries: ReadonlyArray<string> = [];
     try {
       entries = fs.readdirSync(taskIsaDir);
     } catch {
-      return out;
+      continue;
     }
     for (const slug of entries) {
       const isa = path.join(taskIsaDir, slug, "ISA.md");
@@ -629,6 +633,56 @@ const collectIsaPaths = (cwd: string): string[] => {
     }
   }
   return out;
+};
+
+/**
+ * Legacy ISA migration check (Option B follow-up). Returns null when there
+ * is no migration signal worth reporting:
+ *   - No legacy `state/work/` dir at all (fresh install or never used) → null
+ *   - Legacy dir exists AND canonical dir also has slugs → null (assume the
+ *     canonical install is the active one and the legacy is residue)
+ *
+ * Returns a WARN when slugs exist ONLY in legacy and not in canonical:
+ * those task ISAs are gitignored (since they live under `.claude-hooks/state/`)
+ * and would be lost on the next `git clean -fdx`. The detail string includes
+ * the one-liner needed to migrate.
+ */
+const checkLegacyIsaMigration = (cwd: string): CheckResult | null => {
+  const legacyDir = path.join(cwd, ".claude-hooks", "state", "work");
+  const canonicalDir = path.join(cwd, ".claude-hooks", "work");
+  if (!fs.existsSync(legacyDir)) return null;
+  let legacySlugs: ReadonlyArray<string> = [];
+  try {
+    legacySlugs = fs.readdirSync(legacyDir).filter((slug) =>
+      fs.existsSync(path.join(legacyDir, slug, "ISA.md")),
+    );
+  } catch {
+    return null;
+  }
+  if (legacySlugs.length === 0) return null;
+  let canonicalSlugs: ReadonlyArray<string> = [];
+  if (fs.existsSync(canonicalDir)) {
+    try {
+      canonicalSlugs = fs.readdirSync(canonicalDir).filter((slug) =>
+        fs.existsSync(path.join(canonicalDir, slug, "ISA.md")),
+      );
+    } catch {
+      // fall through — treat as empty
+    }
+  }
+  if (canonicalSlugs.length > 0) return null;
+  // Only legacy has ISAs → user is on the old layout. Nudge to migrate.
+  const preview = legacySlugs.slice(0, 3).join(", ");
+  const more = legacySlugs.length > 3 ? `, +${legacySlugs.length - 3} more` : "";
+  return {
+    name: "ISA storage location",
+    status: "WARN",
+    detail:
+      `${legacySlugs.length} task ISA(s) found ONLY under the legacy gitignored path ` +
+      `.claude-hooks/state/work/ ([${preview}${more}]). Migrate to the tracked location ` +
+      `with: \`mkdir -p .claude-hooks/work && mv .claude-hooks/state/work/* .claude-hooks/work/\`. ` +
+      `These artifacts will be lost on \`git clean -fdx\` until moved.`,
+  };
 };
 
 const checkProbeRegistry = async (
@@ -766,6 +820,9 @@ export const runDoctor = async (
   results.push(checkClassifierAuth());
   results.push(checkSkillBundle());
   results.push(checkActiveIsa(args.cwd));
+
+  const migrationCheck = checkLegacyIsaMigration(args.cwd);
+  if (migrationCheck !== null) results.push(migrationCheck);
 
   const probeCheck = await checkProbeRegistry(args.cwd);
   if (probeCheck !== null) results.push(probeCheck);

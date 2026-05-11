@@ -210,6 +210,68 @@ describe("doctor — active ISA", () => {
   })
 })
 
+describe("doctor — ISA storage location (legacy migration WARN)", () => {
+  test("no .claude-hooks/state/work dir → check is silent (no entry)", async () => {
+    const { root, cleanup } = stage()
+    try {
+      const r = await runDoctor(root)
+      const check = find(r.results, "ISA storage location")
+      expect(check).toBeUndefined()
+    } finally {
+      cleanup()
+    }
+  })
+
+  test("legacy state/work has ISAs but canonical work also has ISAs → check is silent", async () => {
+    const { root, cleanup } = stage()
+    try {
+      const legacy = join(root, ".claude-hooks", "state", "work", "old-slug")
+      mkdirSync(legacy, { recursive: true })
+      writeFileSync(join(legacy, "ISA.md"), `## Goal\nx\n`, "utf-8")
+      const canonical = join(root, ".claude-hooks", "work", "new-slug")
+      mkdirSync(canonical, { recursive: true })
+      writeFileSync(join(canonical, "ISA.md"), `## Goal\ny\n`, "utf-8")
+      const r = await runDoctor(root)
+      const check = find(r.results, "ISA storage location")
+      // Once the canonical layout is in use, treat the legacy residue
+      // as historical — no migration WARN.
+      expect(check).toBeUndefined()
+    } finally {
+      cleanup()
+    }
+  })
+
+  test("ONLY legacy state/work has ISAs → WARN with migration command", async () => {
+    const { root, cleanup } = stage()
+    try {
+      const legacy1 = join(root, ".claude-hooks", "state", "work", "task-a")
+      const legacy2 = join(root, ".claude-hooks", "state", "work", "task-b")
+      mkdirSync(legacy1, { recursive: true })
+      mkdirSync(legacy2, { recursive: true })
+      writeFileSync(join(legacy1, "ISA.md"), `## Goal\na\n`, "utf-8")
+      writeFileSync(join(legacy2, "ISA.md"), `## Goal\nb\n`, "utf-8")
+      const r = await runDoctor(root)
+      const check = find(r.results, "ISA storage location")
+      expect(check?.status).toBe("WARN")
+      expect(check?.detail ?? "").toContain("legacy gitignored path")
+      expect(check?.detail ?? "").toContain("task-a")
+      expect(check?.detail ?? "").toContain("task-b")
+      expect(check?.detail ?? "").toContain("mv .claude-hooks/state/work/")
+    } finally {
+      cleanup()
+    }
+  })
+
+  // WARN-doesn't-bump-exit is a logical property of `runDoctor` (only
+  // `FAIL` flips the exitCode; see `results.some((r) => r.status === "FAIL")`
+  // in scripts/doctor.ts). We don't end-to-end-test it here because the
+  // doctor run on a fresh tmpdir naturally FAILs on unrelated checks
+  // (wired hook commands, dispatcher round-trip) — those FAILs are correct
+  // for an empty environment but would mask whether WARN itself contributes
+  // to the exit code. Locally those checks pass against the dev's installed
+  // hooks; in CI they don't, hence the local-vs-CI divergence we hit here.
+})
+
 describe("doctor — thinking-capability skill stubs", () => {
   test("status reports an integer count when skills exist", async () => {
     const { root, cleanup } = stage()
