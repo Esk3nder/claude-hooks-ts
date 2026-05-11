@@ -28,7 +28,7 @@
 
 import { existsSync, readFileSync, writeFileSync } from "node:fs"
 import { execFileSync } from "node:child_process"
-import { basename, dirname, join } from "node:path"
+import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path"
 import { homedir } from "node:os"
 import { parseCriteriaList, type CriterionEntry } from "./criteria.ts"
 import { parseFrontmatter } from "./frontmatter.ts"
@@ -152,6 +152,35 @@ export const hasChanges = (repo: string): boolean => {
   }
 }
 
+/**
+ * Is `child` resolved-equal to or contained within `parent`? Used to gate
+ * the auto-commit: we only checkpoint repos that contain the ISA file we
+ * just edited. Cross-repo "snapshot pending work in unrelated repo with
+ * an ISC subject" is not the auto-commit semantic — the commit subject
+ * names the ISC; the diff must be the ISA flip, not whatever else
+ * happens to be staged.
+ */
+export const isPathInside = (parent: string, child: string): boolean => {
+  const p = resolve(parent)
+  const c = resolve(child)
+  if (p === c) return true
+  const rel = relative(p, c)
+  return rel.length > 0 && !rel.startsWith("..") && !isAbsolute(rel)
+}
+
+/**
+ * Has THIS specific file got pending changes (modified, added, or untracked)
+ * relative to HEAD? Caller must have verified the file is inside the repo —
+ * git errors loudly on `--` paths outside the repo.
+ */
+export const hasChangesForFile = (repo: string, file: string): boolean => {
+  try {
+    return gitRun(repo, ["status", "--porcelain", "--", file]).trim().length > 0
+  } catch {
+    return false
+  }
+}
+
 /** the classifier — single-line, length-capped, backtick/`$` stripped. */
 export const sanitizeMessage = (s: string): string =>
   s.replace(/\s+/g, " ").replace(/[`$]/g, "").trim().slice(0, 200)
@@ -169,9 +198,15 @@ export const commitInRepo = (
   iscId: string,
   slug: string,
   description: string,
+  isaFilePath: string,
 ): string | null => {
   try {
-    gitRun(repo, ["add", "-A"])
+    // Scope the add to the ISA file only. Caller must have verified the
+    // ISA is inside the repo (isPathInside) — otherwise git errors out.
+    // The previous `git add -A` design swallowed any pending unrelated
+    // work into the ISC commit (and, with --no-verify, bypassed
+    // pre-commit secret scans).
+    gitRun(repo, ["add", "--", isaFilePath])
     const subject = `${iscId} (${slug}): ${sanitizeMessage(description)}`
     gitRun(repo, [
       "commit",
@@ -280,6 +315,7 @@ export const runCheckpoint = (
   const lastCommitSha: Record<string, string> = { ...state.last_commit_sha }
 
   for (const isc of newly) {
+    let committedThisIsc = false
     for (const repo of allowlist) {
       if (!existsSync(repo)) {
         process.stderr.write(`[checkpoint] repo not found: ${repo}\n`)
@@ -289,14 +325,25 @@ export const runCheckpoint = (
         process.stderr.write(`[checkpoint] not a git repo: ${repo}\n`)
         continue
       }
-      if (!hasChanges(repo)) continue
-      const sha = commitInRepo(repo, isc.id, slug, isc.description)
+      if (!isPathInside(repo, isaFilePath)) {
+        process.stderr.write(
+          `[checkpoint] ISA ${isaFilePath} not inside repo ${repo}, skipping\n`,
+        )
+        continue
+      }
+      if (!hasChangesForFile(repo, isaFilePath)) continue
+      const sha = commitInRepo(repo, isc.id, slug, isc.description, isaFilePath)
       if (sha !== null) {
         lastCommitSha[repo] = sha
         commits.push({ iscId: isc.id, repo, sha })
+        committedThisIsc = true
       }
     }
-    committedIds.push(isc.id)
+    // T1.2 — only mark an ISC as committed when ≥1 repo actually committed.
+    // Previously this push happened unconditionally, so a missing repo or
+    // empty allowlist would brand the ISC "done" in the sidecar and prevent
+    // any later retry.
+    if (committedThisIsc) committedIds.push(isc.id)
   }
 
   saveState(stateFile, {
