@@ -38,12 +38,56 @@ import type { CriterionEntry } from "./criteria.ts"
  */
 export type ProbeFn = (criterion: CriterionEntry) => boolean | Promise<boolean>
 
+/**
+ * Object spec form for probes that need a non-default timeout. The default
+ * 1s cap is fine for `() => true` and other cheap checks but kills any
+ * probe doing real work (e.g. spawning `bun test`). Declare a longer
+ * `timeoutMs` to opt out of the default — capped on the user's side, not
+ * the dispatcher's.
+ *
+ *   export const probes = {
+ *     "tests-pass": { fn: async () => runTests(), timeoutMs: 8_000 },
+ *   }
+ */
+export interface ProbeSpec {
+  readonly fn: ProbeFn
+  readonly timeoutMs?: number
+}
+
+/**
+ * What the user's `probes.ts` may export per key. Bare functions are the
+ * common shape; object specs unlock per-probe timeout overrides.
+ */
+export type Probe = ProbeFn | ProbeSpec
+
 export interface ProbesModule {
-  readonly probes: Readonly<Record<string, ProbeFn>>
+  readonly probes: Readonly<Record<string, Probe>>
 }
 
 /** Default per-probe timeout — defensive ceiling for hot-loaded user code. */
 export const PROBE_TIMEOUT_MS = 1_000
+
+/**
+ * Detect the object spec form. A `Probe` is either a function or an object
+ * with a `fn` field that is a function. Anything else is treated as
+ * malformed and dropped at load time.
+ */
+const isProbeSpec = (p: unknown): p is ProbeSpec =>
+  typeof p === "object" &&
+  p !== null &&
+  !Array.isArray(p) &&
+  typeof (p as { fn?: unknown }).fn === "function"
+
+/**
+ * Normalize a Probe into `{fn, timeoutMs}` so call sites don't have to
+ * branch on the shape. Bare functions resolve to the default timeout.
+ */
+export const resolveProbe = (
+  p: Probe,
+): { readonly fn: ProbeFn; readonly timeoutMs: number } => {
+  if (typeof p === "function") return { fn: p, timeoutMs: PROBE_TIMEOUT_MS }
+  return { fn: p.fn, timeoutMs: p.timeoutMs ?? PROBE_TIMEOUT_MS }
+}
 
 const PROBES_SUBPATH = [".claude-hooks", "probes.ts"] as const
 
@@ -65,7 +109,7 @@ export const probesPathFor = (root: string = process.cwd()): string =>
  */
 export const loadProbes = async (
   root: string = process.cwd(),
-): Promise<Readonly<Record<string, ProbeFn>>> => {
+): Promise<Readonly<Record<string, Probe>>> => {
   const file = probesPathFor(root)
   if (!existsSync(file)) return Object.freeze({})
   try {
@@ -80,10 +124,14 @@ export const loadProbes = async (
       )
       return Object.freeze({})
     }
-    // Defensive copy + freeze; only keep entries whose value is a function.
-    const out: Record<string, ProbeFn> = {}
-    for (const [name, fn] of Object.entries(mod.probes)) {
-      if (typeof fn === "function") out[name] = fn as ProbeFn
+    // Defensive copy + freeze. Accept bare functions (the common shape)
+    // and `{fn, timeoutMs}` object specs (for probes that need >default
+    // timeout). Anything else is dropped — same fail-closed posture as
+    // before.
+    const out: Record<string, Probe> = {}
+    for (const [name, val] of Object.entries(mod.probes)) {
+      if (typeof val === "function") out[name] = val as ProbeFn
+      else if (isProbeSpec(val)) out[name] = val
     }
     return Object.freeze(out)
   } catch (err) {
@@ -151,7 +199,7 @@ export const runProbe = (
 export interface ProbeMatch {
   readonly criterion: CriterionEntry
   readonly probeName: string
-  readonly probe: ProbeFn
+  readonly probe: Probe
 }
 
 export interface ProbeMiss {
@@ -163,7 +211,7 @@ export interface ProbeMiss {
 export const matchProbes = (
   criteria: ReadonlyArray<CriterionEntry>,
   testStrategy: ReadonlyMap<string, string>, // iscId → probe name
-  registry: Readonly<Record<string, ProbeFn>>,
+  registry: Readonly<Record<string, Probe>>,
   onMiss?: (miss: ProbeMiss) => void,
 ): ReadonlyArray<ProbeMatch> => {
   const matches: ProbeMatch[] = []

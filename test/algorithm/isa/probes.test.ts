@@ -9,7 +9,9 @@ import {
   parseTestStrategy,
   PROBE_TIMEOUT_MS,
   probesPathFor,
+  resolveProbe,
   runProbe,
+  type Probe,
   type ProbeFn,
 } from "../../../src/algorithm/isa/probes.ts"
 import type { CriterionEntry } from "../../../src/algorithm/isa/criteria.ts"
@@ -188,6 +190,136 @@ describe("runProbe — Effect with timeout + error containment", () => {
     expect((captured as unknown as CriterionEntry | null)?.description).toBe(
       "specific text",
     )
+  })
+})
+
+// T1.5 — non-trivial probes (e.g. running `bun test`) need >1s. The
+// default cap silently kills any probe that runs real work and returns
+// `false` indistinguishably from "probe deterministically failed."
+// The {fn, timeoutMs} spec form lets a probe declare the budget it needs.
+describe("resolveProbe / probe spec — per-probe timeout configuration", () => {
+  test("resolveProbe: bare function uses default timeout", () => {
+    const fn: ProbeFn = () => true
+    const r = resolveProbe(fn)
+    expect(r.fn).toBe(fn)
+    expect(r.timeoutMs).toBe(PROBE_TIMEOUT_MS)
+  })
+
+  test("resolveProbe: {fn, timeoutMs} object form passes timeoutMs through", () => {
+    const fn: ProbeFn = () => true
+    const r = resolveProbe({ fn, timeoutMs: 8_000 })
+    expect(r.fn).toBe(fn)
+    expect(r.timeoutMs).toBe(8_000)
+  })
+
+  test("resolveProbe: {fn} without explicit timeoutMs defaults", () => {
+    const fn: ProbeFn = () => true
+    const r = resolveProbe({ fn })
+    expect(r.timeoutMs).toBe(PROBE_TIMEOUT_MS)
+  })
+
+  test("loadProbes accepts {fn, timeoutMs} export shape", async () => {
+    const { root, cleanup } = stage()
+    try {
+      writeProbesFile(
+        root,
+        `export const probes = {
+          "fast": () => true,
+          "slow": { fn: () => true, timeoutMs: 8000 },
+        }`,
+      )
+      const out = await loadProbes(root)
+      expect(Object.keys(out).sort()).toEqual(["fast", "slow"])
+      // Bare function passes through unchanged
+      expect(typeof out["fast"]).toBe("function")
+      // Spec object passes through with both fields
+      const slow = out["slow"] as { fn: ProbeFn; timeoutMs?: number }
+      expect(typeof slow?.fn).toBe("function")
+      expect(slow?.timeoutMs).toBe(8000)
+    } finally {
+      cleanup()
+    }
+  })
+
+  test("loadProbes rejects malformed spec (no `fn`)", async () => {
+    const { root, cleanup } = stage()
+    try {
+      writeProbesFile(
+        root,
+        `export const probes = {
+          "broken": { timeoutMs: 5000 },
+        }`,
+      )
+      const out = await loadProbes(root)
+      expect(Object.keys(out)).toEqual([])
+    } finally {
+      cleanup()
+    }
+  })
+
+  test("end-to-end: probe sleeping 1.5s with timeoutMs=5000 succeeds (would have died at default 1s)", async () => {
+    const slow: Probe = {
+      fn: () =>
+        new Promise<boolean>((resolve) =>
+          setTimeout(() => resolve(true), 1_500),
+        ),
+      timeoutMs: 5_000,
+    }
+    const { fn, timeoutMs } = resolveProbe(slow)
+    const start = Date.now()
+    const result = await Effect.runPromise(runProbe(fn, c("ISC-1"), timeoutMs))
+    const elapsed = Date.now() - start
+    expect(result).toBe(true)
+    expect(elapsed).toBeGreaterThanOrEqual(1_400)
+  }, 10_000)
+
+  // Edge-case pins: nullish coalescing (`?? PROBE_TIMEOUT_MS`) does NOT
+  // catch 0 or negative numbers, so those values pass through verbatim.
+  // These tests pin the current behavior so a future "treat 0 as default"
+  // refactor doesn't silently change the contract.
+  test("resolveProbe: timeoutMs=0 passes through (downstream = instant timeout)", () => {
+    const fn: ProbeFn = () => true
+    const r = resolveProbe({ fn, timeoutMs: 0 })
+    expect(r.timeoutMs).toBe(0)
+  })
+
+  test("resolveProbe: negative timeoutMs passes through (downstream behavior undefined)", () => {
+    const fn: ProbeFn = () => true
+    const r = resolveProbe({ fn, timeoutMs: -1 })
+    expect(r.timeoutMs).toBe(-1)
+  })
+
+  test("loadProbes: rejects spec with fn=null (not callable)", async () => {
+    const { root, cleanup } = stage()
+    try {
+      writeProbesFile(
+        root,
+        `export const probes = {
+          "broken-null-fn": { fn: null, timeoutMs: 5000 },
+        }`,
+      )
+      const out = await loadProbes(root)
+      expect(Object.keys(out)).toEqual([])
+    } finally {
+      cleanup()
+    }
+  })
+
+  test("loadProbes: rejects null entry verbatim (not a spec, not a function)", async () => {
+    const { root, cleanup } = stage()
+    try {
+      writeProbesFile(
+        root,
+        `export const probes = {
+          "good": () => true,
+          "nullish": null,
+        }`,
+      )
+      const out = await loadProbes(root)
+      expect(Object.keys(out)).toEqual(["good"])
+    } finally {
+      cleanup()
+    }
   })
 })
 
