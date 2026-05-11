@@ -5,6 +5,7 @@ import type { HookDecision } from "../schema/decisions.ts"
 import { SAFE_DEFAULT } from "../schema/decisions.ts"
 import { Project } from "../services/project.ts"
 import { Shell } from "../services/shell.ts"
+import { SessionState } from "../services/session-state.ts"
 import { makeShellCommand } from "../schema/branded.ts"
 import {
   isIsaFilePath,
@@ -138,13 +139,31 @@ const flipIscCheckbox = (isaPath: string, iscId: string): boolean => {
  */
 export const handlePostToolUse = (
   payload: HookPayload,
-): Effect.Effect<HookDecision, never, Project | Shell | Redact> =>
+): Effect.Effect<
+  HookDecision,
+  never,
+  Project | Shell | Redact | SessionState
+> =>
   Effect.gen(function* () {
     if (payload._tag !== "PostToolUse") return SAFE_DEFAULT
 
     const file = filePathFromInput(payload.tool_input)
     const isEdit = EDIT_TOOLS.has(payload.tool_name)
     const isIsaEdit = isEdit && file !== null && isIsaFilePath(file)
+
+    // Engaged-marker: when an ISA file is written, stamp `isa_engaged_at`
+    // for telemetry. Do NOT clear `engagement_required` — the flag is
+    // preserved as historical truth ("this session was supposed to
+    // engage ISA"). Disk is the source of truth for whether the
+    // PreToolUse gate releases (see policies/engagement-gate.ts).
+    if (isIsaEdit) {
+      const state = yield* SessionState
+      yield* state
+        .update(payload.session_id, {
+          isa_engaged_at: new Date().toISOString(),
+        })
+        .pipe(Effect.catchAll(() => Effect.succeed(undefined)))
+    }
 
     // 4a content-scan: scan tool_response for secret patterns. Report-only
     // by default — emits an additionalContext warning so the model treats

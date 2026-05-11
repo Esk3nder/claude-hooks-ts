@@ -1,35 +1,29 @@
 /**
  * ISC probe registry — hot-loadable user code that verifies ISCs after
- * tool calls finish.
+ * tool calls finish. Composes with the model-flipped checkbox path: a
+ * probe-flipped `[x]` triggers the same checkpoint commit that a
+ * model-flipped one does.
  *
- * NEW DESIGN — no this package parallel. this package's CheckpointPerISC.hook.ts only watches
- * for `[ ]→[x]` transitions written by the model; this module lets users
- * declare programmatic verifications that flip the checkbox automatically
- * when the test passes. The two systems compose: a probe-flipped checkbox
- * triggers the same checkpoint commit that a model-flipped one does.
- *
- * Privilege model (HONEST disclosure):
+ * Privilege model (honest disclosure):
  * - Probes run in the dispatcher process with FULL Node privileges
- * (filesystem, network, shell, env vars). There is no real sandbox.
+ *   (filesystem, network, shell, env vars). There is no sandbox.
  * - Each probe is wrapped in a 1s Effect.timeout and a catch-all that
- * treats failure as a non-passing probe (same as a returned `false`).
+ *   treats failure as a non-passing probe (same as a returned `false`).
  * - The probe file is `<root>/.claude-hooks/probes.ts` — opt-in. Default
- * install ships zero probes. Loading respects the same trust boundary
- * the user implicitly grants any code already in their repo.
+ *   install ships zero probes. Loading respects the same trust boundary
+ *   the user implicitly grants any code already in their repo.
  *
- * Activation flow (planned for slice 2c wiring):
+ * Activation flow:
  * 1. PostToolUse fires for any tool the model used.
- * 2. The handler locates the active ISA (via locate.ts), parses Test
- * Strategy to map iscId → probe-name, finds probes the user defined
- * that match, runs each in isolation.
- * 3. For passing probes whose target ISC is currently `[ ]`, edits the
- * ISA in place to flip to `[x]`. That ISA edit then fires PostToolUse
- * again, where checkpoint.ts notices the transition and commits.
+ * 2. The handler locates the active ISA, parses Test Strategy to map
+ *    iscId → probe-name, finds matching probes, runs each in isolation.
+ * 3. For passing probes whose target ISC is currently `[ ]`, the ISA
+ *    is edited in place to flip to `[x]`. That edit fires PostToolUse
+ *    again where checkpoint.ts notices the transition and commits.
  *
- * Recursion guard: probes module reads ISA but only WRITES on `passed`
- * transitions and only when the matching ISC is currently unchecked.
- * Idempotent — running the same probe set twice with the same world-
- * state is a no-op.
+ * Idempotency: probes only write on a true→passing transition and only
+ * when the matching ISC is currently unchecked. Running the same probe
+ * set twice with the same world-state is a no-op.
  */
 
 import { existsSync } from "node:fs"
@@ -217,9 +211,13 @@ export const parseTestStrategy = (
     const first = cells[0]
     const last = cells[cells.length - 1]
     if (first === undefined || last === undefined) continue
-    if (!/^ISC-[\w.-]+/.test(first)) continue
+    // Bare ISC id only — anchored on both sides so a cell like
+    // `ISC-1: my criterion` doesn't get keyed by the whole description
+    // (which would never match parseCriteriaList's clean id keys).
+    const idMatch = first.match(/^(ISC-[\w.-]+)$/)
+    if (idMatch === null || idMatch[1] === undefined) continue
     if (last.length === 0) continue
-    out.set(first, last)
+    out.set(idMatch[1], last)
   }
   return out
 }

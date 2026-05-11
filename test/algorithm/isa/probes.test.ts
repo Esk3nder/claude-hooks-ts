@@ -244,6 +244,48 @@ describe("parseTestStrategy — pipe-table → iscId→probeName map", () => {
     const body = `| ISC-CLI-3 | x | x | x | cli-probe |`
     expect(parseTestStrategy(body).get("ISC-CLI-3")).toBe("cli-probe")
   })
+
+  // Anchor contract: the first cell must be a bare ID and nothing else.
+  // Pre-anchor, `^ISC-[\w.-]+/` matched `ISC-1: foo` and the WHOLE cell
+  // (after trim) became the map key. parseCriteriaList only ever produces
+  // bare IDs ("ISC-1"), so any garbled key was a silent no-match later
+  // — probes existed in the registry, the ISA pointed at them, but the
+  // bridging code couldn't find the pair. Anchored: garbled cells are
+  // skipped entirely, surfacing as a clean "no probe match" signal
+  // through matchProbes' onMiss callback when the user fixes the table.
+  test("anchored: cell `ISC-1: my criterion` does NOT register", () => {
+    const body = `| ISC-1: my criterion | x | x | x | tool-name |`
+    const m = parseTestStrategy(body)
+    // Neither key shape registers — neither the bare id nor the full cell.
+    expect(m.size).toBe(0)
+    expect(m.has("ISC-1")).toBe(false)
+    expect(m.has("ISC-1: my criterion")).toBe(false)
+  })
+
+  test("anchored: cell `ISC-1 [F]` (legacy category bracket) does NOT register", () => {
+    // Legacy ISAs that put the category bracket in the first cell of the
+    // Test Strategy table need to move it to its own column or drop it.
+    // The Criteria parser tolerates `[F]`; the Test Strategy parser does
+    // not, by design — the strategy table's first cell is the join key.
+    const body = `| ISC-1 [F] | x | x | x | tool |`
+    expect(parseTestStrategy(body).size).toBe(0)
+  })
+
+  test("anchored: cell `ISC-1 ` (trailing whitespace only) STILL registers", () => {
+    // After trim() inside the parser, trailing space disappears. We don't
+    // want to be so strict we reject formatting variations that don't
+    // actually carry information.
+    const body = `| ISC-1     | x | x | x | tool |`
+    expect(parseTestStrategy(body).get("ISC-1")).toBe("tool")
+  })
+
+  test("anchored: cell with embedded space `ISC-1 extra` does NOT register", () => {
+    // Distinct from trailing whitespace: an internal token after the id
+    // is information the parser can't interpret. Reject rather than
+    // guess.
+    const body = `| ISC-1 extra | x | x | x | tool |`
+    expect(parseTestStrategy(body).size).toBe(0)
+  })
 })
 
 describe("matchProbes — pure pairing function", () => {

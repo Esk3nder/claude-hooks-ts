@@ -20,6 +20,17 @@ export const SessionStateRecordSchema = Schema.Struct({
   subagent_starts: Schema.Array(Schema.String),
   subagent_stops: Schema.Array(Schema.String),
   last_workflow: Schema.NullOr(Schema.String),
+  /**
+   * Engagement bookkeeping written by `prompt-router` from the
+   * classifier and read by Stop / PostToolUse gates. Together they let the
+   * Stop gate enforce "ALGORITHM E3+ ran without an ISA" (absence-is-failure)
+   * instead of nooping on absence.
+   */
+  last_mode: Schema.NullOr(Schema.String),
+  last_tier: Schema.NullOr(Schema.Number),
+  engagement_required: Schema.Boolean,
+  expected_isa_path: Schema.NullOr(Schema.String),
+  isa_engaged_at: Schema.NullOr(Schema.String),
 })
 
 export type SessionStateRecordSchemaType = Schema.Schema.Type<

@@ -141,11 +141,30 @@ describe("UserPromptSubmit emits BOTH layered classifier lines (B4)", () => {
     expect(inferenceCalls).toBe(1)
   })
 
-  test("two-line additionalContext format: workflow on line 1, MODE on line 2", async () => {
-    const { raw } = await runHandler("implement the thing", baseAlgoT3)
+  test("two-line additionalContext format (sub-engagement): workflow on line 1, MODE on line 2", async () => {
+    const { raw } = await runHandler("hi", {
+      mode: "MINIMAL",
+      tier: null,
+      reason: "greeting",
+      source: "classifier",
+      latencyMs: 0,
+    })
     const lines = raw.split("\n")
     expect(lines.length).toBe(2)
     expect(lines[0]?.startsWith("Detected workflow:")).toBe(true)
     expect(lines[1]?.startsWith("MODE:")).toBe(true)
+  })
+
+  test("ALGORITHM tier ≥ 3 additionalContext: workflow line, MODE line, ENGAGE block", async () => {
+    const { raw } = await runHandler("implement the thing", baseAlgoT3)
+    const lines = raw.split("\n")
+    // Layout: [0] workflow, [1] MODE, [2] ENGAGE meta, [3+] directive prose.
+    expect(lines.length).toBeGreaterThanOrEqual(3)
+    expect(lines[0]?.startsWith("Detected workflow:")).toBe(true)
+    expect(lines[1]?.startsWith("MODE:")).toBe(true)
+    expect(lines[2]?.startsWith("ENGAGE: ALGORITHM_ENGAGEMENT_REQUIRED=true")).toBe(
+      true,
+    )
+    expect(raw).toContain("MANDATORY FIRST ACTION")
   })
 })
