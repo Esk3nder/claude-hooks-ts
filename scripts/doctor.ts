@@ -434,20 +434,29 @@ const checkClassifierEnv = (): CheckResult => {
   const bypass =
     process.env["CLAUDE_HOOKS_DISABLE_CLASSIFIER"] === "1" ||
     process.env["CLAUDE_HOOKS_DISABLE_CLASSIFIER"] === "true";
-  if (claudeBin === null) {
-    return {
-      name: "classifier subprocess available",
-      status: "INFO",
-      detail:
-        "`claude` not on PATH — classifier will fail-safe to ALGORITHM E3 every prompt. Install Claude Code to enable proper mode classification.",
-    };
-  }
+  // Bypass is reported FIRST — it's the most actionable signal regardless
+  // of whether `claude` is installed: even with a working `claude` on PATH,
+  // the bypass env var would prevent the subprocess from being invoked. So
+  // surface that to the user first; if they unset it, the next doctor run
+  // will fall through to the PATH check.
+  //
+  // (Pre-fix order had the PATH check first, which made the bypass branch
+  // unreachable in CI environments where `claude` isn't installed — the
+  // doctor's CI test for the bypass message then failed.)
   if (bypass) {
     return {
       name: "classifier subprocess available",
       status: "INFO",
       detail:
         "CLAUDE_HOOKS_DISABLE_CLASSIFIER=1 — classifier subprocess is bypassed; every prompt becomes fail-safe ALGORITHM E3. Unset to re-enable.",
+    };
+  }
+  if (claudeBin === null) {
+    return {
+      name: "classifier subprocess available",
+      status: "INFO",
+      detail:
+        "`claude` not on PATH — classifier will fail-safe to ALGORITHM E3 every prompt. Install Claude Code to enable proper mode classification.",
     };
   }
   return {
