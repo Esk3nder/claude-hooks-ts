@@ -411,5 +411,74 @@ describe("ISA lifecycle integration — choreography", () => {
         cleanup()
       }
     })
+
+    // P2c — probe runner follows the frozen `session_root` in SessionState,
+    // not the mutable process cwd. The setup is identical to scenario 7
+    // except `process.chdir` points to an unrelated drift directory. The
+    // ISA at `<sessionRoot>/ISA.md` must still be discovered, flipped, and
+    // committed.
+    test("probe runner uses session_root, not process.cwd()", async () => {
+      const { root, cleanup } = stage("s7-drift")
+      const drift = fs.mkdtempSync(path.join(os.tmpdir(), "chts-s7-drift-"))
+      const driftReal = fs.realpathSync(drift)
+      try {
+        const sid = "s7-drift"
+        initGitRepo(root)
+        fs.mkdirSync(path.join(root, ".claude-hooks"), { recursive: true })
+        fs.writeFileSync(
+          path.join(root, ".claude-hooks", "checkpoint-repos.txt"),
+          `${root}\n`,
+          "utf-8",
+        )
+        const isaPath = path.join(root, "ISA.md")
+        fs.writeFileSync(isaPath, ISA_E3_BODY, "utf-8")
+        fs.writeFileSync(
+          path.join(root, ".claude-hooks", "probes.ts"),
+          `export const probes = { "pass-isc-1": () => true }\n`,
+          "utf-8",
+        )
+        execFileSync("git", ["-C", root, "add", "."], { stdio: "ignore" })
+        execFileSync(
+          "git",
+          ["-C", root, "commit", "-m", "seed", "--no-verify"],
+          { stdio: "ignore" },
+        )
+
+        // Critical: drift the process cwd AWAY from root before invoking
+        // the handler. The drift directory has no probes file, no ISA, no
+        // git repo. If the handler followed process.cwd() it would noop.
+        process.chdir(driftReal)
+
+        const payload = decode({
+          _tag: "PostToolUse",
+          session_id: sid,
+          hook_event_name: "PostToolUse",
+          // payload.cwd is left unset — same as the failure mode the bug
+          // produced (Bash cd persists; payload.cwd lags or doesn't track).
+          tool_name: "Bash",
+          tool_input: { command: "echo hi" },
+          tool_response: { stdout: "hi", stderr: "", exitCode: 0 },
+        })
+        const layer = Layer.mergeAll(
+          ProjectTest(),
+          RedactTest(),
+          SessionStateTest(seed(sid, ENGAGED(root, sid))),
+          ShellTest(() => ({ stdout: "", stderr: "", exitCode: 0 })),
+        )
+        await Effect.runPromise(
+          handlePostToolUse(payload).pipe(Effect.provide(layer)),
+        )
+
+        // The ISA at session_root was found, ISC-1 flipped, checkpoint
+        // committed — all via session_root, not process.cwd().
+        const afterIsa = fs.readFileSync(isaPath, "utf-8")
+        expect(afterIsa).toMatch(/^- \[x\] ISC-1/m)
+        const sidecar = path.join(root, ".checkpoint-state.json")
+        expect(fs.existsSync(sidecar)).toBe(true)
+      } finally {
+        cleanup()
+        fs.rmSync(drift, { recursive: true, force: true })
+      }
+    })
   })
 })

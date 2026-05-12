@@ -120,13 +120,20 @@ export const handleStop = (
           typeof record.last_tier === "number"
             ? `E${record.last_tier}`
             : "E3+"
-        const expected =
+        const expectedRel =
           record.expected_isa_path ?? "<.claude-hooks/work/<slug>/ISA.md>"
+        // Surface the frozen absolute path alongside the relative one so
+        // the model can write to it unambiguously even from a drifted cwd.
+        const expectedAbs = record.expected_isa_path_absolute
+        const expectedDisplay =
+          expectedAbs !== null && expectedAbs !== expectedRel
+            ? `\`${expectedRel}\` (absolute: \`${expectedAbs}\`)`
+            : `\`${expectedRel}\``
         const out: HookDecision = {
           decision: "block",
           reason:
             `ALGORITHM ${tierLabel} run is finishing without an ISA. ` +
-            `Create it now at \`${expected}\` (or at \`<repo>/ISA.md\` if ` +
+            `Create it now at ${expectedDisplay} (or at \`<repo>/ISA.md\` if ` +
             `this is a project-level effort) with at minimum frontmatter ` +
             `(\`effort:\`, \`phase:\`), \`## Goal\`, and \`## Criteria\`. ` +
             `The downstream verification gates only fire on a real artifact; ` +

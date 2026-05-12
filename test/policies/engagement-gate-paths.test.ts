@@ -190,4 +190,29 @@ describe("evaluateEngagementGate (deepened) — deny", () => {
       fs.rmSync(drift, { recursive: true, force: true })
     }
   })
+
+  // P2a — deny reason names the absolute ISA path so the model can write
+  // unambiguously even from a drifted cwd. The relative form alone is
+  // ambiguous after a Bash `cd`.
+  test("deny reason includes the absolute expected-ISA path", () => {
+    const drift = fs.mkdtempSync(path.join(os.tmpdir(), "chts-pr2-drift-msg-"))
+    try {
+      const v = evaluateEngagementGate({
+        currentCwd: drift,
+        sessionRoot: root,
+        record: engagedRecord(),
+        toolName: "Write",
+        toolInput: { file_path: path.join(drift, "src/foo.ts") },
+      })
+      expect(v.kind).toBe("deny")
+      if (v.kind === "deny") {
+        const expectedAbs = safeResolvePath(root, EXPECTED_REL)
+        expect(expectedAbs).not.toBeNull()
+        expect(v.reason).toContain(EXPECTED_REL)
+        expect(v.reason).toContain(expectedAbs as string)
+      }
+    } finally {
+      fs.rmSync(drift, { recursive: true, force: true })
+    }
+  })
 })

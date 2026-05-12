@@ -105,13 +105,17 @@ export const handlePostToolUse = (
     const isEdit = EDIT_TOOLS.has(payload.tool_name)
     const isIsaEdit = isEdit && file !== null && isIsaFilePath(file)
 
+    const state = yield* SessionState
+    const record = yield* state
+      .get(payload.session_id)
+      .pipe(Effect.catchAll(() => Effect.succeed(null)))
+
     // Engaged-marker: when an ISA file is written, stamp `isa_engaged_at`
     // for telemetry. Do NOT clear `engagement_required` — the flag is
     // preserved as historical truth ("this session was supposed to
     // engage ISA"). Disk is the source of truth for whether the
     // PreToolUse gate releases (see policies/engagement-gate.ts).
     if (isIsaEdit) {
-      const state = yield* SessionState
       yield* state
         .update(payload.session_id, {
           isa_engaged_at: new Date().toISOString(),
@@ -149,11 +153,22 @@ export const handlePostToolUse = (
       }
     }
 
+    // ISA-rooted operations use the session's frozen `session_root` (set
+    // by the engagement gate at UserPromptSubmit) so a Bash `cd` after
+    // engagement doesn't move our view of the active ISA. Falls back to
+    // payload.cwd / process.cwd() when state has no frozen root yet
+    // (pre-engagement sessions).
+    const isaRoot =
+      record?.session_root ??
+      (typeof payload.cwd === "string" && payload.cwd.length > 0
+        ? payload.cwd
+        : process.cwd())
+
     // Branch (a): Edit/Write on an ISA file → checkpoint, no probes, no formatter.
     if (isIsaEdit && file !== null) {
       yield* Effect.sync(() => {
         try {
-          runCheckpoint(file)
+          runCheckpoint(file, isaRoot)
         } catch (err) {
           process.stderr.write(
             `[checkpoint] uncaught: ${String(err)}\n`,
@@ -172,7 +187,7 @@ export const handlePostToolUse = (
     // flip-without-commit class of bug — when probes flip a checkbox via
     // hook-side writeFileSync, no PostToolUse fires, so the façade must
     // run checkpoint inline.
-    yield* handlePostToolUseIsaEffects()
+    yield* handlePostToolUseIsaEffects(isaRoot)
 
     // Branch (b): formatter. Only runs when this was a file edit AND the
     // file isn't an ISA AND a formatter is registered for the extension.

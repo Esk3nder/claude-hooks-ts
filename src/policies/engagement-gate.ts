@@ -107,9 +107,18 @@ const denyReason = (
   toolName: string,
   displayIsaPath: string | null,
   displayMkdirDir: string | null,
+  displayIsaAbsolutePath: string | null,
 ): string => {
-  const path = displayIsaPath ?? "<.claude-hooks/work/<slug>/ISA.md>"
+  const rel = displayIsaPath ?? "<.claude-hooks/work/<slug>/ISA.md>"
   const dir = displayMkdirDir ?? "<isa-dir>"
+  // The relative path is what the directive named for readability;
+  // the absolute path disambiguates when the shell has drifted away
+  // from `session_root` (Bash `cd ~/.claude/skills/...`). We surface
+  // both so the model has an unambiguous target regardless of cwd.
+  const absoluteLine =
+    displayIsaAbsolutePath !== null && displayIsaAbsolutePath !== rel
+      ? `  ${rel}\n  (absolute: ${displayIsaAbsolutePath})`
+      : `  ${rel}`
   return (
     `ALGORITHM engagement is required before implementation.\n` +
     `\n` +
@@ -117,7 +126,7 @@ const denyReason = (
     `implementation tools (${toolName} on a non-ISA target was just ` +
     `attempted), create the ISA at:\n` +
     `\n` +
-    `  ${path}\n` +
+    `${absoluteLine}\n` +
     `\n` +
     `Allowed now:\n` +
     `  - Read / LS / Glob / Grep for inspection\n` +
@@ -143,6 +152,12 @@ export interface EngagementContext {
   readonly acceptedEditPaths: ReadonlyArray<string>
   readonly acceptedMkdirDirs: ReadonlyArray<string>
   readonly displayIsaPath: string | null
+  /** Absolute form of the expected ISA path. Surfaced in deny messages
+   *  alongside `displayIsaPath` so the model has an unambiguous target
+   *  even when the shell cwd has drifted away from `session_root`.
+   *  Optional for backward compatibility with shallow-form callers; the
+   *  deep entry point (`evaluateEngagementGate`) always populates it. */
+  readonly displayIsaAbsolutePath?: string | null
   readonly displayMkdirDir: string | null
   readonly resolvedToolFilePath: string | null
   readonly toolName: string
@@ -173,6 +188,7 @@ export const evaluateEngagementGateShallow = (
         ctx.toolName,
         ctx.displayIsaPath,
         ctx.displayMkdirDir,
+        ctx.displayIsaAbsolutePath ?? null,
       ),
     }
   }
@@ -194,6 +210,7 @@ export const evaluateEngagementGateShallow = (
         ctx.toolName,
         ctx.displayIsaPath,
         ctx.displayMkdirDir,
+        ctx.displayIsaAbsolutePath ?? null,
       ),
     }
   }
@@ -209,6 +226,7 @@ export const evaluateEngagementGateShallow = (
         ctx.toolName,
         ctx.displayIsaPath,
         ctx.displayMkdirDir,
+        ctx.displayIsaAbsolutePath ?? null,
       ),
     }
   }
@@ -299,6 +317,7 @@ export const evaluateEngagementGate = (
     acceptedEditPaths,
     acceptedMkdirDirs,
     displayIsaPath: record.expected_isa_path,
+    displayIsaAbsolutePath: expectedAbsolute,
     displayMkdirDir: expectedDir,
     resolvedToolFilePath,
     toolName,

@@ -297,16 +297,31 @@ const flipIscCheckbox = (isaPath: string, iscId: string): boolean => {
  *     strategy map
  *   - the registry is empty
  */
-export const handlePostToolUseIsaEffects = (): Effect.Effect<void, never> =>
+/**
+ * Run the post-edit ISA effects sequence rooted at `cwd`.
+ *
+ * `cwd` should be the session's frozen `session_root` (from SessionState).
+ * Defaulting to `process.cwd()` keeps non-engagement sessions and other
+ * out-of-band callers unchanged. After engagement, the caller threads the
+ * frozen root so a Bash `cd` does not move the probe runner's view of the
+ * active ISA.
+ */
+export const handlePostToolUseIsaEffects = (
+  cwd: string = process.cwd(),
+): Effect.Effect<void, never> =>
   Effect.tryPromise({
     try: async () => {
-      if (!existsSync(probesPathFor())) return
-      // Prefer the most-recent state/work/<slug>/ISA.md, but fall back to
-      // <root>/ISA.md — the second canonical home per IsaFormat.md
-      // lines 56-57. Without this fallback, project-root ISAs (the form
+      if (!existsSync(probesPathFor(cwd))) return
+      // Prefer the most-recent `.claude-hooks/work/<slug>/ISA.md` (canonical
+      // task ISA layout, post-Option-B), falling back to `<root>/ISA.md`
+      // (the project ISA — the second canonical home per IsaFormat.md
+      // lines 56-57). Without this fallback, project-root ISAs (the form
       // the README documents) are invisible to the probe runner even
-      // though the doctor and TaskCompleted/Stop gates find them fine.
-      const isa = findLatestISA() ?? findProjectIsa()
+      // though the doctor and TaskCompleted / Stop gates find them fine.
+      // `cwd` is the frozen `session_root` passed by the PostToolUse
+      // handler so a Bash `cd` after engagement does not move the probe
+      // runner's view of the active ISA.
+      const isa = findLatestISA(cwd) ?? findProjectIsa(cwd)
       if (isa === null) return
       if (!existsSync(isa)) return
       const content = readFileSync(isa, "utf-8")
@@ -317,7 +332,7 @@ export const handlePostToolUseIsaEffects = (): Effect.Effect<void, never> =>
       if (tsBody.length === 0) return
       const strategyMap = parseTestStrategy(tsBody)
       if (strategyMap.size === 0) return
-      const registry = await loadProbes()
+      const registry = await loadProbes(cwd)
       if (Object.keys(registry).length === 0) return
       const matches = matchProbes(criteria, strategyMap, registry, (miss) => {
         const known =
@@ -343,7 +358,7 @@ export const handlePostToolUseIsaEffects = (): Effect.Effect<void, never> =>
       // is the F3-style bug class this façade exists to prevent.
       if (anyFlipped) {
         try {
-          runCheckpoint(isa)
+          runCheckpoint(isa, cwd)
         } catch (err) {
           process.stderr.write(
             `[probes] post-flip checkpoint failed: ${String(err)}\n`,
