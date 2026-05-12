@@ -1,99 +1,75 @@
 # claude-hooks-ts
 
-A type-safe dispatcher for [Claude Code](https://docs.claude.com/claude-code) hooks — **with the Algorithm primitive wired in.**
+**A type-safe dispatcher that turns Claude Code's 29 hook events into one verifiable control plane** — schemas, policies, and gates instead of ad-hoc shell scripts. One binary decodes every hook payload through a strict schema, runs it through declarative policies, and emits the exact JSON Claude Code expects. Includes a mode classifier, an ISA-driven completeness gate, an engagement gate that requires a written spec before non-trivial work, and an auto-checkpoint that commits when verification probes pass.
 
-Replaces ad-hoc per-hook shell scripts with a single binary that decodes hook payloads through a strict schema, runs them through declarative policies, and emits the structured JSON Claude Code expects. One control plane for safety, quality, token efficiency, verification gates, audit, **plus mode classification, ISA tracking, capability auditing, and Stop-time completeness gates** that turn an LLM session into a verifiable Algorithm run.
+If you're running Claude Code in any context where "looks done" isn't good enough — production code, regulated work, anything you'd hate to debug later — this gives you receipts.
 
 ---
 
-## What it does
+## Why this exists
 
-Two layers, both in one dispatcher:
+Claude Code fires a hook for every meaningful step in a session: `PreToolUse`, `Stop`, `PostToolUse`, `UserPromptSubmit`, `CwdChanged`, 24 more. Each hook is a chance to inject context, deny something dangerous, rewrite a tool input, or block a premature `Stop`. The default way to wire those up is per-event shell scripts. That falls over fast:
 
-### Hooks layer (the original claude-hooks-ts)
+- No shared state between handlers, so you can't say "block Stop because the run produced no verifiable artifact."
+- No schema for payloads, so you write defensive parsers in every script.
+- No way to know whether a session was a 30-second one-shot or a 2-hour algorithmic effort — they get the same gates.
 
-Claude Code fires a hook event (e.g. `PreToolUse`, `Stop`, `PostToolBatch`) for every meaningful step in an agent session. Each event is a chance to inject context, deny dangerous actions, rewrite tool inputs, or block premature stops. claude-hooks-ts wires a single dispatcher into all 29 events and routes each one through purpose-built handlers.
-
-A few things it does out of the box:
-
-- **Denies secret reads** (`.env`, private keys, credential files) and destructive commands (`rm -rf`, `git reset --hard`, `terraform destroy`)
-- **Asks before** editing lockfiles, settings, migrations
-- **Blocks `Stop`** when files were changed without a verification command being run
-- **Auto-replays** prior `PermissionRequest` decisions and MCP `Elicitation` answers
-- **Surfaces recent failures** (`rate_limit`, `auth`) at session start so the agent plans around them
-- **Resets session state** when you `cd` into a different project (no cross-project bleed)
-- **Mirrors your `.claude-hooks/` config into worktrees** so policies follow you
-- **Archives ledgers** before worktree removal so audit history isn't lost
-- **Scans tool responses for secrets** and surfaces a warning before the model re-emits them
-
-### Algorithm layer (1.0.0)
-
-The Algorithm primitive (v6.3.0):
-
-- **Mode classifier on every prompt.** A Sonnet subprocess (via `claude --print`, OAuth-billed) decides `MINIMAL | NATIVE | ALGORITHM` and a tier `E1`-`E5`. Result emitted as `additionalContext` so the model enters the right cognitive depth automatically. Conservative fail-safe to ALGORITHM E3 on any error.
-- **ISA primitive.** 12-section spec from `IsaFormat.md`, with parsers for frontmatter, criteria (with v5.3-era backward-compat), section walker, ID-stability validator, and tier-completeness gate.
-- **ISC checkpoint.** When an ISA's `[ ]` flips to `[x]`, auto-commit the working tree in any opted-in repo (allowlist at `.claude-hooks/checkpoint-repos.txt`). Empty by default — opt-in only.
-- **ISC probes.** Hot-loadable `<repo>/.claude-hooks/probes.ts` runs on every PostToolUse; passing probes flip ISC checkboxes (which then trigger checkpoint commits).
-- **Stop ISA gate.** When ISA `phase: complete` but tier-required sections are missing OR ISCs are unchecked, Stop is blocked with a model-actionable reason.
-- **TaskCompleted ISC-evidence requirement.** Task can't be marked complete if the active ISA still has unchecked criteria or an empty Verification section.
-- **Capability phantom audit.** Closed enumeration of 19 thinking-capability names from Algorithm v6.3.0 doctrine. `auditCapabilityNames(selected)` rejects paraphrases.
-- **Compaction preserves ISA context.** PreCompact snapshot includes active ISAs; PostCompact rehydrates them as additionalContext.
-- **Session-end archive.** ISAs in `phase: complete` are archived (copied) to `.claude-hooks/archive/<YYYY-MM-DD>/<slug>/ISA.md` — tracked, OUTSIDE `state/`, so completed-work evidence persists in source-controlled history.
-- **Doc-integrity regen.** Declarative `<repo>/.claude-hooks/regenerate.yaml` rules run at Stop when source files changed.
-- **Telemetry.** Every classification logged to `.claude-hooks/state/observability/mode-classifier.jsonl` for weekly audit (classifier-vs-fail-safe ratio, latency p50/p95).
-
-Every decision is recorded to a per-session JSONL ledger. Optional OpenTelemetry export for spans. Cross-process file locks so parallel Claude Code sessions can't corrupt state.
-
-See [`docs/HOOK-EVENTS.md`](./docs/HOOK-EVENTS.md) for the full per-event reference.
+This package replaces that with one Bun binary. It decodes payloads against a strict Effect Schema, routes through 29 typed handlers (exhaustiveness enforced at compile time), and writes a session ledger so what happened is reconstructible after the fact.
 
 ---
 
 ## Install
 
-Requires:
-- [Bun](https://bun.sh) on PATH.
-- The [Claude Code CLI](https://docs.claude.com/claude-code) installed and signed in. The mode classifier shells out to `claude --print`; without it every prompt silently falls back to `ALGORITHM E3` (technically working but the classifier is the whole point — see [Verify](#verify) for how to confirm).
+Requires [Bun](https://bun.sh).
 
 ```bash
 bun add -g github:Esk3nder/claude-hooks-ts
-claude-hooks-install --dry-run                  # preview the merge first
-claude-hooks-install --apply                    # write atomically with .bak backup
 
-cd /path/to/your/project                        # init is per-project — run it INSIDE the project
-claude-hooks-init                               # create <project>/.claude-hooks/state/
-claude-hooks-init --install-skills              # opt-in skill bundle (see "Skill bundle" below)
-claude-hooks-doctor                             # verify wiring + algorithm setup
+claude-hooks-install --dry-run    # preview the settings.json merge
+claude-hooks-install --apply      # atomic write with timestamped .bak backup
+
+claude-hooks-doctor               # verify everything is wired
 ```
 
-The installer merges hook entries into `~/.claude/settings.json` (or `--target <path>`), preserving unrelated keys. The previous file is backed up to `<target>.bak.<ISO-timestamp>` before any write. Install is idempotent.
+The installer merges hook entries into `~/.claude/settings.json` (or `--target <path>`), preserving unrelated keys. It's idempotent — rerunning replaces only its own entries. Backups go to `<target>.bak.<ISO-timestamp>` before any write. Uninstall: `claude-hooks-install --uninstall --apply`.
 
-`claude-hooks-init` writes into the **current working directory's** `.claude-hooks/` — always `cd` into your project first. It is opt-in for everything destructive: it does NOT touch `~/.claude/settings.json`, does NOT spawn subprocesses, and does NOT touch `~/.claude/skills/` unless you pass `--install-skills`.
+Per-project setup is **opt-in**:
 
-By default, `init` only creates `<project>/.claude-hooks/state/`. Optional config files listed under [Configure](#configure) are NOT auto-generated — pass `--regenerate`, `--probes`, or `--feedback-dir` to scaffold the corresponding starter file, or just create them by hand when you need to override a default.
-
-> **Note on `bun add -g`:** Bun blocks the package's `postinstall` script by default. claude-hooks-ts's postinstall is intentionally minimal (it only prints next-step hints), so the block is harmless — but if you want the hint to print, run `bun pm trust claude-hooks-ts` first. The CLIs work either way.
-
-### Skill bundle
-
-The `--install-skills` flag installs ~15 SKILL.md stubs that declare `algorithm_capability: thinking`. The Algorithm's **capability phantom audit** rejects paraphrased capability names by checking them against installed skills — without these stubs the audit has nothing to enforce against and silently noops. Install them if you're using the Algorithm layer; skip if you only want the hooks layer.
-
-The default install namespaces under `~/.claude/skills/_bundled/<Name>/` to avoid colliding with skills you already have. `--into-root` installs flat at `~/.claude/skills/<Name>/`; combined with `--force` it will overwrite same-named skill files in place — only use this if you specifically want the flat layout AND have audited the collisions.
-
-To uninstall:
 ```bash
-claude-hooks-install --uninstall --apply
+cd your-project
+claude-hooks-init                 # creates .claude-hooks/state/ only
+claude-hooks-init --install-skills  # adds skill stubs to ~/.claude/skills/_bundled/
 ```
+
+`claude-hooks-init` never touches `~/.claude/settings.json`, never spawns anything, and never installs skills unless you ask.
 
 ### Faster cold start (Linux)
 
-By default, hooks run via `bun run`. On Linux you can compile to a single binary instead — cuts dispatcher cold-start by ~3x:
-
 ```bash
-bun run build:bin # produces dist/claude-hook-<platform>-<arch>
-claude-hooks-install --apply # auto-detects the binary, wires it directly
+bun run build:bin                 # produces dist/claude-hook-<platform>-<arch>
+claude-hooks-install --apply      # auto-detects the binary, wires it directly
 ```
 
-Force the bun-run path with `--no-binary`. macOS auto-falls back since unsigned compiled binaries are killed by Gatekeeper.
+Cuts dispatcher cold-start by ~3x, paid on every tool call. On macOS the installer falls back to `bun run` automatically since unsigned compiled binaries are killed by Gatekeeper. Force the `bun run` path anywhere with `--no-binary`.
+
+---
+
+## What it does, per hook
+
+A few of the things wired into specific events:
+
+- **`PreToolUse`** — denies edits to `protected-paths.yaml` entries, refuses writes to `generated-files.yaml`, blocks destructive shell patterns, gates ISA-required sessions to writing the spec first.
+- **`UserPromptSubmit`** — classifies the prompt's cognitive mode (MINIMAL / NATIVE / ALGORITHM with tier E1–E5), records the classification, and injects it as `additionalContext` so the model enters the right depth. Conservative fail-safe to ALGORITHM E3 on any error.
+- **`PostToolUse`** — runs your `.claude-hooks/probes.ts` (hot-loaded) against the active ISA; on pass, flips `[ ]` to `[x]` and auto-commits.
+- **`Stop`** — blocks when the active ISA is `phase: complete` but tier-required sections are missing or ISCs are unchecked. Runs declarative regenerate rules when source files changed.
+- **`SessionEnd`** — archives completed ISAs to `.claude-hooks/archive/<YYYY-MM-DD>/<slug>/ISA.md`.
+- **`PreCompact` / `PostCompact`** — snapshots active ISAs before model compaction and rehydrates them after as `additionalContext`.
+- **`PermissionRequest` / `PermissionDenied`** — caches permission decisions per pattern; auto-replays answers on repeated prompts; respects denylist.
+- **`CwdChanged`** — preserves frozen engagement state across project switches (so a Bash `cd` can't lose your active ISA); resets stale verification state only for non-engaged sessions.
+- **`WorktreeCreate` / `WorktreeRemove`** — mirrors `.claude-hooks/` config into worktrees; archives ledger and completed ISAs back to the main repo on removal.
+- **`Elicitation` / `ElicitationResult`** — caches MCP elicitation answers and auto-replays them.
+
+Full per-event reference (inputs, outputs, behavior, edge cases) is in [`docs/HOOK-EVENTS.md`](./docs/HOOK-EVENTS.md).
 
 ---
 
@@ -103,72 +79,52 @@ Force the bun-run path with `--no-binary`. macOS auto-falls back since unsigned 
 claude-hooks-doctor
 ```
 
-End-to-end checks: bun on PATH, settings.json parseable, wired hook commands resolve, state dir writable, dispatcher round-trip succeeds, **classifier subprocess available, classifier billing path, thinking-capability skill stubs installed, active ISA + phase + progress**. Exits non-zero on any FAIL. Use `--verbose` for details, `--json` for machine output.
-
-Two checks report `[INFO]` rather than `[FAIL]` when missing — read them, don't skip them:
-- `classifier subprocess available` — `[INFO]` if `claude` isn't on PATH; the dispatcher works but every prompt becomes ALGORITHM E3 fail-safe.
-- `thinking-capability skill stubs installed` — `[INFO]` if you didn't run `claude-hooks-init --install-skills`; the Algorithm's capability phantom audit silently noops.
-
-If you want either of those features actually enforcing, both lines need to read `[PASS]`.
+End-to-end checks: bun on `PATH`, `settings.json` parses, every wired hook command resolves and is executable, per-project state dir is writable, the dispatcher round-trips a synthetic payload, the classifier subprocess is reachable, and any active ISA's phase + progress match. Exits non-zero on FAIL. `--verbose` for details, `--json` for machine output, `--target <path>` to check a non-default settings file.
 
 ---
 
-## Configure
+## Config
 
-Project-local config lives at `<project>/.claude-hooks/`:
+Everything project-local lives at `<project>/.claude-hooks/`. Defaults are baked in; every file below is optional.
 
 ```
 .claude-hooks/
- protected-paths.yaml # paths requiring confirmation before edit (create manually)
- generated-files.yaml # paths that cannot be edited (create manually)
- test-map.yaml # changed-file → smallest verify command (create manually)
- research-domains.yaml # whitelisted research source roots (create manually)
- checkpoint-repos.txt # allowlist for ISC auto-commit (`init --probes` or manual)
- probes.ts # hot-loadable ISC verification probes (`init --probes`)
- regenerate.yaml # source-changed → regenerate command rules (`init --regenerate`)
- feedback/*.md # FeedbackMemoryConsult corpus (`init --feedback-dir`)
- work/<slug>/ # task ISAs (TRACKED — evidence trail)
- archive/<date>/<slug>/ # archived completed ISAs (TRACKED)
- state/ # runtime-only: per-session ledgers, locks, telemetry (gitignored)
- state/observability/ # classifier telemetry JSONL (gitignored)
- state/work/<slug>/ # legacy task ISA location (read-only fallback for in-flight sessions)
+  protected-paths.yaml          # paths requiring confirmation before edit
+  generated-files.yaml          # paths that cannot be edited
+  test-map.yaml                 # changed file → smallest verify command
+  research-domains.yaml         # whitelisted research source roots
+  checkpoint-repos.txt          # allowlist for ISC auto-commit (opt-in, default empty)
+  probes.ts                     # hot-loadable ISC verification probes
+  regenerate.yaml               # source-changed → regenerate rules
+  feedback/*.md                 # corpus for FeedbackMemoryConsult
+  work/<slug>/ISA.md            # active task spec (you write these; git-tracked)
+  archive/<date>/<slug>/ISA.md  # archived completed specs (git-tracked)
+  state/                        # per-session ledgers, locks, telemetry (gitignored)
 ```
 
-Only `state/` is auto-created by `claude-hooks-init`. Every other file is optional — defaults are baked in, and policies fall back to safe defaults when a file is missing. Use the `init` flags above to scaffold a starter file, or just create one by hand.
+Override only what you need. Missing files mean the corresponding policy is inert, not the dispatcher.
 
-> **ISAs are tracked by git.** Active task ISAs under `work/<slug>/ISA.md` and archived ISAs under `archive/<date>/<slug>/ISA.md` are committed to source control as evidence trails. Do **not** include secrets, customer data, or other sensitive content in ISA bodies — anything you write there will be reviewable in PRs and persistent in history. Only `state/` is gitignored.
+### Probes — auto-verify ISC criteria
 
-### ISC probes
-
-`probes.ts` is the only opt-in hook that runs your code. The registry is keyed by the **`tool` column** of the ISA's Test Strategy table — not by the ISC id. Mismatch → no probe runs → ISC stays unchecked.
+`<project>/.claude-hooks/probes.ts` is hot-loaded on every `PostToolUse`:
 
 ```ts
 // .claude-hooks/probes.ts
 export const probes = {
-  // The KEY here ("tests-pass") matches the `tool` column in the row
-  // BELOW, not the ISC id ("ISC-1"). ISC ids are row labels; tool names
-  // are the lookup key, so one probe can serve many ISCs.
-  "tests-pass": async () => {
-    const { execFileSync } = await import("node:child_process")
-    try {
-      execFileSync("bun", ["test", "--bail"], { stdio: "ignore", timeout: 800 })
-      return true
-    } catch { return false }
+  "typecheck": async () => {
+    const r = await Bun.spawn(["bun", "run", "typecheck"]).exited
+    return r === 0
+  },
+  "tests": async () => {
+    const r = await Bun.spawn(["bun", "test"]).exited
+    return r === 0
   },
 }
 ```
 
-```md
-<!-- ISA.md -->
-## Test Strategy
-| isc   | type | check | threshold | tool        |
-| ----- | ---- | ----- | --------- | ----------- |
-| ISC-1 | bun  | smoke | n/a       | tests-pass  |
+In your ISA's `## Test Strategy` section, name the probe per criterion (`tool` column). When a probe returns `true`, the matching `- [ ] ISC-N` flips to `- [x]` and — if the repo is in `.claude-hooks/checkpoint-repos.txt` — a checkpoint commit is made. The allowlist is empty by default; **nothing is auto-committed unless you opt the repo in.**
 
-- [ ] ISC-1 — bun test passes
-```
-
-`claude-hooks-doctor` flags probe keys that match no tool column and gives a footgun-specific hint when the orphan key looks like an `ISC-…` id.
+Probes run with full Node privileges in the dispatcher process (same boundary as `make` or `npm test`). Each one is wrapped in a 1s timeout and a catch-all; failure to load or run is treated as non-passing, never as a crash.
 
 ### Disable the classifier
 
@@ -176,36 +132,52 @@ export const probes = {
 export CLAUDE_HOOKS_DISABLE_CLASSIFIER=1
 ```
 
-When set, the dispatcher skips the Sonnet subprocess and returns deterministic ALGORITHM E3 fail-safe. Useful for CI runners without a `claude` CLI, perf benchmarks, and red-team runs.
+When set, `UserPromptSubmit` skips the Sonnet subprocess and returns the deterministic ALGORITHM E3 fail-safe. Useful for CI runners without a `claude` CLI on `PATH`, perf benchmarks, and red-team runs.
 
 ---
 
-## The Algorithm — what's the point?
+## Logs and tracing
 
-The Algorithm makes a session a **verifiable transition from current state to ideal state.** Done is testable, not declared. The mode classifier picks the right cognitive depth so trivial prompts don't cost an Algorithm run AND substantial work doesn't get a one-shot answer. The ISA records the ideal state as ISCs (one binary tool probe each), the checkpoint records progress as git commits, the probes auto-verify what they can, and the Stop gate refuses to let the model claim "complete" without the receipts.
+Every decision is written to a per-session JSONL ledger at `.claude-hooks/state/<sessionId>/ledger.jsonl`. Cross-process file locks keep parallel Claude Code sessions from corrupting state. Approvals and elicitations have their own caches under `.claude-hooks/state/`.
 
-claude-hooks-ts ships this primitive as a generic hook runtime so any Claude Code project gets it for free — no extra setup required.
-
----
-
-## Debug
-
-Tail the per-session ledger live:
+Tail a live session:
 
 ```bash
-claude-hooks-tail # follow every session under cwd
-claude-hooks-tail --session <id> # filter to one session
-claude-hooks-tail --since 2026-01-01 # only events after timestamp
-claude-hooks-tail --cwd /other/project # tail another project's ledger
+claude-hooks-tail                              # all sessions in cwd
+claude-hooks-tail --session <id>               # a specific session
+claude-hooks-tail --since 2026-05-01           # only events after timestamp
+claude-hooks-tail --cwd /other/project         # another project's ledger
 ```
-
-For traces, set `OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318/v1/traces` before launching Claude Code. Spans flow through the Effect tracer to your OTel collector. Without the env var, tracing is fully no-op (zero import cost).
 
 Inspect classifier telemetry:
 
 ```bash
 tail -f .claude-hooks/state/observability/mode-classifier.jsonl | jq .
 ```
+
+For OTel traces:
+
+```bash
+OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318/v1/traces claude
+```
+
+Tracing is fully no-op when the env var is unset — zero import cost. Nothing is sent off-machine by default.
+
+---
+
+## Safety posture
+
+The dispatcher is designed to fail closed in the right direction:
+
+- **Schema decode fails** → `SAFE_DEFAULT` (no block, no rewrite), exit 0.
+- **Handler throws or times out** (4s default; 30s for `UserPromptSubmit`) → `SAFE_DEFAULT`.
+- **Classifier subprocess errors** → fail-safe to ALGORITHM E3 (over-escalate, never under-escalate).
+- **Probes fail to load or throw** → ISC stays `[ ]`, no commit, stderr logged.
+- **Checkpoint allowlist missing or repo not in it** → no commit. Ever.
+
+The auto-checkpoint never resets, reverts, or force-pushes. It runs `git add` on the ISA and the touched files only, and commits with `--no-verify --no-gpg-sign` to a 5-second timeout.
+
+All `claude` subprocess invocations are funneled through `src/services/claude-subprocess.ts`, which scrubs `ANTHROPIC_API_KEY` / `ANTHROPIC_AUTH_TOKEN` / `CLAUDECODE` from the child environment so OAuth billing is never silently shadowed by an API key. A CI guard (`bun run lint:claude-spawn`) refuses to build if any direct `claude` spawn exists outside that chokepoint.
 
 ---
 
@@ -214,19 +186,20 @@ tail -f .claude-hooks/state/observability/mode-classifier.jsonl | jq .
 ```bash
 bun install
 bun run typecheck
-bun test
-bun run lint:claude-spawn # CI guard: no direct `claude` spawns outside the chokepoint
+bun test                           # 110+ test files, Bun's native test runner
+bun run lint:claude-spawn          # CI guard: no direct `claude` spawns outside the chokepoint
 ```
 
-Conventions:
+Conventions enforced by the codebase, not just the docs:
+
+- TypeScript `strict` plus `exactOptionalPropertyTypes`, `noUncheckedIndexedAccess`, `noImplicitOverride`, `noPropertyAccessFromIndexSignature`, `noFallthroughCasesInSwitch`.
 - No `any`, no `// @ts-ignore`, no skipped tests.
-- Side effects through services in `src/services/`.
-- Policies as pure functions in `src/policies/`.
-- All `claude` subprocesses MUST go through `src/services/claude-subprocess.ts` (env scrubbing). The CI guard refuses to build otherwise.
-- Algorithm-aware code lives under `src/algorithm/`; per-source citations in code comments where applicable.
+- Side effects through services in `src/services/`. Policies as pure functions in `src/policies/`. Event handlers in `src/events/`. Schemas in `src/schema/`. ISA / classifier code under `src/algorithm/`.
+- All imports use the explicit `.ts` extension (`bundler` resolution with `allowImportingTsExtensions`).
+- Exhaustive event routing in `src/dispatcher.ts` via `Match.tagsExhaustive` — adding an event without a handler is a type error.
 
 ---
 
 ## License
 
-MIT
+See [`LICENSE`](./LICENSE).
