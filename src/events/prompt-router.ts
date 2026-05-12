@@ -79,10 +79,17 @@ export const handleUserPromptSubmit = (
     // Step 2 — regex workflow tagger.
     const { workflow, playbook } = classifyPrompt(payload.prompt)
     const state = yield* SessionState
-    yield* state
-      .update(payload.session_id, { last_workflow: workflow })
-      .pipe(Effect.catchAll(() => Effect.succeed(undefined)))
     const sessionId = payload.session_id
+    yield* state
+      .update(sessionId, { last_workflow: workflow })
+      .pipe(
+        Effect.catchAll((cause) => {
+          process.stderr.write(
+            `[UserPromptSubmit] session-state op=workflow-update failed: sid=${sessionId} cause=${String(cause).slice(0, 160)}\n`,
+          )
+          return Effect.succeed(undefined)
+        }),
+      )
 
     // Step 3 — transcript context. Effectful because it
     // reads from disk; isolated to a sync helper so failure is silent.
@@ -113,7 +120,14 @@ export const handleUserPromptSubmit = (
     const engagementRequired = plan !== null
     const existing = yield* state
       .get(sessionId)
-      .pipe(Effect.catchAll(() => Effect.succeed(null)))
+      .pipe(
+        Effect.catchAll((cause) => {
+          process.stderr.write(
+            `[UserPromptSubmit] session-state op=existing-read failed: sid=${sessionId} cause=${String(cause).slice(0, 160)}\n`,
+          )
+          return Effect.succeed(null)
+        }),
+      )
     const initialCwd =
       typeof payload.cwd === "string" && payload.cwd.length > 0
         ? payload.cwd
@@ -135,7 +149,14 @@ export const handleUserPromptSubmit = (
         session_root: sessionRoot,
         expected_isa_path_absolute: expectedIsaPathAbsolute,
       })
-      .pipe(Effect.catchAll(() => Effect.succeed(undefined)))
+      .pipe(
+        Effect.catchAll((cause) => {
+          process.stderr.write(
+            `[UserPromptSubmit] session-state op=engagement-update failed: sid=${sessionId} cause=${String(cause).slice(0, 160)}\n`,
+          )
+          return Effect.succeed(undefined)
+        }),
+      )
 
     // Step 5 — telemetry (best-effort, never blocks).
     const telemetry = yield* ClassifierTelemetry

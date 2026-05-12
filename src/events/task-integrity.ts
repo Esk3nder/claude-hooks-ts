@@ -111,9 +111,17 @@ export const handleTaskCompleted = (
     // shell cwd. After a Bash `cd`, the shell may sit far from the
     // project, but the active ISA is still the one under the project.
     const state = yield* SessionState
+    const sid = payload.session_id
     const record = yield* state
-      .get(payload.session_id)
-      .pipe(Effect.catchAll(() => Effect.succeed(null)))
+      .get(sid)
+      .pipe(
+        Effect.catchAll((cause) => {
+          process.stderr.write(
+            `[TaskCompleted] session-state op=get failed: sid=${sid} cause=${String(cause).slice(0, 160)}\n`,
+          )
+          return Effect.succeed(null)
+        }),
+      )
     const currentCwd =
       typeof payload.cwd === "string" && payload.cwd.length > 0
         ? payload.cwd

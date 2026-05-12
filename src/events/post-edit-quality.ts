@@ -106,9 +106,17 @@ export const handlePostToolUse = (
     const isIsaEdit = isEdit && file !== null && isIsaFilePath(file)
 
     const state = yield* SessionState
+    const sid = payload.session_id
     const record = yield* state
-      .get(payload.session_id)
-      .pipe(Effect.catchAll(() => Effect.succeed(null)))
+      .get(sid)
+      .pipe(
+        Effect.catchAll((cause) => {
+          process.stderr.write(
+            `[PostToolUse] session-state op=get failed: sid=${sid} cause=${String(cause).slice(0, 160)}\n`,
+          )
+          return Effect.succeed(null)
+        }),
+      )
 
     // Engaged-marker: when an ISA file is written, stamp `isa_engaged_at`
     // for telemetry. Do NOT clear `engagement_required` — the flag is
@@ -117,10 +125,17 @@ export const handlePostToolUse = (
     // PreToolUse gate releases (see policies/engagement-gate.ts).
     if (isIsaEdit) {
       yield* state
-        .update(payload.session_id, {
+        .update(sid, {
           isa_engaged_at: new Date().toISOString(),
         })
-        .pipe(Effect.catchAll(() => Effect.succeed(undefined)))
+        .pipe(
+          Effect.catchAll((cause) => {
+            process.stderr.write(
+              `[PostToolUse] session-state op=isa-engaged-marker failed: sid=${sid} cause=${String(cause).slice(0, 160)}\n`,
+            )
+            return Effect.succeed(undefined)
+          }),
+        )
     }
 
     // 4a content-scan: scan tool_response for secret patterns. Report-only
