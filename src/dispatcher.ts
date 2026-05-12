@@ -126,6 +126,24 @@ const emit = (decision: HookDecision): Effect.Effect<void> =>
     process.stdout.write(JSON.stringify(decision))
   })
 
+const MALFORMED_PRETOOL_USE_FALLBACK: HookDecision = {
+  hookSpecificOutput: {
+    hookEventName: "PreToolUse",
+    permissionDecision: "ask",
+    permissionDecisionReason:
+      "Malformed PreToolUse payload could not be decoded; asking for confirmation instead of allowing tool execution.",
+  },
+}
+
+/**
+ * If the outer dispatcher cannot decode a payload, it normally cannot know
+ * enough to run event-specific policy. PreToolUse is the exception: the CLI
+ * action itself tells us this was a tool gate, and falling through with `{}`
+ * would silently allow the tool. Ask instead.
+ */
+const malformedPayloadFallbackFor = (action: string): HookDecision =>
+  action === "PreToolUse" ? MALFORMED_PRETOOL_USE_FALLBACK : SAFE_DEFAULT
+
 /**
  * Append the dispatched decision to the per-session ledger. Best-effort: any
  * I/O failure is swallowed so the hook response (already on stdout via emit)
@@ -310,7 +328,7 @@ export const program = (argv: ReadonlyArray<string>): Effect.Effect<void> =>
       yield* Effect.sync(() => {
         process.stderr.write("dispatcher: stdin was empty\n")
       })
-      yield* emit(SAFE_DEFAULT)
+      yield* emit(malformedPayloadFallbackFor(action))
       return
     }
     const parsedE = yield* Effect.either(parseJson(raw))
@@ -318,7 +336,7 @@ export const program = (argv: ReadonlyArray<string>): Effect.Effect<void> =>
       yield* Effect.sync(() => {
         process.stderr.write(`dispatcher: ${parsedE.left.message}` + "\n")
       })
-      yield* emit(SAFE_DEFAULT)
+      yield* emit(malformedPayloadFallbackFor(action))
       return
     }
     const decodedE = yield* Effect.either(decodePayload(parsedE.right))
@@ -326,7 +344,7 @@ export const program = (argv: ReadonlyArray<string>): Effect.Effect<void> =>
       yield* Effect.sync(() => {
         process.stderr.write("dispatcher: payload schema decode failed" + "\n")
       })
-      yield* emit(SAFE_DEFAULT)
+      yield* emit(malformedPayloadFallbackFor(action))
       return
     }
     const payload = decodedE.right

@@ -22,11 +22,48 @@ const runDispatcher = async (
 }
 
 describe("dispatcher subprocess", () => {
-  test("malformed stdin → exit 0 + valid JSON safe default", async () => {
+  test("malformed stdin for non-tool event → exit 0 + valid JSON safe default", async () => {
+    const r = await runDispatcher("Stop", "not json {{{")
+    expect(r.exitCode).toBe(0)
+    const parsed = JSON.parse(r.stdout)
+    expect(parsed).toEqual({})
+  }, 30_000)
+
+  test("malformed stdin for PreToolUse → ask instead of silent allow", async () => {
     const r = await runDispatcher("PreToolUse", "not json {{{")
     expect(r.exitCode).toBe(0)
     const parsed = JSON.parse(r.stdout)
-    expect(typeof parsed).toBe("object")
+    expect(parsed).toEqual({
+      hookSpecificOutput: {
+        hookEventName: "PreToolUse",
+        permissionDecision: "ask",
+        permissionDecisionReason:
+          "Malformed PreToolUse payload could not be decoded; asking for confirmation instead of allowing tool execution.",
+      },
+    })
+  }, 30_000)
+
+  test("empty stdin for PreToolUse → ask instead of silent allow", async () => {
+    const r = await runDispatcher("PreToolUse", "")
+    expect(r.exitCode).toBe(0)
+    const parsed = JSON.parse(r.stdout)
+    expect(parsed.hookSpecificOutput?.permissionDecision).toBe("ask")
+  }, 30_000)
+
+  test("schema-invalid PreToolUse payload → ask instead of silent allow", async () => {
+    const payload = JSON.stringify({
+      hook_event_name: "PreToolUse",
+      tool_name: "Bash",
+      tool_input: { command: "ls" },
+    })
+    const r = await runDispatcher("PreToolUse", payload)
+    expect(r.exitCode).toBe(0)
+    const parsed = JSON.parse(r.stdout)
+    expect(parsed.hookSpecificOutput?.hookEventName).toBe("PreToolUse")
+    expect(parsed.hookSpecificOutput?.permissionDecision).toBe("ask")
+    expect(parsed.hookSpecificOutput?.permissionDecisionReason).toContain(
+      "Malformed PreToolUse payload",
+    )
   }, 30_000)
 
   test("missing action → exit 0 + valid JSON", async () => {
