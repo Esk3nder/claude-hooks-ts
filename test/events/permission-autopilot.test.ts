@@ -44,7 +44,8 @@ describe("VAL-M4-002 permission-autopilot (M11 spec-conformant output)", () => {
   })
 
   test("denied pattern → decision.behavior=deny with message", async () => {
-    const pattern = derivePatternKey("Bash", { command: "rm -rf" })
+    const command = "rm -rf /tmp/x"
+    const pattern = derivePatternKey("Bash", { command })
     const layer = Layer.mergeAll(
       ProjectTest({ root: "/repo" }),
       ApprovalsTest([
@@ -53,7 +54,7 @@ describe("VAL-M4-002 permission-autopilot (M11 spec-conformant output)", () => {
     )
     const d = await Effect.runPromise(
       handlePermissionRequest(
-        requestPayload("Bash", { command: "rm -rf /tmp/x" }),
+        requestPayload("Bash", { command }),
       ).pipe(Effect.provide(layer)),
     )
     expect("hookSpecificOutput" in d).toBe(true)
@@ -64,6 +65,22 @@ describe("VAL-M4-002 permission-autopilot (M11 spec-conformant output)", () => {
       expect(out.decision.behavior).toBe("deny")
       expect(out.decision.message ?? "").toContain("auto-denied")
     }
+  })
+
+  test("approved exact command does not auto-allow command with same prefix", async () => {
+    const pattern = derivePatternKey("Bash", { command: "npm test" })
+    const layer = Layer.mergeAll(
+      ProjectTest({ root: "/repo" }),
+      ApprovalsTest([
+        { cwd: "/repo", pattern, status: "approved", recordedAt: 1 },
+      ]),
+    )
+    const d = await Effect.runPromise(
+      handlePermissionRequest(
+        requestPayload("Bash", { command: "npm test -- --watch" }),
+      ).pipe(Effect.provide(layer)),
+    )
+    expect(d).toEqual({})
   })
 
   test("unseen pattern → SAFE_DEFAULT no-op (lets Claude Code show its dialog)", async () => {

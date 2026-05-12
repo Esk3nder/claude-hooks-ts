@@ -71,12 +71,12 @@ const pickScriptWithRunner = (
  *
  * Note: `testCommand` takes a scope param, so we cache per-scope.
  */
-const makeLive = Effect.gen(function* () {
+const makeLive = (start: string = process.cwd()) => Effect.gen(function* () {
   // Compute the project root and read package.json exactly once per layer
   // instantiation. Previously each cached command Effect re-ran findRoot +
   // readPkg on first execution; though Effect.cached prevented repeated runs
   // per command, root resolution still happened up to 5x.
-  const root = findRoot(process.cwd())
+  const root = findRoot(start)
   const pkg = readPkg(root)
 
   const rawRoot = Effect.sync(() => root)
@@ -115,7 +115,10 @@ const makeLive = Effect.gen(function* () {
   })
 })
 
-export const ProjectLive = Layer.effect(Project, makeLive)
+export const ProjectLiveFor = (start: string = process.cwd()): Layer.Layer<Project> =>
+  Layer.effect(Project, makeLive(start))
+
+export const ProjectLive = ProjectLiveFor()
 
 // Silence unused warning from older variant
 void pickScript

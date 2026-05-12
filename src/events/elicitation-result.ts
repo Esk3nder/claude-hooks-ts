@@ -23,7 +23,17 @@ export const handleElicitationResult = (
     const project = yield* Project
     const cwd = yield* project.root()
     const elicitations = yield* Elicitations
-    const signature = resultSignature(payload.server_name, payload.tool_name, payload.content)
+    const pending = yield* elicitations
+      .findLatestPending(
+        payload.session_id,
+        cwd,
+        payload.server_name,
+        payload.tool_name,
+      )
+      .pipe(Effect.catchAll(() => Effect.succeed(null)))
+    const signature =
+      pending?.requestSignature ??
+      resultSignature(payload.server_name, payload.tool_name, payload.content)
     yield* elicitations
       .record(cwd, payload.server_name, payload.tool_name, signature, payload.action, payload.content)
       .pipe(Effect.catchAll(() => Effect.succeed(undefined)))

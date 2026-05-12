@@ -1,4 +1,4 @@
-import { Context, Effect, Layer } from "effect";
+import { Context, Effect, Exit, Layer } from "effect";
 import * as fs from "node:fs/promises";
 import * as fsSync from "node:fs";
 import * as path from "node:path";
@@ -36,6 +36,10 @@ export class FileSystem extends Context.Tag("FileSystem")<
   FileSystem,
   FileSystemApi
 >() {}
+
+class LockedBodyFailure {
+  constructor(readonly exit: Exit.Exit<unknown, unknown>) {}
+}
 
 export const FileSystemLive = Layer.succeed(
   FileSystem,
@@ -85,11 +89,22 @@ export const FileSystemLive = Layer.succeed(
             } catch {
               // best-effort
             }
-            const result = await withFileLock(targetPath, () =>
-              Effect.runPromise(body as Effect.Effect<A, never>),
-            );
+            const result = await withFileLock(targetPath, async () => {
+              const exit = await Effect.runPromiseExit(body);
+              if (Exit.isSuccess(exit)) return exit.value;
+              throw new LockedBodyFailure(exit);
+            });
             resume(Effect.succeed(result));
           } catch (cause) {
+            if (cause instanceof LockedBodyFailure) {
+              const exit = cause.exit as Exit.Exit<A, E>;
+              if (Exit.isSuccess(exit)) {
+                resume(Effect.succeed(exit.value));
+              } else {
+                resume(Effect.failCause(exit.cause));
+              }
+              return;
+            }
             resume(
               Effect.fail(
                 new FsError({

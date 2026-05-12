@@ -45,24 +45,47 @@ export const withFileLock = async <T>(
   }
 
   let backoff = RETRY_INITIAL_MS;
+
   while (true) {
     try {
-      const fd = fs.openSync(
-        lockPath,
-        fs.constants.O_CREAT | fs.constants.O_EXCL | fs.constants.O_WRONLY,
-      );
-      fs.writeSync(fd, String(process.pid));
-      fs.closeSync(fd);
+      let fd: number | null = null;
+      let acquisitionError: unknown = null;
       try {
-        return await fn();
+        fd = fs.openSync(
+          lockPath,
+          fs.constants.O_CREAT | fs.constants.O_EXCL | fs.constants.O_WRONLY,
+        );
+        fs.writeSync(fd, String(process.pid));
+      } catch (err) {
+        acquisitionError = err;
       } finally {
-        try {
-          fs.unlinkSync(lockPath);
-        } catch {
-          // best-effort
+        if (fd !== null) {
+          try {
+            fs.closeSync(fd);
+          } catch (err) {
+            acquisitionError ??= err;
+          }
         }
       }
-    } catch {
+      if (acquisitionError !== null) {
+        // If open succeeded but write/close failed, release the sentinel
+        // before surfacing the real acquisition failure. Close failures on
+        // the lockfile are not safe to ignore: a caller must not enter the
+        // protected section unless the sentinel was fully written and closed.
+        if (fd !== null) {
+          try {
+            fs.unlinkSync(lockPath);
+          } catch {
+            // best-effort cleanup
+          }
+        }
+        throw acquisitionError;
+      }
+      break;
+    } catch (err) {
+      const code = (err as NodeJS.ErrnoException).code;
+      if (code !== "EEXIST") throw err;
+
       // Stale-lock recovery with inode/mtime double-check (closes TOCTOU).
       try {
         const stat = fs.statSync(lockPath, { bigint: true });
@@ -74,10 +97,7 @@ export const withFileLock = async <T>(
           // fall through to normal backoff so we don't trample their lock.
           try {
             const stat2 = fs.statSync(lockPath, { bigint: true });
-            if (
-              stat2.ino === stat.ino &&
-              stat2.mtimeNs === stat.mtimeNs
-            ) {
+            if (stat2.ino === stat.ino && stat2.mtimeNs === stat.mtimeNs) {
               fs.unlinkSync(lockPath);
               continue;
             }
@@ -97,8 +117,19 @@ export const withFileLock = async <T>(
           `withFileLock: timeout after ${timeout}ms waiting for ${lockPath}`,
         );
       }
+
       await new Promise((r) => setTimeout(r, backoff));
       backoff = Math.min(backoff * 2, RETRY_MAX_MS);
+    }
+  }
+
+  try {
+    return await fn();
+  } finally {
+    try {
+      fs.unlinkSync(lockPath);
+    } catch {
+      // best-effort
     }
   }
 };

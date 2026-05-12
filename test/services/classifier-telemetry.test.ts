@@ -8,13 +8,15 @@ import {
   ClassifierTelemetryLive,
   ClassifierTelemetryTest,
   buildPromptExcerpt,
+  buildPromptHash,
   buildRecord,
 } from "../../src/services/classifier-telemetry.ts"
 
 describe("buildPromptExcerpt", () => {
-  test("matches prompt.slice(0, 120)", () => {
-    expect(buildPromptExcerpt("hello")).toBe("hello")
-    expect(buildPromptExcerpt("x".repeat(200)).length).toBe(120)
+  test("does not include prompt contents", () => {
+    expect(buildPromptExcerpt("hello")).toBe("")
+    expect(buildPromptHash("hello")).toMatch(/^[a-f0-9]{16}$/)
+    expect(buildPromptHash("hello")).toBe(buildPromptHash("hello"))
   })
 })
 
@@ -30,7 +32,8 @@ describe("buildRecord", () => {
       latencyMs: 4321,
     })
     expect(r.session_id).toBe("sid")
-    expect(r.prompt_excerpt).toBe("implement OAuth refresh flow")
+    expect(r.prompt_excerpt).toBe("")
+    expect(r.prompt_hash).toBe(buildPromptHash("implement OAuth refresh flow"))
     expect(r.mode).toBe("ALGORITHM")
     expect(r.tier).toBe(3)
     expect(r.mode_reason).toBe("multi-file work")

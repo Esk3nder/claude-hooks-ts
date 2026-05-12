@@ -1,4 +1,8 @@
 import { Schema } from "effect"
+import {
+  HOOK_EVENT_NAMES as CANONICAL_HOOK_EVENT_NAMES,
+  type HookEventName,
+} from "./hook-events.ts"
 
 const Common = {
   session_id: Schema.String,
@@ -355,34 +359,8 @@ export const PAYLOAD_SCHEMAS = {
   ElicitationResult,
 } as const
 
-export const HOOK_EVENT_NAMES: ReadonlyArray<keyof typeof PAYLOAD_SCHEMAS> = [
-  "SessionStart",
-  "UserPromptSubmit",
-  "UserPromptExpansion",
-  "PreToolUse",
-  "PostToolUse",
-  "PostToolUseFailure",
-  "PostToolBatch",
-  "Stop",
-  "PreCompact",
-  "PostCompact",
-  "SessionEnd",
-  "PermissionRequest",
-  "ConfigChange",
-  "FileChanged",
-  "SubagentStart",
-  "SubagentStop",
-  "TaskCreated",
-  "TaskCompleted",
-  "Setup",
-  "PermissionDenied",
-  "StopFailure",
-  "TeammateIdle",
-  "Notification",
-  "InstructionsLoaded",
-  "CwdChanged",
-  "WorktreeCreate",
-  "WorktreeRemove",
-  "Elicitation",
-  "ElicitationResult",
-]
+const _payloadSchemasCoverHooks: Record<HookEventName, unknown> =
+  PAYLOAD_SCHEMAS
+void _payloadSchemasCoverHooks
+
+export const HOOK_EVENT_NAMES = CANONICAL_HOOK_EVENT_NAMES

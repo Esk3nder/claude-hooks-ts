@@ -177,6 +177,10 @@ describe("matchRules — `*`-only glob", () => {
     expect(matchRules(["axbxc"], rules).length).toBe(0) // `.` is literal
     expect(matchRules(["a.b.c"], rules).length).toBe(1)
   })
+  test("./-prefixed source patterns match normalized repo-relative paths", () => {
+    const rules = [{ source: "./docs/*.md", derived: "x", command: "y" }]
+    expect(matchRules(["docs/a.md"], rules).length).toBe(1)
+  })
 })
 
 describe("loadRegenerateRules — disk integration", () => {

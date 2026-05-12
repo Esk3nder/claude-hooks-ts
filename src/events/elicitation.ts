@@ -20,6 +20,15 @@ export const handleElicitation = (
     }
     const signature = elicitationSignature(payload.elicitation)
     const elicitations = yield* Elicitations
+    yield* elicitations
+      .recordPending(
+        payload.session_id,
+        cwd,
+        payload.server_name,
+        payload.tool_name,
+        signature,
+      )
+      .pipe(Effect.catchAll(() => Effect.succeed(undefined)))
     const stored = yield* elicitations
       .lookup(cwd, payload.server_name, payload.tool_name, signature)
       .pipe(Effect.catchAll(() => Effect.succeed(null)))

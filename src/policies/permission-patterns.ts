@@ -1,27 +1,30 @@
 /**
  * Stable pattern key derivation for PermissionRequest auto-approval.
- * The key is what we look up in the Approvals ledger.
+ *
+ * Auto-approval keys are intentionally exact by default. Earlier versions
+ * bucketed Bash commands by their first two tokens and file tools by extension;
+ * that was too broad for a permission cache because one approved `.ts` edit or
+ * `npm test` command could generalize to unrelated future operations. Broad
+ * matching belongs behind explicit policy, not the default ledger key.
  */
 
-const truncate = (s: string, n: number): string =>
-  s.length > n ? s.slice(0, n) + "…" : s
+import * as crypto from "node:crypto"
 
-const normalizeBashCommand = (cmd: string): string => {
-  // collapse whitespace, drop trailing semicolons
-  const c = cmd.trim().replace(/\s+/g, " ").replace(/;+$/, "")
-  // bucket by first 2 tokens (e.g. "git status", "npm test")
-  const tokens = c.split(" ")
-  if (tokens.length === 0) return "bash:empty"
-  const head = tokens.slice(0, 2).join(" ")
-  return `bash:${head}`
-}
+const shortHash = (value: string): string =>
+  crypto.createHash("sha256").update(value).digest("hex").slice(0, 16)
 
-const normalizePath = (p: string): string => {
-  // bucket by extension if file path, else by leading 2 segments
-  const ext = p.match(/\.[a-zA-Z0-9]+$/)
-  if (ext) return `path:*${ext[0]}`
-  const segs = p.split("/").filter((s) => s.length > 0)
-  return `path:/${segs.slice(0, 2).join("/")}`
+const normalizeBashCommand = (cmd: string): string =>
+  cmd.trim().replace(/\s+/g, " ").replace(/;+$/, "").trim()
+
+const normalizePathExact = (p: string): string =>
+  p.replace(/\\/g, "/").replace(/\/+/g, "/")
+
+const stableInput = (input: unknown): string => {
+  try {
+    return JSON.stringify(input)
+  } catch {
+    return "<unserializable>"
+  }
 }
 
 export const derivePatternKey = (
@@ -33,9 +36,10 @@ export const derivePatternKey = (
       typeof toolInput === "object" &&
       toolInput !== null &&
       typeof (toolInput as { command?: unknown }).command === "string"
-        ? ((toolInput as { command: string }).command)
+        ? (toolInput as { command: string }).command
         : ""
-    return `${toolName}:${normalizeBashCommand(cmd)}`
+    const normalized = normalizeBashCommand(cmd)
+    return `${toolName}:exact:${shortHash(normalized)}`
   }
   if (
     toolName === "Edit" ||
@@ -48,16 +52,10 @@ export const derivePatternKey = (
       typeof toolInput === "object" &&
       toolInput !== null &&
       typeof (toolInput as { file_path?: unknown }).file_path === "string"
-        ? ((toolInput as { file_path: string }).file_path)
+        ? (toolInput as { file_path: string }).file_path
         : ""
-    return `${toolName}:${normalizePath(fp)}`
+    const normalized = normalizePathExact(fp)
+    return `${toolName}:path:${shortHash(normalized)}`
   }
-  // generic: tool + JSON shape signature (truncated)
-  let shape = ""
-  try {
-    shape = JSON.stringify(toolInput)
-  } catch {
-    shape = "<unserializable>"
-  }
-  return `${toolName}:${truncate(shape, 80)}`
+  return `${toolName}:exact:${shortHash(stableInput(toolInput))}`
 }

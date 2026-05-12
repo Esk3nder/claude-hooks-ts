@@ -2,7 +2,7 @@ import { Layer } from "effect"
 import { FileSystemLive } from "../services/filesystem.ts"
 import { ShellLive } from "../services/shell.ts"
 import { GitLive } from "../services/git.ts"
-import { ProjectLive } from "../services/project.ts"
+import { ProjectLiveFor } from "../services/project.ts"
 import { PolicyConfigLive } from "../services/policy-config.ts"
 import { LedgerLive } from "../services/ledger.ts"
 import { RedactLive } from "../services/redact.ts"
@@ -14,19 +14,22 @@ import { ClaudeSubprocessLive } from "../services/claude-subprocess.ts"
 import { InferenceLive } from "../services/inference.ts"
 import { ClassifierTelemetryLive } from "../services/classifier-telemetry.ts"
 
-export const AppLive = Layer.mergeAll(
-  FileSystemLive,
-  ShellLive,
-  GitLive,
-  ProjectLive,
-  PolicyConfigLive,
-  LedgerLive(),
-  RedactLive,
-  BudgetLive,
-  SessionStateLive(),
-  ApprovalsLive,
-  ElicitationsLive,
-  ClaudeSubprocessLive,
-  InferenceLive,
-  ClassifierTelemetryLive(),
-)
+export const makeAppLive = (root: string = process.cwd()) =>
+  Layer.mergeAll(
+    FileSystemLive,
+    ShellLive,
+    GitLive,
+    ProjectLiveFor(root),
+    PolicyConfigLive,
+    LedgerLive(root),
+    RedactLive,
+    BudgetLive,
+    SessionStateLive(root),
+    ApprovalsLive,
+    ElicitationsLive,
+    ClaudeSubprocessLive,
+    InferenceLive,
+    ClassifierTelemetryLive(root),
+  )
+
+export const AppLive = makeAppLive()

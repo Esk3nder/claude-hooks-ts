@@ -25,6 +25,16 @@ describe("Elicitations (test layer)", () => {
     expect(r?.action).toBe("accept")
     expect((r?.content as { yes: boolean }).yes).toBe(true)
   })
+
+  test("pending request roundtrip", async () => {
+    const sig = elicitationSignature({ prompt: "ok?" })
+    const r = await Effect.runPromise(Effect.gen(function* () {
+      const e = yield* Elicitations
+      yield* e.recordPending("s1", "/repo", "mcp.foo", "ask", sig)
+      return yield* e.findLatestPending("s1", "/repo", "mcp.foo", "ask")
+    }).pipe(Effect.provide(ElicitationsTest())))
+    expect(r?.requestSignature).toBe(sig)
+  })
 })
 
 let projectA: string

@@ -87,6 +87,30 @@ describe("handlePostToolUse (post-edit-quality)", () => {
     expect(calls.length).toBe(0)
   })
 
+  test("returns additionalContext when tool response contains a secret pattern", async () => {
+    const { layer } = recordingShell()
+    const payload = decode({
+      _tag: "PostToolUse",
+      session_id: "s",
+      hook_event_name: "PostToolUse",
+      tool_name: "Read",
+      tool_input: { file_path: "/repo/.env" },
+      tool_response: {
+        stdout: "token=ghp_abcdefghij1234567890ZZZZ12345xyz",
+      },
+    })
+    const d = await Effect.runPromise(
+      handlePostToolUse(payload).pipe(Effect.provide(layer)),
+    )
+    const out = d as {
+      hookSpecificOutput?: { hookEventName?: string; additionalContext?: string }
+    }
+    expect(out.hookSpecificOutput?.hookEventName).toBe("PostToolUse")
+    expect(out.hookSpecificOutput?.additionalContext ?? "").toContain(
+      "secret pattern detected",
+    )
+  })
+
   test("ignores files without runner extension", async () => {
     const { layer, calls } = recordingShell()
     const d = await Effect.runPromise(
