@@ -129,8 +129,11 @@ describe("SessionStateRecord — focused sub-record projections", () => {
     const v = verificationOf(r);
     expect(v.files_changed).toEqual(["/a"]);
     expect(v.verification_status).toBe("passed");
-    expect((v as Record<string, unknown>)["engagement_required"]).toBeUndefined();
-    expect((v as Record<string, unknown>)["source_urls"]).toBeUndefined();
+    // Cast through `unknown` because VerificationLedger has no string index
+    // signature — we're inspecting that fields from other slices did NOT
+    // leak into the projection result.
+    expect((v as unknown as Record<string, unknown>)["engagement_required"]).toBeUndefined();
+    expect((v as unknown as Record<string, unknown>)["source_urls"]).toBeUndefined();
   });
 
   test("modeCacheOf returns mode/workflow/source-url fields only", () => {
