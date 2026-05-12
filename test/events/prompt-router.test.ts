@@ -261,6 +261,67 @@ describe("handleUserPromptSubmit", () => {
     expect(ctx).not.toContain("ENGAGE")
   })
 
+  test("persists requires_web_sources=true for an explicit web-research prompt", async () => {
+    const { SessionState } = await import(
+      "../../src/services/session-state.ts"
+    )
+    const payload = decode({
+      _tag: "UserPromptSubmit",
+      session_id: "needs-urls",
+      hook_event_name: "UserPromptSubmit",
+      prompt: "Search the web for the latest React best practices",
+    })
+    const record = await Effect.runPromise(
+      Effect.gen(function* () {
+        yield* handleUserPromptSubmit(payload)
+        const s = yield* SessionState
+        return yield* s.get("needs-urls")
+      }).pipe(
+        Effect.provide(SessionStateTest()),
+        Effect.provide(inferenceLayer),
+        Effect.provide(subprocLayer),
+        Effect.provide(ClassifierTelemetryTest().layer),
+      ),
+    )
+    expect(record.requires_web_sources).toBe(true)
+    expect(record.last_workflow).toBe("research.web")
+  })
+
+  test("persists requires_web_sources=false for a loose research.web priming match", async () => {
+    // This is the decoupling contract: the priming tag is `research.web`
+    // (because "look up" matches the priming regex) but the STRICT
+    // `requiresWebSources` predicate does NOT fire for "look up my notes"
+    // — there's no `search the web`, `cite authoritative sources`, etc.
+    // Old behavior would have blocked Stop on the loose priming match;
+    // the new contract requires `requires_web_sources=false` here so the
+    // Stop gate doesn't fire.
+    const { SessionState } = await import(
+      "../../src/services/session-state.ts"
+    )
+    const payload = decode({
+      _tag: "UserPromptSubmit",
+      session_id: "loose-research",
+      hook_event_name: "UserPromptSubmit",
+      prompt: "look up my notes from yesterday",
+    })
+    const record = await Effect.runPromise(
+      Effect.gen(function* () {
+        yield* handleUserPromptSubmit(payload)
+        const s = yield* SessionState
+        return yield* s.get("loose-research")
+      }).pipe(
+        Effect.provide(SessionStateTest()),
+        Effect.provide(inferenceLayer),
+        Effect.provide(subprocLayer),
+        Effect.provide(ClassifierTelemetryTest().layer),
+      ),
+    )
+    // Priming tag is the loose research.web (via "look up"), but the
+    // strict gate signal stays false — this is the decoupling.
+    expect(record.last_workflow).toBe("research.web")
+    expect(record.requires_web_sources).toBe(false)
+  })
+
   test("non-UserPromptSubmit payload → SAFE_DEFAULT", async () => {
     const payload = decode({
       _tag: "Stop",
