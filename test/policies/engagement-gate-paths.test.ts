@@ -15,6 +15,7 @@ import * as fs from "node:fs"
 import * as os from "node:os"
 import * as path from "node:path"
 import { evaluateEngagementGate } from "../../src/policies/engagement-gate.ts"
+import { safeResolvePath } from "../../src/services/path-resolution.ts"
 import {
   EMPTY_SESSION_STATE,
   type SessionStateRecord,
@@ -43,7 +44,7 @@ const engagedRecord = (
   last_mode: "ALGORITHM",
   last_tier: 3,
   expected_isa_path: EXPECTED_REL,
-  expected_isa_path_absolute: path.join(root, EXPECTED_REL),
+  expected_isa_path_absolute: safeResolvePath(root, EXPECTED_REL),
   session_root: root,
   ...overrides,
 })
@@ -101,7 +102,7 @@ describe("evaluateEngagementGate (deepened) — passthrough", () => {
       record: engagedRecord(),
       toolName: "Bash",
       toolInput: {
-        command: `mkdir -p ${path.join(root, EXPECTED_DIR_REL)}`,
+        command: `mkdir -p ${safeResolvePath(root, EXPECTED_DIR_REL)}`,
       },
     })
     expect(v.kind).toBe("passthrough")
@@ -142,7 +143,7 @@ describe("evaluateEngagementGate (deepened) — passthrough", () => {
       sessionRoot: linkRoot,
       record: engagedRecord({
         session_root: linkRoot,
-        expected_isa_path_absolute: path.join(linkRoot, EXPECTED_REL),
+        expected_isa_path_absolute: safeResolvePath(linkRoot, EXPECTED_REL),
       }),
       toolName: "Write",
       toolInput: { file_path: path.join(realRoot, EXPECTED_REL) },
