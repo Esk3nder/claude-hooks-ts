@@ -2,72 +2,57 @@
  * Engagement gate — enforces the "ALGORITHM tier ≥ 3 must produce an ISA
  * before any non-ISA implementation work" rule at PreToolUse time.
  *
- * Pure: takes already-normalized facts as parameters, returns a
- * PolicyDecision. The Effect-side wrapper in `events/pretool-policy.ts`
- * is responsible for path resolution: turning relative paths absolute,
- * resolving `..`, and following symlinks via realpath where possible.
- * The gate compares post-normalization strings only.
+ * Deep module: given (currentCwd, sessionRoot, record, toolName, toolInput),
+ * decides allow / deny / passthrough without external pre-computation.
+ * Internally builds accepted-path lists (write / edit / mkdir) from the
+ * SessionState record and the two cwd roots, then dispatches on tool.
+ *
+ * Roots:
+ *   - currentCwd: shell cwd at hook time (mutable; tracks Bash `cd`).
+ *     Used ONLY for resolving the tool's own input path, because the
+ *     model writes relative paths against the current shell cwd.
+ *   - sessionRoot: project root frozen at engagement creation. Used for
+ *     everything ISA-identity-related (expected ISA path resolution,
+ *     project ISA at `<sessionRoot>/ISA.md`).
  *
  * Release condition (gate becomes inert):
  *   - engagement_required is false, OR
- *   - any of `acceptedIsaPaths` exists on disk (signaled by the wrapper
- *     via `anyAcceptedIsaExists`).
+ *   - the expected per-task ISA exists on disk, OR
+ *   - a project ISA exists at `<sessionRoot>/ISA.md` (Stop-gate alignment).
  *
- * Acceptance lists (computed by the wrapper from cwd + SessionState):
- *   - `acceptedWritePaths`: absolute paths the model may target with
- *     Write/Update/NotebookEdit. Always exactly the expected per-task ISA
- *     path. Creating a fresh project ISA via Write is NOT permitted —
- *     that would let the model invent its own ISA location and bypass
- *     the deterministic-path contract.
- *   - `acceptedEditPaths`: absolute paths for Edit/MultiEdit. Includes
- *     the expected per-task ISA path AND the project ISA at `<cwd>/ISA.md`
- *     if it already exists on disk. Aligns with the Stop gate's broader
- *     acceptance: an existing project ISA is a legitimate target the
- *     ENGAGE directive explicitly permits ("or update the project ISA").
- *   - `acceptedMkdirDirs`: absolute directories `mkdir [-p] <dir>` may
- *     create. Typically just the parent of the expected per-task ISA.
+ * Acceptance:
+ *   - Write / Update / NotebookEdit: ONLY the deterministic expected per-task
+ *     ISA path. Creating a fresh project ISA via Write is intentionally
+ *     not permitted — the directive promised a specific location.
+ *   - Edit / MultiEdit: the expected per-task ISA path OR the project ISA
+ *     at `<sessionRoot>/ISA.md` if it exists on disk.
+ *   - Bash mkdir: the parent of the expected per-task ISA (absolute) OR
+ *     the relative spelling of that parent when `currentCwd === sessionRoot`.
  *
- * Allowed during engagement (no accepted ISA on disk yet):
- *   - Read / Glob / Grep / LS / TodoWrite / Task / Skill / WebFetch /
- *     WebSearch / AskUserQuestion / ExitPlanMode / NotebookRead — all
- *     read-only or planning tools.
- *   - Edit / MultiEdit when the resolved input path is in
- *     `acceptedEditPaths`.
- *   - Write / Update / NotebookEdit when the resolved input path is in
- *     `acceptedWritePaths`.
- *   - Bash when the command is `mkdir` of a directory in
- *     `acceptedMkdirDirs` (or a bare `mkdir` / `mkdir -p`).
+ * Other tools (Read / Glob / Grep / LS / TodoWrite / Task / Skill / etc.)
+ * always pass through during engagement. Unknown tools (third-party MCP)
+ * are permissive — this gate is about implementation work, not lockdown.
  *
- * Denied: every other Edit/Write/MultiEdit/Bash invocation.
+ * The shallow form (`evaluateEngagementGateShallow`) remains exported so
+ * the pure decision matrix can be unit-tested in isolation against
+ * already-normalized inputs.
  */
 
+import { existsSync } from "node:fs"
+import { dirname } from "node:path"
 import type { PolicyDecision } from "./types.ts"
+import { safeResolvePath } from "../services/path-resolution.ts"
+import type { SessionStateRecord } from "../services/session-state.ts"
 
-export interface EngagementContext {
-  readonly engagement_required: boolean
-  /** Whether any path in `acceptedIsaPaths` exists on disk. Disk is the
-   *  source of truth for gate release; the wrapper computes this. */
-  readonly anyAcceptedIsaExists: boolean
-  /** Resolved absolute paths the model may Write to. */
-  readonly acceptedWritePaths: ReadonlyArray<string>
-  /** Resolved absolute paths the model may Edit/MultiEdit. Superset of
-   *  `acceptedWritePaths` (adds the project ISA when it already exists). */
-  readonly acceptedEditPaths: ReadonlyArray<string>
-  /** Resolved absolute directories the model may `mkdir`. */
-  readonly acceptedMkdirDirs: ReadonlyArray<string>
-  /** Display path for the deny message — typically the project-relative
-   *  expected_isa_path so the model sees the same string the prompt-router
-   *  directive used. May be null when SessionState lacks it. */
-  readonly displayIsaPath: string | null
-  /** Display directory for the deny message — typically the relative
-   *  parent of `displayIsaPath`. */
-  readonly displayMkdirDir: string | null
-  /** Resolved absolute path of the tool's file_path target after symlink
-   *  + traversal normalization. null when N/A or unresolvable. */
-  readonly resolvedToolFilePath: string | null
+export interface EngagementGateInput {
+  readonly currentCwd: string
+  readonly sessionRoot: string
+  readonly record: SessionStateRecord
   readonly toolName: string
   readonly toolInput: unknown
 }
+
+export type EngagementVerdict = PolicyDecision
 
 const ALLOWED_TOOLS_DURING_ENGAGEMENT: ReadonlySet<string> = new Set([
   "Read",
@@ -122,9 +107,18 @@ const denyReason = (
   toolName: string,
   displayIsaPath: string | null,
   displayMkdirDir: string | null,
+  displayIsaAbsolutePath: string | null,
 ): string => {
-  const path = displayIsaPath ?? "<.claude-hooks/work/<slug>/ISA.md>"
+  const rel = displayIsaPath ?? "<.claude-hooks/work/<slug>/ISA.md>"
   const dir = displayMkdirDir ?? "<isa-dir>"
+  // The relative path is what the directive named for readability;
+  // the absolute path disambiguates when the shell has drifted away
+  // from `session_root` (Bash `cd ~/.claude/skills/...`). We surface
+  // both so the model has an unambiguous target regardless of cwd.
+  const absoluteLine =
+    displayIsaAbsolutePath !== null && displayIsaAbsolutePath !== rel
+      ? `  ${rel}\n  (absolute: ${displayIsaAbsolutePath})`
+      : `  ${rel}`
   return (
     `ALGORITHM engagement is required before implementation.\n` +
     `\n` +
@@ -132,7 +126,7 @@ const denyReason = (
     `implementation tools (${toolName} on a non-ISA target was just ` +
     `attempted), create the ISA at:\n` +
     `\n` +
-    `  ${path}\n` +
+    `${absoluteLine}\n` +
     `\n` +
     `Allowed now:\n` +
     `  - Read / LS / Glob / Grep for inspection\n` +
@@ -148,29 +142,40 @@ const denyReason = (
   )
 }
 
-export const evaluateEngagementGate = (
+/** Internal shallow form — operates on already-normalized facts. Kept
+ *  exported so the pure decision matrix can be unit-tested in isolation
+ *  (see test/policies/engagement-gate.test.ts). */
+export interface EngagementContext {
+  readonly engagement_required: boolean
+  readonly anyAcceptedIsaExists: boolean
+  readonly acceptedWritePaths: ReadonlyArray<string>
+  readonly acceptedEditPaths: ReadonlyArray<string>
+  readonly acceptedMkdirDirs: ReadonlyArray<string>
+  readonly displayIsaPath: string | null
+  /** Absolute form of the expected ISA path. Surfaced in deny messages
+   *  alongside `displayIsaPath` so the model has an unambiguous target
+   *  even when the shell cwd has drifted away from `session_root`.
+   *  Optional for backward compatibility with shallow-form callers; the
+   *  deep entry point (`evaluateEngagementGate`) always populates it. */
+  readonly displayIsaAbsolutePath?: string | null
+  readonly displayMkdirDir: string | null
+  readonly resolvedToolFilePath: string | null
+  readonly toolName: string
+  readonly toolInput: unknown
+}
+
+export const evaluateEngagementGateShallow = (
   ctx: EngagementContext,
 ): PolicyDecision => {
-  // Outside engagement → no opinion.
   if (!ctx.engagement_required) return { kind: "passthrough" }
-  // Once an accepted ISA exists on disk, the gate releases.
   if (ctx.anyAcceptedIsaExists) return { kind: "passthrough" }
-  // No enforceable target means we cannot lock down a deterministic
-  // write path; fail open rather than blocking all tools.
   if (ctx.acceptedWritePaths.length === 0) return { kind: "passthrough" }
 
-  // Always-allowed tools during engagement.
   if (ALLOWED_TOOLS_DURING_ENGAGEMENT.has(ctx.toolName)) {
     return { kind: "passthrough" }
   }
 
-  // Edit/MultiEdit: allow either accepted-write OR accepted-edit target
-  // (project ISA if it exists). The wrapper has already normalized the
-  // input path and the accepted paths to absolute realpath form.
-  if (
-    ctx.toolName === "Edit" ||
-    ctx.toolName === "MultiEdit"
-  ) {
+  if (ctx.toolName === "Edit" || ctx.toolName === "MultiEdit") {
     if (
       ctx.resolvedToolFilePath !== null &&
       ctx.acceptedEditPaths.includes(ctx.resolvedToolFilePath)
@@ -183,13 +188,11 @@ export const evaluateEngagementGate = (
         ctx.toolName,
         ctx.displayIsaPath,
         ctx.displayMkdirDir,
+        ctx.displayIsaAbsolutePath ?? null,
       ),
     }
   }
 
-  // Write / Update / NotebookEdit: allow ONLY the deterministic per-task
-  // ISA path. Creating a new project ISA from scratch is intentionally
-  // disallowed here — the directive promised a specific location.
   if (
     ctx.toolName === "Write" ||
     ctx.toolName === "Update" ||
@@ -207,11 +210,11 @@ export const evaluateEngagementGate = (
         ctx.toolName,
         ctx.displayIsaPath,
         ctx.displayMkdirDir,
+        ctx.displayIsaAbsolutePath ?? null,
       ),
     }
   }
 
-  // Bash: allow only `mkdir` of an accepted directory.
   if (ctx.toolName === "Bash") {
     const cmd = commandFromInput(ctx.toolInput)
     if (cmd !== null && isAllowedMkdir(cmd, ctx.acceptedMkdirDirs)) {
@@ -223,11 +226,101 @@ export const evaluateEngagementGate = (
         ctx.toolName,
         ctx.displayIsaPath,
         ctx.displayMkdirDir,
+        ctx.displayIsaAbsolutePath ?? null,
       ),
     }
   }
 
-  // Unknown tools (e.g. third-party MCP tools) — be permissive. The
-  // engagement gate is about implementation work, not policy lockdown.
   return { kind: "passthrough" }
+}
+
+/**
+ * Deep entry point: takes raw session+tool facts and decides allow / deny.
+ * Owns accepted-path construction (write / edit / mkdir) internally so the
+ * caller (pretool-policy.ts) doesn't have to know the rules.
+ */
+export const evaluateEngagementGate = (
+  input: EngagementGateInput,
+): EngagementVerdict => {
+  const { currentCwd, sessionRoot, record, toolName, toolInput } = input
+
+  // Outside engagement → no opinion.
+  if (!record.engagement_required) return { kind: "passthrough" }
+  // No enforceable target means we cannot lock down a deterministic
+  // write path; fail open rather than blocking all tools.
+  if (record.expected_isa_path === null) return { kind: "passthrough" }
+
+  const expectedAbsolute =
+    record.expected_isa_path_absolute ??
+    safeResolvePath(sessionRoot, record.expected_isa_path)
+  const expectedDir =
+    expectedAbsolute !== null ? dirname(expectedAbsolute) : null
+  const expectedIsaExists =
+    expectedAbsolute !== null && existsSync(expectedAbsolute)
+
+  const projectIsaAbsolute = safeResolvePath(sessionRoot, "ISA.md")
+  const projectIsaExists =
+    projectIsaAbsolute !== null && existsSync(projectIsaAbsolute)
+
+  const acceptedWritePaths =
+    expectedAbsolute !== null ? [expectedAbsolute] : []
+  const acceptedEditPaths =
+    projectIsaExists && projectIsaAbsolute !== null
+      ? [...acceptedWritePaths, projectIsaAbsolute]
+      : acceptedWritePaths
+
+  // Bash mkdir comparison is string-based (no path resolution),
+  // so accept the absolute form unconditionally and the relative
+  // forms ONLY when the shell's current cwd is the session root.
+  // Without that guard, `mkdir -p .claude-hooks/work/<sid>` would
+  // be accepted while cwd has drifted into e.g. ~/.claude/skills/...,
+  // letting the model plant a fake ISA outside the project.
+  const acceptedMkdirDirs: string[] = []
+  if (expectedDir !== null) acceptedMkdirDirs.push(expectedDir)
+  const currentCwdResolved =
+    safeResolvePath(currentCwd, ".") ?? currentCwd
+  const sessionRootResolved =
+    safeResolvePath(sessionRoot, ".") ?? sessionRoot
+  const cwdIsSessionRoot = currentCwdResolved === sessionRootResolved
+  const expectedDirRelative = dirname(record.expected_isa_path)
+  const pushIfNew = (d: string): void => {
+    if (d.length > 0 && !acceptedMkdirDirs.includes(d)) {
+      acceptedMkdirDirs.push(d)
+    }
+  }
+  if (cwdIsSessionRoot) {
+    // The model can spell relative paths several common ways. Accept
+    // the bare relative form AND a leading `./` form (`./foo/bar`),
+    // since the engagement-gate's whitelist is exact-string.
+    pushIfNew(expectedDirRelative)
+    if (
+      expectedDirRelative !== "." &&
+      !expectedDirRelative.startsWith("./") &&
+      !expectedDirRelative.startsWith("/")
+    ) {
+      pushIfNew(`./${expectedDirRelative}`)
+    }
+  }
+
+  const anyAcceptedIsaExists = expectedIsaExists || projectIsaExists
+
+  const inputFp =
+    typeof toolInput === "object" && toolInput !== null
+      ? (toolInput as { file_path?: unknown }).file_path
+      : undefined
+  const resolvedToolFilePath = safeResolvePath(currentCwd, inputFp)
+
+  return evaluateEngagementGateShallow({
+    engagement_required: record.engagement_required,
+    anyAcceptedIsaExists,
+    acceptedWritePaths,
+    acceptedEditPaths,
+    acceptedMkdirDirs,
+    displayIsaPath: record.expected_isa_path,
+    displayIsaAbsolutePath: expectedAbsolute,
+    displayMkdirDir: expectedDir,
+    resolvedToolFilePath,
+    toolName,
+    toolInput,
+  })
 }

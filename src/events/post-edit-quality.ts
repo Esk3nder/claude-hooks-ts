@@ -1,5 +1,4 @@
 import { Effect } from "effect"
-import { readFileSync, existsSync, writeFileSync } from "node:fs"
 import type { HookPayload } from "../schema/payloads.ts"
 import type { HookDecision } from "../schema/decisions.ts"
 import { SAFE_DEFAULT } from "../schema/decisions.ts"
@@ -7,22 +6,9 @@ import { Project } from "../services/project.ts"
 import { Shell } from "../services/shell.ts"
 import { SessionState } from "../services/session-state.ts"
 import { makeShellCommand } from "../schema/branded.ts"
-import {
-  isIsaFilePath,
-  findLatestISA,
-  findProjectIsa,
-} from "../algorithm/isa/locate.ts"
+import { isIsaFilePath } from "../algorithm/isa/locate.ts"
 import { runCheckpoint } from "../algorithm/isa/checkpoint.ts"
-import { parseSections } from "../algorithm/isa/sections.ts"
-import { parseCriteriaList } from "../algorithm/isa/criteria.ts"
-import {
-  loadProbes,
-  matchProbes,
-  parseTestStrategy,
-  probesPathFor,
-  resolveProbe,
-  runProbe,
-} from "../algorithm/isa/probes.ts"
+import { handlePostToolUseIsaEffects } from "../algorithm/isa/lifecycle.ts"
 import { Redact } from "../services/redact.ts"
 import {
   buildFinding,
@@ -90,39 +76,6 @@ const formatterFor = (filePath: string): FormatterSpec | null => {
 }
 
 /**
- * Flip an ISC's `[ ]` checkbox to `[x]` in-place. Returns true on success
- * (a flip was actually performed), false if the line was already checked
- * or the criterion line wasn't found. Idempotent.
- *
- * Used by the probe-runner branch — when a probe passes for a pending ISC,
- * we edit the ISA so checkpoint.ts can pick up the transition on the next
- * PostToolUse event.
- */
-const flipIscCheckbox = (isaPath: string, iscId: string): boolean => {
-  if (!existsSync(isaPath)) return false
-  let content: string
-  try {
-    content = readFileSync(isaPath, "utf-8")
-  } catch {
-    return false
-  }
-  // Match a `- [ ]` line whose ID is exactly `iscId`. Word-boundary on the
-  // ID prevents `ISC-1` from matching `ISC-1.2` or `ISC-12`.
-  const escaped = iscId.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
-  const re = new RegExp(`^(- \\[) (\\]\\s*${escaped}\\b)`, "m")
-  if (!re.test(content)) return false
-  const next = content.replace(re, "$1x$2")
-  if (next === content) return false
-  try {
-    writeFileSync(isaPath, next, "utf-8")
-    return true
-  } catch (err) {
-    process.stderr.write(`[probes] failed to flip ${iscId}: ${String(err)}\n`)
-    return false
-  }
-}
-
-/**
  * Two-branch handler:
  *   (a) Edit/Write of an ISA file → run checkpoint module (commits ISC
  *       transitions per allowlist). Does NOT run probes — probes that
@@ -152,13 +105,17 @@ export const handlePostToolUse = (
     const isEdit = EDIT_TOOLS.has(payload.tool_name)
     const isIsaEdit = isEdit && file !== null && isIsaFilePath(file)
 
+    const state = yield* SessionState
+    const record = yield* state
+      .get(payload.session_id)
+      .pipe(Effect.catchAll(() => Effect.succeed(null)))
+
     // Engaged-marker: when an ISA file is written, stamp `isa_engaged_at`
     // for telemetry. Do NOT clear `engagement_required` — the flag is
     // preserved as historical truth ("this session was supposed to
     // engage ISA"). Disk is the source of truth for whether the
     // PreToolUse gate releases (see policies/engagement-gate.ts).
     if (isIsaEdit) {
-      const state = yield* SessionState
       yield* state
         .update(payload.session_id, {
           isa_engaged_at: new Date().toISOString(),
@@ -196,11 +153,22 @@ export const handlePostToolUse = (
       }
     }
 
+    // ISA-rooted operations use the session's frozen `session_root` (set
+    // by the engagement gate at UserPromptSubmit) so a Bash `cd` after
+    // engagement doesn't move our view of the active ISA. Falls back to
+    // payload.cwd / process.cwd() when state has no frozen root yet
+    // (pre-engagement sessions).
+    const isaRoot =
+      record?.session_root ??
+      (typeof payload.cwd === "string" && payload.cwd.length > 0
+        ? payload.cwd
+        : process.cwd())
+
     // Branch (a): Edit/Write on an ISA file → checkpoint, no probes, no formatter.
     if (isIsaEdit && file !== null) {
       yield* Effect.sync(() => {
         try {
-          runCheckpoint(file)
+          runCheckpoint(file, isaRoot)
         } catch (err) {
           process.stderr.write(
             `[checkpoint] uncaught: ${String(err)}\n`,
@@ -213,74 +181,13 @@ export const handlePostToolUse = (
     // Branch (c): probes — run against latest ISA on EVERY non-ISA-edit
     // PostToolUse, including non-edit tools (Bash, Read, etc.). Non-blocking.
     //
-    // F5 fix: cheap existsSync gate FIRST. Common case (no probes file)
-    // skips the ISA scan + parse + section walk entirely, saving real
-    // I/O on every PostToolUse.
-    //
-    // F3 fix: probe-flipped ISCs were dead-letters — hook-side writeFileSync
-    // does NOT fire PostToolUse (only model tool calls do), so checkpoint
-    // never saw the transition. We now call runCheckpoint explicitly after
-    // any flip so the auto-commit actually happens.
-    yield* Effect.tryPromise({
-      try: async () => {
-        if (!existsSync(probesPathFor())) return
-        // Prefer the most-recent state/work/<slug>/ISA.md, but fall back to
-        // <root>/ISA.md — the second canonical home per IsaFormat.md
-        // lines 56-57. Without this fallback, project-root ISAs (the form
-        // the README documents) are invisible to the probe runner even
-        // though the doctor and TaskCompleted/Stop gates find them fine.
-        const isa = findLatestISA() ?? findProjectIsa()
-        if (isa === null) return
-        if (!existsSync(isa)) return
-        const content = readFileSync(isa, "utf-8")
-        const criteria = parseCriteriaList(content)
-        if (criteria.length === 0) return
-        const sections = parseSections(content)
-        const tsBody = sections.get("Test Strategy")?.body ?? ""
-        if (tsBody.length === 0) return
-        const strategyMap = parseTestStrategy(tsBody)
-        if (strategyMap.size === 0) return
-        const registry = await loadProbes()
-        if (Object.keys(registry).length === 0) return
-        const matches = matchProbes(
-          criteria,
-          strategyMap,
-          registry,
-          (miss) => {
-            const known =
-              miss.registeredNames.length === 0
-                ? "registry is empty"
-                : `registry has [${miss.registeredNames.join(", ")}]`
-            process.stderr.write(
-              `[probes] ${miss.iscId} declares probe '${miss.probeName}' but ${known} — check that probes.ts exports a key matching the ISA's 'tool' column\n`,
-            )
-          },
-        )
-        let anyFlipped = false
-        for (const m of matches) {
-          const { fn, timeoutMs } = resolveProbe(m.probe)
-          const passed = await Effect.runPromise(
-            runProbe(fn, m.criterion, timeoutMs),
-          )
-          if (passed && flipIscCheckbox(isa, m.criterion.id)) {
-            anyFlipped = true
-          }
-        }
-        if (anyFlipped) {
-          try {
-            runCheckpoint(isa)
-          } catch (err) {
-            process.stderr.write(
-              `[probes] post-flip checkpoint failed: ${String(err)}\n`,
-            )
-          }
-        }
-      },
-      catch: (cause) => {
-        process.stderr.write(`[probes] uncaught: ${String(cause)}\n`)
-        return new Error(String(cause))
-      },
-    }).pipe(Effect.catchAll(() => Effect.succeed(undefined)))
+    // The parse → probe → flip → checkpoint sequence lives behind the
+    // lifecycle façade (`handlePostToolUseIsaEffects`). It keeps the flip
+    // and checkpoint atomic to prevent the historical F3-style
+    // flip-without-commit class of bug — when probes flip a checkbox via
+    // hook-side writeFileSync, no PostToolUse fires, so the façade must
+    // run checkpoint inline.
+    yield* handlePostToolUseIsaEffects(isaRoot)
 
     // Branch (b): formatter. Only runs when this was a file edit AND the
     // file isn't an ISA AND a formatter is registered for the extension.

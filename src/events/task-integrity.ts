@@ -6,6 +6,7 @@ import { SAFE_DEFAULT } from "../schema/decisions.ts"
 import { findLatestISA, findProjectIsa } from "../algorithm/isa/locate.ts"
 import { countCriteria } from "../algorithm/isa/criteria.ts"
 import { parseSections } from "../algorithm/isa/sections.ts"
+import { SessionState } from "../services/session-state.ts"
 
 export const handleTaskCreated = (
   payload: HookPayload,
@@ -72,8 +73,8 @@ const checkIsaEvidence = (cwd: string): string | null => {
 
 export const handleTaskCompleted = (
   payload: HookPayload,
-): Effect.Effect<HookDecision> =>
-  Effect.sync(() => {
+): Effect.Effect<HookDecision, never, SessionState> =>
+  Effect.gen(function* () {
     if (payload._tag !== "TaskCompleted") return SAFE_DEFAULT
 
     // Acceptance/evidence may arrive top-level (rich harness contract) or
@@ -91,11 +92,20 @@ export const handleTaskCompleted = (
 
     // ISC-evidence requirement (slice 3c). Runs FIRST so ISA-side gaps
     // surface their specific guidance instead of a generic field message.
-    const cwd =
+    //
+    // ISA identity is rooted at the frozen session_root, not the current
+    // shell cwd. After a Bash `cd`, the shell may sit far from the
+    // project, but the active ISA is still the one under the project.
+    const state = yield* SessionState
+    const record = yield* state
+      .get(payload.session_id)
+      .pipe(Effect.catchAll(() => Effect.succeed(null)))
+    const currentCwd =
       typeof payload.cwd === "string" && payload.cwd.length > 0
         ? payload.cwd
         : process.cwd()
-    const isaBlock = checkIsaEvidence(cwd)
+    const sessionRoot = record?.session_root ?? currentCwd
+    const isaBlock = checkIsaEvidence(sessionRoot)
     if (isaBlock !== null) {
       return {
         decision: "block",

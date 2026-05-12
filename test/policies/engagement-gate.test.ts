@@ -5,7 +5,7 @@
  * for path normalization; this test passes already-normalized strings.
  */
 import { describe, expect, test } from "bun:test"
-import { evaluateEngagementGate } from "../../src/policies/engagement-gate.ts"
+import { evaluateEngagementGateShallow as evaluateEngagementGate } from "../../src/policies/engagement-gate.ts"
 
 const EXPECTED_ABS = "/repo/.claude-hooks/work/sess-1/ISA.md"
 const EXPECTED_DIR = "/repo/.claude-hooks/work/sess-1"

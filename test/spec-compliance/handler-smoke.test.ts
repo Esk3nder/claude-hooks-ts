@@ -48,8 +48,13 @@ import { handleCwdChanged } from "../../src/events/cwd-changed.ts"
 import { handleFileChanged } from "../../src/events/filechanged-env-guard.ts"
 import {
   handleTaskCreated,
-  handleTaskCompleted,
+  handleTaskCompleted as handleTaskCompletedRaw,
 } from "../../src/events/task-integrity.ts"
+import { SessionStateTest } from "../../src/services/session-state.ts"
+
+const handleTaskCompleted = (
+  payload: Parameters<typeof handleTaskCompletedRaw>[0],
+) => handleTaskCompletedRaw(payload).pipe(Effect.provide(SessionStateTest()))
 
 import * as p from "./fixtures/mintlify-payloads.ts"
 import { runHook } from "./helpers.ts"

@@ -10,12 +10,18 @@ import {
   isSystemTextPrompt,
 } from "../algorithm/classifier.ts"
 import { getRecentContext } from "../algorithm/transcript-context.ts"
-import type { Classification, Inference } from "../services/inference.ts"
+import type { Inference } from "../services/inference.ts"
 import type { ClaudeSubprocess } from "../services/claude-subprocess.ts"
 import {
   ClassifierTelemetry,
   buildRecord,
 } from "../services/classifier-telemetry.ts"
+import {
+  planEngagement,
+  renderEngagementDirective,
+} from "../algorithm/isa/lifecycle.ts"
+import { detectSessionRoot } from "../services/project-root.ts"
+import { safeResolvePath } from "../services/path-resolution.ts"
 
 /**
  * UserPromptSubmit handler — TWO classifiers, layered (B4) — with the full
@@ -55,94 +61,6 @@ import {
  * exists. Two informative lines are not enough to trigger the reflex;
  * an imperative naming the artifact path is.
  */
-/**
- * Required ISA sections per tier — mirrors IsaFormat.md tier completeness
- * gate (E3 = 8 sections, E4/E5 = all 12). E1 and E2 are not engagement
- * targets here (the gate fires only at tier ≥ 3).
- */
-const REQUIRED_SECTIONS_BY_TIER: Record<3 | 4 | 5, ReadonlyArray<string>> = {
-  3: [
-    "Problem",
-    "Vision",
-    "Out of Scope",
-    "Constraints",
-    "Goal",
-    "Criteria",
-    "Features",
-    "Test Strategy",
-  ],
-  4: [
-    "Problem",
-    "Vision",
-    "Out of Scope",
-    "Principles",
-    "Constraints",
-    "Goal",
-    "Criteria",
-    "Test Strategy",
-    "Features",
-    "Decisions",
-    "Changelog",
-    "Verification",
-  ],
-  5: [
-    "Problem",
-    "Vision",
-    "Out of Scope",
-    "Principles",
-    "Constraints",
-    "Goal",
-    "Criteria",
-    "Test Strategy",
-    "Features",
-    "Decisions",
-    "Changelog",
-    "Verification",
-  ],
-}
-
-const EFFORT_BY_TIER: Record<1 | 2 | 3 | 4 | 5, string> = {
-  1: "standard",
-  2: "extended",
-  3: "advanced",
-  4: "deep",
-  5: "comprehensive",
-}
-
-/**
- * Compute the deterministic ISA path for a session. The slug is the raw
- * session_id so the path is reproducible from the payload alone — no model
- * guessing, no late binding. Stop / PostToolUse gates use the same field
- * (SessionState.expected_isa_path) so directive text and gate behavior agree.
- */
-export const expectedIsaPathFor = (sessionId: string): string =>
-  `.claude-hooks/work/${sessionId}/ISA.md`
-
-const engageDirectiveFor = (
-  c: Classification,
-  sessionId: string,
-): string | null => {
-  if (c.mode !== "ALGORITHM" || c.tier === null || c.tier < 3) return null
-  const tier = c.tier as 3 | 4 | 5
-  const sections = REQUIRED_SECTIONS_BY_TIER[tier].join(", ")
-  const isaPath = expectedIsaPathFor(sessionId)
-  const effort = EFFORT_BY_TIER[tier]
-  return (
-    `ENGAGE: ALGORITHM_ENGAGEMENT_REQUIRED=true | TIER=E${tier} | ` +
-    `ISA_PATH=${isaPath}\n` +
-    `MANDATORY FIRST ACTION before any non-ISA implementation work: ` +
-    `create or update the ISA at \`${isaPath}\` (or, if a project ISA ` +
-    `exists at \`<repo>/ISA.md\`, append to it). ` +
-    `Minimum frontmatter: \`effort: ${effort}\`, \`phase: observe\`. ` +
-    `Required sections for E${tier}: ${sections}. ` +
-    `Do not mark \`phase: complete\` until each ISC under \`## Criteria\` ` +
-    `has matching evidence under \`## Verification\`. ` +
-    `The Stop gate now blocks once if this run ends without an ISA at the ` +
-    `expected path; absence is treated as failure, not noop. Skipping ISA ` +
-    `creation is a CRITICAL FAILURE.`
-  )
-}
-
 export const handleUserPromptSubmit = (
   payload: HookPayload,
 ): Effect.Effect<
@@ -174,7 +92,8 @@ export const handleUserPromptSubmit = (
     const classification = yield* classify(payload.prompt, { context })
     const modeLine = renderClassificationLine(classification)
     const workflowLine = `Detected workflow: ${workflow}. ${playbook}`
-    const engageLine = engageDirectiveFor(classification, sessionId)
+    const plan = planEngagement(classification, sessionId)
+    const engageLine = plan === null ? null : renderEngagementDirective(plan)
     const additionalContext = engageLine
       ? `${workflowLine}\n${modeLine}\n${engageLine}`
       : `${workflowLine}\n${modeLine}`
@@ -183,15 +102,38 @@ export const handleUserPromptSubmit = (
     // these fields; without them they cannot tell "no ISA" (legitimate
     // for a one-off NATIVE prompt) from "no ISA after ALGORITHM E3+ was
     // demanded" (a doctrine violation).
-    const engagementRequired = engageLine !== null
+    //
+    // ISA identity is a session invariant. We freeze `session_root` and
+    // `expected_isa_path_absolute` write-once for the lifetime of a
+    // session: if a prior ALGORITHM prompt already froze them, subsequent
+    // prompts MUST NOT overwrite (even if `payload.cwd` has drifted since
+    // — e.g. after a Bash `cd ~/.claude/skills/...`). The relative
+    // `expected_isa_path` stays for display and back-compat; downstream
+    // gates prefer `expected_isa_path_absolute`.
+    const engagementRequired = plan !== null
+    const existing = yield* state
+      .get(sessionId)
+      .pipe(Effect.catchAll(() => Effect.succeed(null)))
+    const initialCwd =
+      typeof payload.cwd === "string" && payload.cwd.length > 0
+        ? payload.cwd
+        : process.cwd()
+    const sessionRoot = engagementRequired
+      ? (existing?.session_root ?? detectSessionRoot(initialCwd))
+      : null
+    const expectedIsaPathAbsolute =
+      engagementRequired && sessionRoot !== null && plan !== null
+        ? (existing?.expected_isa_path_absolute ??
+          safeResolvePath(sessionRoot, plan.isaPath))
+        : null
     yield* state
       .update(sessionId, {
         last_mode: classification.mode,
         last_tier: classification.tier,
         engagement_required: engagementRequired,
-        expected_isa_path: engagementRequired
-          ? expectedIsaPathFor(sessionId)
-          : null,
+        expected_isa_path: engagementRequired ? plan.isaPath : null,
+        session_root: sessionRoot,
+        expected_isa_path_absolute: expectedIsaPathAbsolute,
       })
       .pipe(Effect.catchAll(() => Effect.succeed(undefined)))
 
