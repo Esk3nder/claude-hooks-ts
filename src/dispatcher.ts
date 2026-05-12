@@ -43,7 +43,7 @@ import { Elicitations } from "./services/elicitations.ts"
 import { Ledger } from "./services/ledger.ts"
 import { PolicyConfig } from "./services/policy-config.ts"
 import { StdinParseError } from "./schema/errors.ts"
-import { AppLive } from "./layers/live.ts"
+import { makeAppLive } from "./layers/live.ts"
 import { TracingLive } from "./services/tracing.ts"
 import { withSession } from "./services/session-context.ts"
 import type { FileSystem } from "./services/filesystem.ts"
@@ -255,6 +255,10 @@ const routeByTag = (
  */
 const HANDLER_TIMEOUT_MS: Partial<Record<HookPayload["_tag"], number>> = {
   UserPromptSubmit: 30_000,
+  // Stop may run one verify-map command (capped at 22s) plus local gate and
+  // state I/O. Keep this under Claude's 30s hook envelope; the Stop handler
+  // also skips best-effort regenerate work when the remaining budget is tight.
+  Stop: 28_000,
 }
 const DEFAULT_HANDLER_TIMEOUT_MS = 4_000
 
@@ -326,7 +330,11 @@ export const program = (argv: ReadonlyArray<string>): Effect.Effect<void> =>
       return
     }
     const payload = decodedE.right
-    const layer = Layer.mergeAll(AppLive, TracingLive)
+    const cwd =
+      typeof payload.cwd === "string" && payload.cwd.length > 0
+        ? payload.cwd
+        : process.cwd()
+    const layer = Layer.mergeAll(makeAppLive(cwd), TracingLive)
     const decision = yield* withSession(
       payload.session_id,
       dispatchPayload(action, payload).pipe(Effect.provide(layer)),
@@ -336,10 +344,6 @@ export const program = (argv: ReadonlyArray<string>): Effect.Effect<void> =>
     // so a slow/failing ledger never blocks the hook response.
     yield* appendLedger(payload, decision).pipe(Effect.provide(layer))
     // Best-effort post-emit gc — never blocks or affects the response.
-    const cwd =
-      typeof payload.cwd === "string" && payload.cwd.length > 0
-        ? payload.cwd
-        : process.cwd()
     yield* maybeGcApprovals(cwd).pipe(
       Effect.provide(layer),
       Effect.catchAll(() => Effect.succeed(undefined)),

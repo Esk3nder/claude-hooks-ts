@@ -1,4 +1,5 @@
 import { homedir } from "node:os"
+import * as path from "node:path"
 
 /**
  * Glob → RegExp converter scoped to the patterns we use in M2 policies.
@@ -72,6 +73,61 @@ export const normalizePath = (p: string): string => {
   }
   s = s.replace(/\\/g, "/").replace(/\/+/g, "/")
   return s
+}
+
+const stripDotPrefix = (p: string): string => p.replace(/^\.\//, "")
+
+/** Normalize a policy glob/source pattern without changing wildcard meaning. */
+export const normalizePathPattern = (pattern: string): string =>
+  stripDotPrefix(normalizePath(pattern))
+
+const isInsideRootRelative = (relativePath: string): boolean =>
+  relativePath.length === 0 ||
+  (relativePath !== ".." &&
+    !relativePath.startsWith(`..${path.sep}`) &&
+    !path.isAbsolute(relativePath))
+
+/**
+ * Build path spellings that repo-local glob policies should consider for a
+ * changed file.
+ *
+ * Session state usually records Edit/Write `file_path` values exactly as
+ * Claude Code supplied them, which is commonly absolute (`/repo/src/a.ts`).
+ * User policy files, however, are normally repo-relative (`src/*.ts`). Return
+ * both the original normalized spelling and, when the path is inside `root`,
+ * the repo-relative spelling so anchored glob rules match normal edits.
+ *
+ * For relative inputs we also include the root-absolute spelling, preserving
+ * compatibility with uncommon absolute policy rules.
+ */
+export const expandPathMatchCandidates = (
+  root: string,
+  paths: ReadonlyArray<string>,
+): ReadonlyArray<string> => {
+  const out = new Set<string>()
+  const rootAbs = path.resolve(root)
+
+  const add = (candidate: string): void => {
+    const normalized = normalizePathPattern(candidate)
+    if (normalized.length > 0) out.add(normalized)
+  }
+
+  for (const raw of paths) {
+    if (raw.length === 0) continue
+    add(raw)
+
+    // Windows absolute paths cannot be relativized meaningfully with POSIX
+    // `path.relative` on macOS/Linux. Keep their normalized original spelling.
+    if (path.win32.isAbsolute(raw) && !path.isAbsolute(raw)) continue
+
+    const abs = path.isAbsolute(raw) ? path.resolve(raw) : path.resolve(rootAbs, raw)
+    add(abs)
+
+    const rel = path.relative(rootAbs, abs)
+    if (isInsideRootRelative(rel)) add(rel.length === 0 ? "." : rel)
+  }
+
+  return [...out]
 }
 
 /** Test a path against any of a list of glob patterns. */
