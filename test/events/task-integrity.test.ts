@@ -328,6 +328,60 @@ describe("3c — TaskCompleted ISC-evidence requirement", () => {
   })
 })
 
+// FIXES: ISA-identity must be session-scoped.
+//
+// P1.3 — TaskCompleted's ISA-evidence gate must scope its lookup to the
+// session's expected ISA. A foreign-slug ISA under session_root must NOT
+// be used as evidence-target for the current session. When the session's
+// own expected ISA is absent, the gate is a no-op (Stop is the engaged
+// absence gate; task-integrity should not double up on missing ISA).
+describe("3c-identity — TaskCompleted ignores foreign-slug ISA", () => {
+  test("foreign ISA under session_root + missing expected ISA + valid AC/evidence → no-op (no block citing foreign path)", async () => {
+    const { root, cleanup } = stage()
+    try {
+      // Foreign-slug ISA with unchecked criteria — would trigger the gate
+      // on current (buggy) main because checkIsaEvidence uses findLatestISA.
+      writeTaskIsa(root, "old-slug", ISA_UNCHECKED)
+      const expectedAbs = join(root, ".claude-hooks", "work", "current-slug", "ISA.md")
+      const sessionId = "ti-identity"
+      const layer = SessionStateTest(
+        new Map([
+          [
+            sessionId,
+            {
+              ...EMPTY_SESSION_STATE,
+              engagement_required: true,
+              session_root: root,
+              expected_isa_path: ".claude-hooks/work/current-slug/ISA.md",
+              expected_isa_path_absolute: expectedAbs,
+            },
+          ],
+        ]),
+      )
+      const p = decode({
+        _tag: "TaskCompleted",
+        session_id: sessionId,
+        hook_event_name: "TaskCompleted",
+        task_id: "t1",
+        acceptance_criteria: "Tests pass",
+        evidence: ["bun test exit 0"],
+        cwd: root,
+      })
+      const d = await Effect.runPromise(handleTaskCompleted(p, layer))
+      // Must NOT block citing the foreign ISA's path or "unchecked" criteria.
+      if ("decision" in d) {
+        // If anything blocks, it must not be the foreign-ISA gate.
+        expect(d.reason ?? "").not.toContain("old-slug")
+        expect(d.reason ?? "").not.toContain("unchecked")
+      }
+      // The AC+evidence are valid, so no-op is the expected outcome.
+      expect(d).toEqual({})
+    } finally {
+      cleanup()
+    }
+  })
+})
+
 describe("metadata-fallback for AC/evidence (harness-bridge)", () => {
   // A — raw wire payload with metadata decodes (no _tag baked in)
   test("A: TaskCompleted raw wire payload with metadata decodes", () => {

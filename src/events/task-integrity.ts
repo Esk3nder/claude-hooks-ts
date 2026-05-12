@@ -6,6 +6,10 @@ import { SAFE_DEFAULT } from "../schema/decisions.ts"
 import { findLatestISA, findProjectIsa } from "../algorithm/isa/locate.ts"
 import { countCriteria } from "../algorithm/isa/criteria.ts"
 import { parseSections } from "../algorithm/isa/sections.ts"
+import {
+  resolveActiveIsa,
+  type ResolveActiveIsaRecord,
+} from "../algorithm/isa/lifecycle.ts"
 import { SessionState } from "../services/session-state.ts"
 
 export const handleTaskCreated = (
@@ -33,8 +37,18 @@ export const handleTaskCreated = (
  * Returns null when no ISA is found at cwd — the gate is opt-in via ISA
  * presence (same convention as the Stop ISA-gate).
  */
-const checkIsaEvidence = (cwd: string): string | null => {
-  const isaPath = findProjectIsa(cwd) ?? findLatestISA(cwd)
+const checkIsaEvidence = (
+  cwd: string,
+  record?: ResolveActiveIsaRecord,
+): string | null => {
+  // When a session record is provided, scope the ISA lookup to the
+  // session's own expected ISA — a stale foreign-slug ISA must not
+  // drive this gate. Legacy callers (no record) keep the original
+  // project-or-latest lookup so non-engaged sessions stay correct.
+  const isaPath =
+    record !== undefined
+      ? resolveActiveIsa({ sessionRoot: cwd, record })
+      : (findProjectIsa(cwd) ?? findLatestISA(cwd))
   if (isaPath === null) return null
   if (!existsSync(isaPath)) return null
 
@@ -97,15 +111,23 @@ export const handleTaskCompleted = (
     // shell cwd. After a Bash `cd`, the shell may sit far from the
     // project, but the active ISA is still the one under the project.
     const state = yield* SessionState
+    const sid = payload.session_id
     const record = yield* state
-      .get(payload.session_id)
-      .pipe(Effect.catchAll(() => Effect.succeed(null)))
+      .get(sid)
+      .pipe(
+        Effect.catchAll((cause) => {
+          process.stderr.write(
+            `[TaskCompleted] session-state op=get failed: sid=${sid} cause=${String(cause).slice(0, 160)}\n`,
+          )
+          return Effect.succeed(null)
+        }),
+      )
     const currentCwd =
       typeof payload.cwd === "string" && payload.cwd.length > 0
         ? payload.cwd
         : process.cwd()
     const sessionRoot = record?.session_root ?? currentCwd
-    const isaBlock = checkIsaEvidence(sessionRoot)
+    const isaBlock = checkIsaEvidence(sessionRoot, record ?? undefined)
     if (isaBlock !== null) {
       return {
         decision: "block",

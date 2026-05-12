@@ -6,8 +6,7 @@ import type { HookPayload } from "../schema/payloads.ts"
 import type { HookDecision } from "../schema/decisions.ts"
 import { SAFE_DEFAULT } from "../schema/decisions.ts"
 import { SessionState } from "../services/session-state.ts"
-import { findLatestISA, findProjectIsa } from "../algorithm/isa/locate.ts"
-import { checkStopReadiness } from "../algorithm/isa/lifecycle.ts"
+import { checkStopReadiness, resolveActiveIsa } from "../algorithm/isa/lifecycle.ts"
 import { loadRegenerateRules, matchRules } from "../policies/regenerate.ts"
 
 const execFileAsync = promisify(execFile)
@@ -34,9 +33,17 @@ export const handleStop = (
   Effect.gen(function* () {
     if (payload._tag !== "Stop") return SAFE_DEFAULT
     const state = yield* SessionState
+    const sid = payload.session_id
     const record = yield* state
-      .get(payload.session_id)
-      .pipe(Effect.catchAll(() => Effect.succeed(null)))
+      .get(sid)
+      .pipe(
+        Effect.catchAll((cause) => {
+          process.stderr.write(
+            `[Stop] session-state op=get failed: sid=${sid} cause=${String(cause).slice(0, 160)}\n`,
+          )
+          return Effect.succeed(null)
+        }),
+      )
     if (record === null) return SAFE_DEFAULT
     // Local loop-guard: never block twice in the same session.
     if (record.stop_blocked_once) return SAFE_DEFAULT
@@ -60,8 +67,15 @@ export const handleStop = (
     const isaVerdict = checkStopReadiness({ cwd: sessionRoot, record })
     if (isaVerdict._tag === "block") {
       yield* state
-        .update(payload.session_id, { stop_blocked_once: true })
-        .pipe(Effect.catchAll(() => Effect.succeed(undefined)))
+        .update(sid, { stop_blocked_once: true })
+        .pipe(
+          Effect.catchAll((cause) => {
+            process.stderr.write(
+              `[Stop] session-state op=stop-blocked-once failed: sid=${sid} cause=${String(cause).slice(0, 160)}\n`,
+            )
+            return Effect.succeed(undefined)
+          }),
+        )
       const out: HookDecision = {
         decision: "block",
         reason: isaVerdict.reason,
@@ -77,8 +91,15 @@ export const handleStop = (
       record.source_urls.length === 0
     ) {
       yield* state
-        .update(payload.session_id, { stop_blocked_once: true })
-        .pipe(Effect.catchAll(() => Effect.succeed(undefined)))
+        .update(sid, { stop_blocked_once: true })
+        .pipe(
+          Effect.catchAll((cause) => {
+            process.stderr.write(
+              `[Stop] session-state op=stop-blocked-once failed: sid=${sid} cause=${String(cause).slice(0, 160)}\n`,
+            )
+            return Effect.succeed(undefined)
+          }),
+        )
       const out: HookDecision = {
         decision: "block",
         reason: RESEARCH_BLOCK_REASON,
@@ -89,8 +110,15 @@ export const handleStop = (
     const filesChanged = record.files_changed.length
     if (filesChanged > 0 && record.verification_status !== "passed") {
       yield* state
-        .update(payload.session_id, { stop_blocked_once: true })
-        .pipe(Effect.catchAll(() => Effect.succeed(undefined)))
+        .update(sid, { stop_blocked_once: true })
+        .pipe(
+          Effect.catchAll((cause) => {
+            process.stderr.write(
+              `[Stop] session-state op=stop-blocked-once failed: sid=${sid} cause=${String(cause).slice(0, 160)}\n`,
+            )
+            return Effect.succeed(undefined)
+          }),
+        )
       const out: HookDecision = {
         decision: "block",
         reason: BLOCK_REASON,
@@ -107,11 +135,11 @@ export const handleStop = (
     // reasons first; this gate is the doctrinal fallback. Fires once per
     // session via stop_blocked_once.
     if (record.engagement_required) {
-      const projectIsa = findProjectIsa(sessionRoot)
-      const taskIsa = findLatestISA(sessionRoot)
-      const hasAnyIsa =
-        (projectIsa !== null && existsSync(projectIsa)) ||
-        (taskIsa !== null && existsSync(taskIsa))
+      // Session-scoped: a project ISA or the session's OWN expected ISA
+      // satisfies the gate. A stale foreign-slug ISA under session_root
+      // must NOT — that's the bug this resolver fixes.
+      const activeIsa = resolveActiveIsa({ sessionRoot, record })
+      const hasAnyIsa = activeIsa !== null && existsSync(activeIsa)
       if (!hasAnyIsa) {
         yield* state
           .update(payload.session_id, { stop_blocked_once: true })

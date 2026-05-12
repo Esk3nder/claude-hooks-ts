@@ -164,9 +164,17 @@ export const handlePreToolUse = (
     // without editing source under a blocked tool regime.
     if (process.env[ENGAGEMENT_BYPASS_ENV] !== "1") {
       const state = yield* SessionState
+      const sid = payload.session_id
       const record = yield* state
-        .get(payload.session_id)
-        .pipe(Effect.catchAll(() => Effect.succeed(null)))
+        .get(sid)
+        .pipe(
+          Effect.catchAll((cause) => {
+            process.stderr.write(
+              `[PreToolUse] session-state op=get failed: sid=${sid} cause=${String(cause).slice(0, 160)}\n`,
+            )
+            return Effect.succeed(null)
+          }),
+        )
       if (record !== null) {
         // Distinguish two roots:
         //  - currentCwd: the shell cwd at hook time (mutable; tracks Bash cd).

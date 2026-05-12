@@ -63,11 +63,27 @@ export const handleCwdChanged = (
       prevRoot !== null && newRoot !== null && prevRoot !== newRoot
 
     if (projectSwitched) {
-      const resetE = yield* Effect.either(state.reset(payload.session_id))
-      const resetOk = resetE._tag === "Right"
-      const base = `Switched to project ${path.basename(newRoot)}.${
-        resetOk ? " Session state reset." : ""
-      }`
+      // Engagement freeze: when the session is in engaged mode, the
+      // frozen fields (session_root, expected_isa_path_absolute, etc.)
+      // are the only way downstream gates can identify the active ISA.
+      // A confirmed project switch must NOT wipe them — that defeats
+      // the freeze invariant PR #38 established. Reset still fires for
+      // non-engaged sessions so stale verification ledger doesn't bleed
+      // across projects.
+      const prior = yield* state
+        .get(payload.session_id)
+        .pipe(Effect.catchAll(() => Effect.succeed(null)))
+      const engaged = prior?.engagement_required === true
+      let resetOk = false
+      if (!engaged) {
+        const resetE = yield* Effect.either(state.reset(payload.session_id))
+        resetOk = resetE._tag === "Right"
+      }
+      const base = engaged
+        ? `Switched to project ${path.basename(newRoot)}. Engagement active — session state preserved.`
+        : `Switched to project ${path.basename(newRoot)}.${
+            resetOk ? " Session state reset." : ""
+          }`
       const ctx = hasLocalConfig
         ? `${base} Project-local config loaded.`
         : base

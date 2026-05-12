@@ -21,6 +21,8 @@
 import { Effect } from "effect"
 import { existsSync, readFileSync, writeFileSync } from "node:fs"
 import type { Classification, Tier } from "../../services/inference.ts"
+import { safeResolvePath } from "../../services/path-resolution.ts"
+import type { SessionStateRecord } from "../../services/session-state.ts"
 import { runCheckpoint } from "./checkpoint.ts"
 import { checkCompleteness } from "./completeness.ts"
 import { countCriteria, parseCriteriaList } from "./criteria.ts"
@@ -94,6 +96,59 @@ export const renderEngagementDirective = (plan: EngagementPlan): string => {
 }
 
 // ──────────────────────────────────────────────────────────────────────
+// Session-scoped ISA identity
+// ──────────────────────────────────────────────────────────────────────
+
+/**
+ * Engagement-relevant slice of SessionStateRecord that resolveActiveIsa
+ * consults. Kept minimal so callers don't need the full record type.
+ */
+export type ResolveActiveIsaRecord = Pick<
+  SessionStateRecord,
+  "engagement_required" | "expected_isa_path_absolute" | "expected_isa_path"
+>
+
+export interface ResolveActiveIsaInput {
+  readonly sessionRoot: string
+  readonly record: ResolveActiveIsaRecord
+}
+
+/**
+ * Resolve the ISA that this session's engaged-mode gates should consult.
+ *
+ * Precedence:
+ *   1. Project ISA at `<sessionRoot>/ISA.md` — explicit human-authored
+ *      override always wins.
+ *   2. The session's own `expected_isa_path_absolute` (or, if only the
+ *      relative `expected_isa_path` is set, the resolved-from-sessionRoot
+ *      form) IF that file exists on disk.
+ *   3. `findLatestISA(sessionRoot)` — but only when `engagement_required`
+ *      is FALSE. This preserves legacy behavior for non-engaged sessions
+ *      while preventing a stale foreign-slug ISA from satisfying an
+ *      engaged session's gates.
+ *
+ * Returns null when no candidate exists on disk.
+ */
+export const resolveActiveIsa = (input: ResolveActiveIsaInput): string | null => {
+  const { sessionRoot, record } = input
+  const projectIsa = findProjectIsa(sessionRoot)
+  if (projectIsa !== null && existsSync(projectIsa)) return projectIsa
+
+  const expected =
+    record.expected_isa_path_absolute ??
+    (record.expected_isa_path === null
+      ? null
+      : safeResolvePath(sessionRoot, record.expected_isa_path))
+  if (expected !== null && existsSync(expected)) return expected
+
+  if (!record.engagement_required) {
+    const latest = findLatestISA(sessionRoot)
+    return latest !== null && existsSync(latest) ? latest : null
+  }
+  return null
+}
+
+// ──────────────────────────────────────────────────────────────────────
 // Stop readiness verdict
 // ──────────────────────────────────────────────────────────────────────
 
@@ -161,11 +216,11 @@ export type StopReadinessVerdict =
 
 export interface StopReadinessInput {
   readonly cwd: string
-  // The session record is accepted as opaque here so this module does not
-  // need to import SessionState's record type. `checkStopReadiness` only
-  // inspects the working directory — the record is reserved for future
-  // expansion (e.g., wiring the engagement-absence gate through here).
-  readonly record?: unknown
+  // When present, resolveActiveIsa scopes the ISA lookup to the session's
+  // expected ISA (rather than findLatestISA under cwd). Legacy callers may
+  // omit this; in that case the previous projectIsa-or-latestIsa lookup is
+  // preserved so non-engaged sessions stay correct.
+  readonly record?: ResolveActiveIsaRecord
 }
 
 /**
@@ -185,10 +240,16 @@ export interface StopReadinessInput {
 export const checkStopReadiness = (
   input: StopReadinessInput,
 ): StopReadinessVerdict => {
-  const { cwd } = input
+  const { cwd, record } = input
   const projectIsa = findProjectIsa(cwd)
-  const taskIsa = findLatestISA(cwd)
-  const isaPath = projectIsa ?? taskIsa
+  // When a session record is threaded through, scope the lookup to the
+  // session's own ISA so a stale foreign-slug ISA can't satisfy gates.
+  // Legacy callers (no record) keep the original projectIsa-or-latestIsa
+  // fallback so non-engaged paths stay correct.
+  const isaPath =
+    record !== undefined
+      ? resolveActiveIsa({ sessionRoot: cwd, record })
+      : (projectIsa ?? findLatestISA(cwd))
   if (isaPath === null) return { _tag: "noop" }
   if (!existsSync(isaPath)) return { _tag: "noop" }
 
@@ -308,20 +369,23 @@ const flipIscCheckbox = (isaPath: string, iscId: string): boolean => {
  */
 export const handlePostToolUseIsaEffects = (
   cwd: string = process.cwd(),
+  record?: ResolveActiveIsaRecord,
 ): Effect.Effect<void, never> =>
   Effect.tryPromise({
     try: async () => {
       if (!existsSync(probesPathFor(cwd))) return
-      // Prefer the most-recent `.claude-hooks/work/<slug>/ISA.md` (canonical
-      // task ISA layout, post-Option-B), falling back to `<root>/ISA.md`
-      // (the project ISA — the second canonical home per IsaFormat.md
-      // lines 56-57). Without this fallback, project-root ISAs (the form
-      // the README documents) are invisible to the probe runner even
-      // though the doctor and TaskCompleted / Stop gates find them fine.
+      // When a session record is provided, scope the probe target to the
+      // session's own ISA via resolveActiveIsa — a stale foreign-slug ISA
+      // under the root must NOT be flipped by the current session.
+      // Legacy callers (no record) keep the original latest-or-project
+      // fallback for backwards compatibility with non-engaged sessions.
       // `cwd` is the frozen `session_root` passed by the PostToolUse
       // handler so a Bash `cd` after engagement does not move the probe
       // runner's view of the active ISA.
-      const isa = findLatestISA(cwd) ?? findProjectIsa(cwd)
+      const isa =
+        record !== undefined
+          ? resolveActiveIsa({ sessionRoot: cwd, record })
+          : (findLatestISA(cwd) ?? findProjectIsa(cwd))
       if (isa === null) return
       if (!existsSync(isa)) return
       const content = readFileSync(isa, "utf-8")
