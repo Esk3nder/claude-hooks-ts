@@ -22,17 +22,17 @@
  * Stop on it.
  */
 
-import {
-  ISA_SECTIONS_V2_7,
-  parseSections,
-  type IsaSectionName,
-} from "./sections.ts"
+import { parseSections, type IsaSectionName } from "./sections.ts"
+import { REQUIRED_SECTIONS_BY_TIER as TIER_POLICY_SECTIONS } from "./tier-policy.ts"
 
 import type { Tier } from "../../services/inference.ts"
 
 /**
  * Required section sets per tier — verbatim from IsaFormat.md lines 191-201.
- * Frozen so a typo in caller code can't mutate them at runtime.
+ * Tiers 3-5 are sourced from the canonical `tier-policy.ts` so the Stop
+ * completeness gate and the UserPromptSubmit engagement directive cannot
+ * drift. Tiers 1-2 are declared here because they are not engagement
+ * targets and so do not appear in tier-policy.
  */
 export const REQUIRED_SECTIONS_BY_TIER: ReadonlyMap<
   Tier,
@@ -40,21 +40,9 @@ export const REQUIRED_SECTIONS_BY_TIER: ReadonlyMap<
 > = new Map<Tier, ReadonlyArray<IsaSectionName>>([
   [1, ["Goal", "Criteria"]],
   [2, ["Problem", "Goal", "Criteria", "Test Strategy"]],
-  [
-    3,
-    [
-      "Problem",
-      "Vision",
-      "Out of Scope",
-      "Constraints",
-      "Goal",
-      "Criteria",
-      "Features",
-      "Test Strategy",
-    ],
-  ],
-  [4, ISA_SECTIONS_V2_7],
-  [5, ISA_SECTIONS_V2_7],
+  [3, TIER_POLICY_SECTIONS[3]],
+  [4, TIER_POLICY_SECTIONS[4]],
+  [5, TIER_POLICY_SECTIONS[5]],
 ])
 
 export interface CompletenessReport {
