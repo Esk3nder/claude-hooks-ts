@@ -2,7 +2,10 @@ import { Effect } from "effect"
 import type { HookPayload } from "../schema/payloads.ts"
 import type { HookDecision } from "../schema/decisions.ts"
 import { SAFE_DEFAULT } from "../schema/decisions.ts"
-import { classifyPrompt } from "../policies/workflow-classifier.ts"
+import {
+  classifyPrompt,
+  requiresWebSources,
+} from "../policies/workflow-classifier.ts"
 import { SessionState } from "../services/session-state.ts"
 import {
   classify,
@@ -76,12 +79,20 @@ export const handleUserPromptSubmit = (
       return SAFE_DEFAULT
     }
 
-    // Step 2 — regex workflow tagger.
+    // Step 2 — regex workflow tagger. Two outputs:
+    //  - `workflow` (loose, drives the priming playbook line)
+    //  - `requires_web_sources` (strict, drives the Stop research-mode
+    //    source-ledger gate). Kept separate so a loose priming match
+    //    cannot turn into a source-URL requirement at Stop time.
     const { workflow, playbook } = classifyPrompt(payload.prompt)
+    const requiresWebSrc = requiresWebSources(payload.prompt)
     const state = yield* SessionState
     const sessionId = payload.session_id
     yield* state
-      .update(sessionId, { last_workflow: workflow })
+      .update(sessionId, {
+        last_workflow: workflow,
+        requires_web_sources: requiresWebSrc,
+      })
       .pipe(
         Effect.catchAll((cause) => {
           process.stderr.write(

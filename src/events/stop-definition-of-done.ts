@@ -96,13 +96,17 @@ export const handleStop = (
       return out
     }
 
-    // Research-mode source-ledger gate
-    const lw = record.last_workflow
-    if (
-      typeof lw === "string" &&
-      lw.startsWith("research.") &&
-      record.source_urls.length === 0
-    ) {
+    // Research-mode source-ledger gate.
+    //
+    // Keys off `requires_web_sources` (set by the prompt-router from a STRICT
+    // web-research regex), NOT the loose `last_workflow` priming tag. Prior
+    // behavior gated whenever `last_workflow.startsWith("research.")`, which
+    // included `research.repo` ("find the function") and `research.synthesis`
+    // ("compare X and Y") — neither warrants a source-URL ledger — and also
+    // fired on a bare `latest` keyword in the priming regex (e.g. "are we on
+    // the latest"). The new boolean is set only by `requiresWebSources` in
+    // policies/workflow-classifier.ts.
+    if (record.requires_web_sources && record.source_urls.length === 0) {
       yield* state
         .update(sid, { stop_blocked_once: true })
         .pipe(

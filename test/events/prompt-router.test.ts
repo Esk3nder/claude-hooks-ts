@@ -261,6 +261,67 @@ describe("handleUserPromptSubmit", () => {
     expect(ctx).not.toContain("ENGAGE")
   })
 
+  test("persists requires_web_sources=true for an explicit web-research prompt", async () => {
+    const { SessionState } = await import(
+      "../../src/services/session-state.ts"
+    )
+    const payload = decode({
+      _tag: "UserPromptSubmit",
+      session_id: "needs-urls",
+      hook_event_name: "UserPromptSubmit",
+      prompt: "Search the web for the latest React best practices",
+    })
+    const record = await Effect.runPromise(
+      Effect.gen(function* () {
+        yield* handleUserPromptSubmit(payload)
+        const s = yield* SessionState
+        return yield* s.get("needs-urls")
+      }).pipe(
+        Effect.provide(SessionStateTest()),
+        Effect.provide(inferenceLayer),
+        Effect.provide(subprocLayer),
+        Effect.provide(ClassifierTelemetryTest().layer),
+      ),
+    )
+    expect(record.requires_web_sources).toBe(true)
+    expect(record.last_workflow).toBe("research.web")
+  })
+
+  test("persists requires_web_sources=false for a loose research.web priming match", async () => {
+    // Reproduction of the in-session bug: "are we on the latest" classified
+    // as research.web by the priming regex (loose `latest` match — now
+    // tightened, but a similar loose match could recur), yet must NOT
+    // engage the Stop research-mode gate. The strict predicate stays
+    // false, so the persisted gate signal is false even when the priming
+    // tag is research.web.
+    const { SessionState } = await import(
+      "../../src/services/session-state.ts"
+    )
+    const payload = decode({
+      _tag: "UserPromptSubmit",
+      session_id: "loose-research",
+      hook_event_name: "UserPromptSubmit",
+      // Today the priming regex puts this into `unknown` (we tightened
+      // `latest`), but the persistence contract still has to hold for any
+      // future loose research.web match — set up the strict predicate
+      // check directly via the prompt below.
+      prompt: "find some background on this in the repo",
+    })
+    const record = await Effect.runPromise(
+      Effect.gen(function* () {
+        yield* handleUserPromptSubmit(payload)
+        const s = yield* SessionState
+        return yield* s.get("loose-research")
+      }).pipe(
+        Effect.provide(SessionStateTest()),
+        Effect.provide(inferenceLayer),
+        Effect.provide(subprocLayer),
+        Effect.provide(ClassifierTelemetryTest().layer),
+      ),
+    )
+    expect(record.requires_web_sources).toBe(false)
+  })
+
   test("non-UserPromptSubmit payload → SAFE_DEFAULT", async () => {
     const payload = decode({
       _tag: "Stop",

@@ -58,6 +58,14 @@ export interface ModeCache {
   readonly last_workflow: string | null;
   readonly last_mode: string | null;
   readonly source_urls: ReadonlyArray<string>;
+  /**
+   * True when the prompt-router classified the upstream user message as
+   * explicitly requiring web-research sources. Drives the Stop research-
+   * mode gate. Kept separate from `last_workflow` so loose alternatives
+   * in the priming workflow regex cannot force a Stop block. See
+   * `requiresWebSources` in policies/workflow-classifier.ts.
+   */
+  readonly requires_web_sources: boolean;
 }
 
 /**
@@ -86,6 +94,7 @@ export const EMPTY_SESSION_STATE: SessionStateRecord = {
   last_workflow: null,
   last_mode: null,
   last_tier: null,
+  requires_web_sources: false,
   engagement_required: false,
   expected_isa_path: null,
   session_root: null,
@@ -275,6 +284,7 @@ const parseRecord = (raw: string): SessionStateRecord => {
         typeof get("isa_engaged_at") === "string"
           ? (get("isa_engaged_at") as string)
           : null,
+      requires_web_sources: get("requires_web_sources") === true,
     };
   } catch {
     return EMPTY_SESSION_STATE;
@@ -619,4 +629,5 @@ export const modeCacheOf = (r: SessionStateRecord): ModeCache => ({
   last_workflow: r.last_workflow,
   last_mode: r.last_mode,
   source_urls: r.source_urls,
+  requires_web_sources: r.requires_web_sources,
 });

@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test"
 import {
   classifyPrompt,
+  requiresWebSources,
   WORKFLOW_TAGS,
   type WorkflowTag,
 } from "../../src/policies/workflow-classifier.ts"
@@ -45,6 +46,15 @@ const cases: ReadonlyArray<{ readonly prompt: string; readonly expected: Workflo
   { prompt: "release v2.3 to production", expected: "ops.deploy" },
   { prompt: "blah blah random sentence with no signal", expected: "unknown" },
   { prompt: "", expected: "unknown" },
+  // Anti-cases for the bare-`latest` priming false-positive that caused
+  // research.web Stop blocks on git-sync questions. Tightened to require a
+  // disambiguating noun (latest news / version / release / in the ...).
+  { prompt: "are we on the latest?", expected: "unknown" },
+  { prompt: "is this the latest commit", expected: "ops.git" },
+  // Affirmative cases that must still classify as research.web after the
+  // tighten — the priming playbook is still useful for these.
+  { prompt: "what's the latest news on bun", expected: "research.web" },
+  { prompt: "latest research on prompt caching", expected: "research.web" },
 ]
 
 describe("classifyPrompt", () => {
@@ -67,5 +77,110 @@ describe("classifyPrompt", () => {
     for (const tag of WORKFLOW_TAGS) {
       expect(exercised.has(tag)).toBe(true)
     }
+  })
+})
+
+/**
+ * `requiresWebSources` is the STRICT predicate the Stop research-mode gate
+ * keys off. False positives here block Stop until source_urls is populated,
+ * so it must deny-by-default for ambiguous prompts.
+ */
+describe("requiresWebSources", () => {
+  // Affirmative — must trigger
+  const positive = [
+    "search the web for the latest React best practices",
+    "do some web research on this",
+    "google for tokio runtime benchmarks",
+    "cite authoritative sources",
+    "what's the latest news on bun",
+    "latest news on bun",
+    "what's the state of the art in retrieval models",
+    "current best practice for prompt caching",
+    "any recent news about claude code",
+    "find some online research on the topic",
+  ]
+  for (const p of positive) {
+    test(`positive: "${p}"`, () => {
+      expect(requiresWebSources(p)).toBe(true)
+    })
+  }
+
+  // Negative — must NOT trigger. These are the false-positive class that
+  // motivated the priming-vs-gating split.
+  const negative = [
+    "",
+    "ok",
+    "are we on the latest?",
+    "pull the latest",
+    "is this the latest commit",
+    "is this the latest version of the package",
+    "merge these arrays",
+    "push this button on the UI",
+    "the else branch needs simplification",
+    "fix the slow login bug",
+    "memory leak in the request handler",
+    "test this in the browser",
+    "the secret sauce of this module",
+    "release notes for v2.3",
+  ]
+  for (const p of negative) {
+    test(`negative: "${p}"`, () => {
+      expect(requiresWebSources(p)).toBe(false)
+    })
+  }
+
+  test("property: prompts under 40 chars built only from common English do not trigger", () => {
+    const commonWords = [
+      "ok",
+      "yes",
+      "the",
+      "this",
+      "we",
+      "are",
+      "on",
+      "is",
+      "it",
+      "do",
+      "you",
+      "and",
+      "or",
+      "but",
+      "to",
+      "a",
+      "an",
+      "in",
+      "of",
+      "for",
+      "with",
+      "be",
+      "have",
+      "go",
+      "make",
+      "see",
+      "know",
+      "get",
+      "give",
+      "take",
+      "fine",
+      "good",
+      "bad",
+      "now",
+      "then",
+    ]
+    // Cartesian sample: 3-word phrases
+    let triggered: string | null = null
+    outer: for (const a of commonWords) {
+      for (const b of commonWords) {
+        for (const c of commonWords) {
+          const p = `${a} ${b} ${c}`
+          if (p.length >= 40) continue
+          if (requiresWebSources(p)) {
+            triggered = p
+            break outer
+          }
+        }
+      }
+    }
+    expect(triggered).toBeNull()
   })
 })

@@ -21,6 +21,14 @@ export const SessionStateRecordSchema = Schema.Struct({
   subagent_stops: Schema.Array(Schema.String),
   last_workflow: Schema.NullOr(Schema.String),
   /**
+   * True when the upstream prompt explicitly asked for web-research-style
+   * sources (search the web, cite authoritative sources, etc.). Drives the
+   * Stop research-mode source-ledger gate. Deliberately decoupled from
+   * `last_workflow` so loose single-word matches in the priming workflow
+   * regex cannot force a Stop block.
+   */
+  requires_web_sources: Schema.Boolean,
+  /**
    * Engagement bookkeeping written by `prompt-router` from the
    * classifier and read by Stop / PostToolUse gates. Together they let the
    * Stop gate enforce "ALGORITHM E3+ ran without an ISA" (absence-is-failure)

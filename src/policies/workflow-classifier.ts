@@ -166,12 +166,54 @@ const RULES: ReadonlyArray<Rule> = [
       /\b(where (in|is) (the |this )?(code|codebase|repo)|find (the )?(function|class|module|usage)|how does .* work in (this|the) (codebase|repo))\b/i,
   },
   // Research: web
+  //
+  // `latest` standalone was a frequent false-positive trigger ("are we on the
+  // latest", "pull the latest", "is X the latest version") because it's a
+  // bare English adjective. We require a disambiguating noun phrase. The
+  // multi-word web-research signals upstream (`search the web`, `google`,
+  // `look up`, `state of the art`, …) still carry their own meaning.
   {
     tag: "research.web",
     pattern:
-      /\b(search( the)? web|google|look up|latest|current best practice|state of the art|recent (news|update)|web research)\b/i,
+      /\b(search( the)? web|google|look up|latest (news|research|version of|release of)|latest in (the )?|current best practice|state of the art|recent (news|update)|web research)\b/i,
   },
 ]
+
+/**
+ * Patterns that signal the user genuinely wants web-research-style sources
+ * (citable URLs). Intentionally a STRICT subset of `research.web`'s priming
+ * alternatives — false positives here cause the Stop research-mode gate to
+ * block the turn until `source_urls` has at least one entry, so the cost
+ * of an over-eager match is much higher than a wrong priming playbook.
+ *
+ * Tested deny-by-default in workflow-classifier.test.ts.
+ */
+const WEB_SOURCES_REQUIRED: ReadonlyArray<RegExp> = [
+  /\bsearch (?:the )?web\b/i,
+  /\bweb research\b/i,
+  /\b(?:google|duckduckgo|bing)\s+(?:for|the)\s+\S+/i,
+  /\bcite (?:authoritative|external|primary|web) sources?\b/i,
+  /\bonline (?:research|sources?|references?)\b/i,
+  /\bwhat'?s the latest (?:news|on|in)\b/i,
+  /\blatest news (?:on|about|in)\b/i,
+  /\bcurrent best practice/i,
+  /\bstate of the art\b/i,
+  /\brecent (?:news|update)s?\b/i,
+]
+
+/**
+ * True when the prompt explicitly asks for web research. Used by the Stop
+ * research-mode gate instead of the priming workflow tag, so that loose
+ * single-word matches in the priming regex (e.g. bare "latest") cannot
+ * force a turn into a source-ledger requirement.
+ *
+ * Deliberately deny-by-default for short / common-English prompts.
+ */
+export const requiresWebSources = (rawPrompt: string): boolean => {
+  const prompt = (rawPrompt ?? "").trim()
+  if (prompt.length === 0) return false
+  return WEB_SOURCES_REQUIRED.some((re) => re.test(prompt))
+}
 
 export const classifyPrompt = (rawPrompt: string): ClassifierResult => {
   const prompt = (rawPrompt ?? "").trim()

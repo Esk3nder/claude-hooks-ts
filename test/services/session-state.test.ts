@@ -150,6 +150,7 @@ describe("SessionStateRecord — focused sub-record projections", () => {
       last_mode: "ALGORITHM",
       last_workflow: "research.foo",
       source_urls: ["http://x"],
+      requires_web_sources: false,
     });
   });
 });
