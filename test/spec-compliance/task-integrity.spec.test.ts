@@ -15,13 +15,18 @@
 import { describe, expect, test } from "bun:test"
 import { Effect, Schema } from "effect"
 import { HookPayload } from "../../src/schema/payloads.ts"
-import { handleTaskCompleted } from "../../src/events/task-integrity.ts"
+import { handleTaskCompleted as handleTaskCompletedRaw } from "../../src/events/task-integrity.ts"
+import { SessionStateTest } from "../../src/services/session-state.ts"
 import {
   taskCompletedDocumentedOnly,
   taskCompletedWithMetadata,
 } from "./fixtures/mintlify-payloads.ts"
 
 const decode = (raw: unknown) => Schema.decodeUnknownSync(HookPayload)(raw)
+
+const handleTaskCompleted = (
+  payload: Parameters<typeof handleTaskCompletedRaw>[0],
+) => handleTaskCompletedRaw(payload).pipe(Effect.provide(SessionStateTest()))
 
 describe("task-integrity — Mintlify spec-compliance audit (POLICY_EXTENSION)", () => {
   test("documented-only payload BLOCKS (intentional package policy)", async () => {

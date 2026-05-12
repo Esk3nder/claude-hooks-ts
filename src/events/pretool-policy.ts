@@ -1,6 +1,6 @@
 import { Effect, Schema } from "effect"
-import { existsSync, realpathSync } from "node:fs"
-import { dirname, isAbsolute, resolve } from "node:path"
+import { existsSync } from "node:fs"
+import { dirname } from "node:path"
 import type { HookPayload } from "../schema/payloads.ts"
 import type { HookDecision } from "../schema/decisions.ts"
 import { SAFE_DEFAULT } from "../schema/decisions.ts"
@@ -22,45 +22,9 @@ import { evaluateLockfile } from "../policies/lockfile-paths.ts"
 import { shouldRewrite, rewriteTestCommand } from "../policies/test-output-rewrite.ts"
 import { evaluateEngagementGate } from "../policies/engagement-gate.ts"
 import { SessionState } from "../services/session-state.ts"
+import { safeResolvePath } from "../services/path-resolution.ts"
 
 const ENGAGEMENT_BYPASS_ENV = "CLAUDE_HOOKS_DISABLE_ISA_PRETOOL_GATE"
-
-/**
- * Normalize a path against cwd so the engagement gate compares apples
- * to apples. Steps:
- *   1. Resolve against cwd → absolute path with `..` collapsed.
- *   2. If the path or any ancestor exists, follow symlinks via realpath
- *      on the deepest existing ancestor and re-attach the unresolved
- *      tail. This catches symlink-based bypasses where the path
- *      *string* looks safe but the *target* points outside the allowed
- *      area.
- *
- * Returns null if input is not a non-empty string.
- */
-const safeResolvePath = (cwd: string, input: unknown): string | null => {
-  if (typeof input !== "string" || input.length === 0) return null
-  const absolute = isAbsolute(input) ? input : resolve(cwd, input)
-  // Find the deepest existing ancestor and realpath that.
-  let parent = absolute
-  const tail: string[] = []
-  while (parent !== dirname(parent)) {
-    if (existsSync(parent)) break
-    tail.unshift(parent.split("/").pop() ?? "")
-    parent = dirname(parent)
-  }
-  if (existsSync(parent)) {
-    try {
-      const real = realpathSync(parent)
-      return tail.length === 0 ? real : [real, ...tail].join("/")
-    } catch {
-      // realpath can fail on EPERM / ELOOP — fall through to the
-      // resolved-but-not-realpathed form. The gate still rejects on
-      // string equality, so this errs toward denying rather than
-      // accidentally allowing a path that looked safe pre-realpath.
-    }
-  }
-  return absolute
-}
 
 const decision = (
   permissionDecision: "allow" | "deny" | "ask",
@@ -211,24 +175,32 @@ export const handlePreToolUse = (
         record.engagement_required &&
         record.expected_isa_path !== null
       ) {
-        const cwd =
+        // Distinguish three roots:
+        //  - currentCwd: the shell cwd at hook time (mutable; tracks Bash cd).
+        //    Used ONLY for resolving the tool's own input path, because the
+        //    model writes relative paths against the current shell cwd.
+        //  - sessionRoot: the frozen project root chosen at engagement
+        //    creation. Used for everything ISA-identity related.
+        //  - expectedAbsolute: the frozen absolute path to the ISA, set at
+        //    engagement creation; falls back to resolving against
+        //    sessionRoot when older session records lack the absolute form.
+        const currentCwd =
           typeof payload.cwd === "string" && payload.cwd.length > 0
             ? payload.cwd
             : process.cwd()
-        // expected_isa_path is stored project-relative; the wrapper
-        // computes the absolute and realpath-normalized forms so the
-        // gate can compare strings without worrying about `..`,
-        // symlinks, or relative-vs-absolute mismatches.
-        const expectedAbsolute = safeResolvePath(cwd, record.expected_isa_path)
+        const sessionRoot = record.session_root ?? currentCwd
+        const expectedAbsolute =
+          record.expected_isa_path_absolute ??
+          safeResolvePath(sessionRoot, record.expected_isa_path)
         const expectedDir =
           expectedAbsolute !== null ? dirname(expectedAbsolute) : null
         const expectedIsaExists =
           expectedAbsolute !== null && existsSync(expectedAbsolute)
-        // Project ISA at <cwd>/ISA.md is accepted for Edit/MultiEdit
+        // Project ISA at <sessionRoot>/ISA.md is accepted for Edit/MultiEdit
         // (aligning with the Stop gate) IFF it already exists. We do
         // NOT permit creating a fresh project ISA via Write — the
         // directive promised a deterministic location.
-        const projectIsaAbsolute = safeResolvePath(cwd, "ISA.md")
+        const projectIsaAbsolute = safeResolvePath(sessionRoot, "ISA.md")
         const projectIsaExists =
           projectIsaAbsolute !== null && existsSync(projectIsaAbsolute)
 
@@ -239,26 +211,36 @@ export const handlePreToolUse = (
             ? [...acceptedWritePaths, projectIsaAbsolute]
             : acceptedWritePaths
         // Bash mkdir comparison is string-based (no path resolution),
-        // so accept both the relative form the model would naturally
-        // type and the absolute form a tool might produce.
+        // so accept the absolute form unconditionally and the relative
+        // forms ONLY when the shell's current cwd is the session root.
+        // Without that guard, `mkdir -p .claude-hooks/work/<sid>` would
+        // be accepted while cwd has drifted into e.g. ~/.claude/skills/...,
+        // letting the model plant a fake ISA outside the project.
         const acceptedMkdirDirs: string[] = []
         if (expectedDir !== null) acceptedMkdirDirs.push(expectedDir)
+        const currentCwdResolved =
+          safeResolvePath(currentCwd, ".") ?? currentCwd
+        const sessionRootResolved =
+          safeResolvePath(sessionRoot, ".") ?? sessionRoot
+        const cwdIsSessionRoot = currentCwdResolved === sessionRootResolved
         const expectedDirRelative = dirname(record.expected_isa_path)
         const pushIfNew = (d: string): void => {
           if (d.length > 0 && !acceptedMkdirDirs.includes(d)) {
             acceptedMkdirDirs.push(d)
           }
         }
-        // The model can spell relative paths several common ways. Accept
-        // the bare relative form AND a leading `./` form (`./foo/bar`),
-        // since the engagement-gate's whitelist is exact-string.
-        pushIfNew(expectedDirRelative)
-        if (
-          expectedDirRelative !== "." &&
-          !expectedDirRelative.startsWith("./") &&
-          !expectedDirRelative.startsWith("/")
-        ) {
-          pushIfNew(`./${expectedDirRelative}`)
+        if (cwdIsSessionRoot) {
+          // The model can spell relative paths several common ways. Accept
+          // the bare relative form AND a leading `./` form (`./foo/bar`),
+          // since the engagement-gate's whitelist is exact-string.
+          pushIfNew(expectedDirRelative)
+          if (
+            expectedDirRelative !== "." &&
+            !expectedDirRelative.startsWith("./") &&
+            !expectedDirRelative.startsWith("/")
+          ) {
+            pushIfNew(`./${expectedDirRelative}`)
+          }
         }
         const anyAcceptedIsaExists =
           expectedIsaExists || projectIsaExists
@@ -267,7 +249,7 @@ export const handlePreToolUse = (
           typeof payload.tool_input === "object" && payload.tool_input !== null
             ? (payload.tool_input as { file_path?: unknown }).file_path
             : undefined
-        const resolvedToolFilePath = safeResolvePath(cwd, inputFp)
+        const resolvedToolFilePath = safeResolvePath(currentCwd, inputFp)
 
         const engagementVerdict = evaluateEngagementGate({
           engagement_required: record.engagement_required,

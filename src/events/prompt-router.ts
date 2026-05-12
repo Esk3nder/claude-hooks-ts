@@ -20,6 +20,8 @@ import {
   planEngagement,
   renderEngagementDirective,
 } from "../algorithm/isa/lifecycle.ts"
+import { detectSessionRoot } from "../services/project-root.ts"
+import { safeResolvePath } from "../services/path-resolution.ts"
 
 /**
  * UserPromptSubmit handler — TWO classifiers, layered (B4) — with the full
@@ -100,13 +102,29 @@ export const handleUserPromptSubmit = (
     // these fields; without them they cannot tell "no ISA" (legitimate
     // for a one-off NATIVE prompt) from "no ISA after ALGORITHM E3+ was
     // demanded" (a doctrine violation).
+    //
+    // ISA identity is a session invariant: we freeze the project root and
+    // the absolute ISA path here so a later Bash `cd` cannot move the
+    // expected target. The relative `expected_isa_path` stays for display
+    // and back-compat; downstream gates prefer `expected_isa_path_absolute`.
     const engagementRequired = plan !== null
+    const initialCwd =
+      typeof payload.cwd === "string" && payload.cwd.length > 0
+        ? payload.cwd
+        : process.cwd()
+    const sessionRoot = engagementRequired ? detectSessionRoot(initialCwd) : null
+    const expectedIsaPathAbsolute =
+      engagementRequired && sessionRoot !== null && plan !== null
+        ? safeResolvePath(sessionRoot, plan.isaPath)
+        : null
     yield* state
       .update(sessionId, {
         last_mode: classification.mode,
         last_tier: classification.tier,
         engagement_required: engagementRequired,
         expected_isa_path: engagementRequired ? plan.isaPath : null,
+        session_root: sessionRoot,
+        expected_isa_path_absolute: expectedIsaPathAbsolute,
       })
       .pipe(Effect.catchAll(() => Effect.succeed(undefined)))
 

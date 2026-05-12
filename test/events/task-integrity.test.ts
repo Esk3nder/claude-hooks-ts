@@ -10,9 +10,18 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import {
   handleTaskCreated,
-  handleTaskCompleted,
+  handleTaskCompleted as handleTaskCompletedRaw,
 } from "../../src/events/task-integrity.ts"
 import { HookPayload } from "../../src/schema/payloads.ts"
+import { SessionStateTest } from "../../src/services/session-state.ts"
+
+// All TaskCompleted tests run against an empty in-memory SessionState by
+// default. Tests that need a frozen session_root provide it via the second
+// argument (see drifted-cwd tests below).
+const handleTaskCompleted = (
+  p: Parameters<typeof handleTaskCompletedRaw>[0],
+  sessionStateLayer = SessionStateTest(),
+) => handleTaskCompletedRaw(p).pipe(Effect.provide(sessionStateLayer))
 
 const decode = (raw: unknown) => Schema.decodeUnknownSync(HookPayload)(raw)
 

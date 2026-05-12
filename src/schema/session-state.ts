@@ -30,6 +30,19 @@ export const SessionStateRecordSchema = Schema.Struct({
   last_tier: Schema.NullOr(Schema.Number),
   engagement_required: Schema.Boolean,
   expected_isa_path: Schema.NullOr(Schema.String),
+  /**
+   * Stable absolute project root frozen at engagement creation. The Stop
+   * gate, TaskCompleted gate, and PreToolUse engagement gate use this as
+   * the ISA-lookup root instead of mutable `payload.cwd`, so a Bash `cd`
+   * after engagement does not move the expected ISA target.
+   */
+  session_root: Schema.NullOr(Schema.String),
+  /**
+   * Frozen absolute form of `expected_isa_path`. Set when engagement is
+   * declared; the PreToolUse gate compares against this instead of
+   * re-resolving the relative path against the current shell cwd.
+   */
+  expected_isa_path_absolute: Schema.NullOr(Schema.String),
   isa_engaged_at: Schema.NullOr(Schema.String),
 })
 

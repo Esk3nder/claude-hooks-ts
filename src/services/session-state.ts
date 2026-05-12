@@ -26,6 +26,10 @@ export interface SessionStateRecord {
   readonly last_tier: number | null;
   readonly engagement_required: boolean;
   readonly expected_isa_path: string | null;
+  /** Stable project root frozen at engagement creation; see schema. */
+  readonly session_root: string | null;
+  /** Frozen absolute form of `expected_isa_path`; see schema. */
+  readonly expected_isa_path_absolute: string | null;
   readonly isa_engaged_at: string | null;
 }
 
@@ -46,6 +50,8 @@ export const EMPTY_SESSION_STATE: SessionStateRecord = {
   last_tier: null,
   engagement_required: false,
   expected_isa_path: null,
+  session_root: null,
+  expected_isa_path_absolute: null,
   isa_engaged_at: null,
 };
 
@@ -119,6 +125,17 @@ const isStringArray = (v: unknown): v is ReadonlyArray<string> =>
 
 const decodeStrict = Schema.decodeUnknownEither(SessionStateRecordSchema);
 
+const KNOWN_RECORD_KEYS: ReadonlySet<string> = new Set(
+  Object.keys(EMPTY_SESSION_STATE),
+);
+
+const hasAnyKnownKey = (parsed: Record<string, unknown>): boolean => {
+  for (const k of Object.keys(parsed)) {
+    if (KNOWN_RECORD_KEYS.has(k)) return true;
+  }
+  return false;
+};
+
 const parseRecordStrict = (
   raw: string,
   filePath: string,
@@ -130,7 +147,18 @@ const parseRecordStrict = (
   } catch {
     return null;
   }
-  const decoded = decodeStrict(parsed);
+  // Forward-compat default merge: if the JSON looks like a legacy session
+  // record (has at least one known schema key) but is missing newly-added
+  // fields, fill them with EMPTY_SESSION_STATE defaults before strict
+  // decode. Without this, introducing a new schema field would trigger
+  // the backup-and-reset path on every in-flight session and silently
+  // wipe their engagement bookkeeping. Records that look like garbage
+  // (no recognized keys) still hit the strict path → backup → reset.
+  const candidate =
+    isRecord(parsed) && hasAnyKnownKey(parsed)
+      ? { ...EMPTY_SESSION_STATE, ...parsed }
+      : parsed;
+  const decoded = decodeStrict(candidate);
   if (decoded._tag === "Right") {
     return decoded.right as SessionStateRecord;
   }
@@ -196,6 +224,14 @@ const parseRecord = (raw: string): SessionStateRecord => {
       expected_isa_path:
         typeof get("expected_isa_path") === "string"
           ? (get("expected_isa_path") as string)
+          : null,
+      session_root:
+        typeof get("session_root") === "string"
+          ? (get("session_root") as string)
+          : null,
+      expected_isa_path_absolute:
+        typeof get("expected_isa_path_absolute") === "string"
+          ? (get("expected_isa_path_absolute") as string)
           : null,
       isa_engaged_at:
         typeof get("isa_engaged_at") === "string"
