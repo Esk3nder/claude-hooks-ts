@@ -44,6 +44,12 @@ const writeTaskIsa = (root: string, slug: string, content: string): void => {
   writeFileSync(join(dir, "ISA.md"), content, "utf-8")
 }
 
+const writeCanonicalTaskIsa = (root: string, slug: string, content: string): void => {
+  const dir = join(root, ".claude-hooks", "work", slug)
+  mkdirSync(dir, { recursive: true })
+  writeFileSync(join(dir, "ISA.md"), content, "utf-8")
+}
+
 const runStop = async (
   cwd: string,
   initial: Partial<SessionStateRecord> = {},
@@ -733,7 +739,39 @@ describe("Stop engagement absence-is-failure gate", () => {
     }
   })
 
-  test("engagement_required + task ISA exists at deterministic path → gate does NOT fire", async () => {
+  // FIXES: ISA-identity must be session-scoped.
+  // Previously this test passed when ANY task ISA existed under session_root,
+  // regardless of slug. That meant a stale foreign-slug ISA could satisfy
+  // the engagement gate. Now the gate only accepts the session's own
+  // expected ISA (or a project ISA).
+  test("engagement_required + task ISA exists AT THE EXPECTED PATH → gate does NOT fire", async () => {
+    const { root, cleanup } = stage()
+    try {
+      const minimalIsa = `---\neffort: advanced\nphase: observe\n---\n\n## Goal\nx\n\n## Criteria\n- [ ] ISC-1: tbd\n`
+      // Write the ISA at the slug the session expects (canonical path), not a foreign slug.
+      writeCanonicalTaskIsa(root, "test-stop", minimalIsa)
+      const out = await runStop(root, {
+        engagement_required: true,
+        last_mode: "ALGORITHM",
+        last_tier: 4,
+        expected_isa_path: ".claude-hooks/work/test-stop/ISA.md",
+        expected_isa_path_absolute: join(
+          root,
+          ".claude-hooks",
+          "work",
+          "test-stop",
+          "ISA.md",
+        ),
+      })
+      expect(out).toEqual({})
+    } finally {
+      cleanup()
+    }
+  })
+
+  // FIXES: ISA-identity must be session-scoped.
+  // A foreign-slug ISA under session_root must NOT satisfy the engagement.
+  test("engagement_required + foreign-slug task ISA only → BLOCK (identity scoping)", async () => {
     const { root, cleanup } = stage()
     try {
       const minimalIsa = `---\neffort: advanced\nphase: observe\n---\n\n## Goal\nx\n\n## Criteria\n- [ ] ISC-1: tbd\n`
@@ -743,8 +781,16 @@ describe("Stop engagement absence-is-failure gate", () => {
         last_mode: "ALGORITHM",
         last_tier: 4,
         expected_isa_path: ".claude-hooks/work/test-stop/ISA.md",
+        expected_isa_path_absolute: join(
+          root,
+          ".claude-hooks",
+          "work",
+          "test-stop",
+          "ISA.md",
+        ),
       })
-      expect(out).toEqual({})
+      expect(out.decision).toBe("block")
+      expect(out.reason ?? "").toContain("test-stop")
     } finally {
       cleanup()
     }
