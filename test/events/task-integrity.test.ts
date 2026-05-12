@@ -13,15 +13,45 @@ import {
   handleTaskCompleted as handleTaskCompletedRaw,
 } from "../../src/events/task-integrity.ts"
 import { HookPayload } from "../../src/schema/payloads.ts"
-import { SessionStateTest } from "../../src/services/session-state.ts"
+import {
+  SessionStateTest,
+  EMPTY_SESSION_STATE,
+} from "../../src/services/session-state.ts"
 
-// All TaskCompleted tests run against an empty in-memory SessionState by
-// default. Tests that need a frozen session_root provide it via the second
-// argument (see drifted-cwd tests below).
+// Test isolation: tests that don't pin `cwd` on the payload would
+// otherwise default to `process.cwd()` for ISA discovery, which picks up
+// whatever real-world ISA happens to live under the repo's
+// `.claude-hooks/work/` directory. To keep the AC/evidence-focused tests
+// hermetic, the wrapper seeds `session_root` to an empty tmpdir ONLY
+// when the payload has no explicit `cwd`. Tests that pass `cwd` (the
+// ISA-discovery suite below) continue to drive the handler with their
+// own staged directory.
+const ISOLATED_ROOT = mkdtempSync(join(tmpdir(), "chts-ti-isolated-"))
+
+const isolatedSessionState = (sessionId: string) =>
+  SessionStateTest(
+    new Map([
+      [
+        sessionId,
+        { ...EMPTY_SESSION_STATE, session_root: ISOLATED_ROOT },
+      ],
+    ]),
+  )
+
 const handleTaskCompleted = (
   p: Parameters<typeof handleTaskCompletedRaw>[0],
-  sessionStateLayer = SessionStateTest(),
-) => handleTaskCompletedRaw(p).pipe(Effect.provide(sessionStateLayer))
+  sessionStateLayer?: ReturnType<typeof SessionStateTest>,
+) => {
+  const payloadCwd =
+    typeof (p as { cwd?: unknown }).cwd === "string" &&
+    (p as { cwd: string }).cwd.length > 0
+  const layer =
+    sessionStateLayer ??
+    (payloadCwd
+      ? SessionStateTest()
+      : isolatedSessionState((p as { session_id: string }).session_id))
+  return handleTaskCompletedRaw(p).pipe(Effect.provide(layer))
+}
 
 const decode = (raw: unknown) => Schema.decodeUnknownSync(HookPayload)(raw)
 

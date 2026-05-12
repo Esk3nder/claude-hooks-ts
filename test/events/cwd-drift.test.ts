@@ -361,3 +361,132 @@ describe("Session-state forward-compat — legacy records without new fields", (
     }
   })
 })
+
+describe("UserPromptSubmit — frozen root is write-once across prompts", () => {
+  // Regression: a second ALGORITHM E3+ prompt after Bash cd MUST NOT
+  // overwrite the previously frozen session_root / expected_isa_path_absolute.
+  // Without this guard, the gate is rooted at the drifted cwd on the next
+  // prompt and the original frozen ISA becomes invisible again.
+  test("repeated ALGORITHM prompt under drifted cwd preserves frozen root", async () => {
+    const { handleUserPromptSubmit } = await import(
+      "../../src/events/prompt-router.ts"
+    )
+    const { InferenceTest, FAIL_SAFE } = await import(
+      "../../src/services/inference.ts"
+    )
+    const { ClaudeSubprocessTest } = await import(
+      "../../src/services/claude-subprocess.ts"
+    )
+    const { ClassifierTelemetryTest } = await import(
+      "../../src/services/classifier-telemetry.ts"
+    )
+    const { SessionState } = await import(
+      "../../src/services/session-state.ts"
+    )
+
+    const { root, drift, cleanup } = stage("router-freeze")
+    try {
+      const sid = "router-freeze-1"
+      const frozenAbs = path.join(root, EXPECTED_REL)
+      const sharedState = SessionStateTest(
+        new Map([
+          [
+            sid,
+            {
+              ...EMPTY_SESSION_STATE,
+              engagement_required: true,
+              last_mode: "ALGORITHM",
+              last_tier: 3,
+              expected_isa_path: EXPECTED_REL,
+              expected_isa_path_absolute: frozenAbs,
+              session_root: root,
+            },
+          ],
+        ]),
+      )
+      const inferenceLayer = InferenceTest(() => ({
+        ...FAIL_SAFE,
+        reason: "test → ALGORITHM E3",
+        latencyMs: 0,
+      }))
+      const payload = decode({
+        _tag: "UserPromptSubmit",
+        session_id: sid,
+        hook_event_name: "UserPromptSubmit",
+        cwd: drift,
+        prompt: "design the new caching layer",
+      })
+      // Run handler AND state read inside the same Effect so both share
+      // a single materialized SessionStateTest Ref.
+      const after = await Effect.runPromise(
+        Effect.gen(function* () {
+          yield* handleUserPromptSubmit(payload)
+          const s = yield* SessionState
+          return yield* s.get(sid)
+        }).pipe(
+          Effect.provide(sharedState),
+          Effect.provide(inferenceLayer),
+          Effect.provide(ClaudeSubprocessTest()),
+          Effect.provide(ClassifierTelemetryTest().layer),
+        ),
+      )
+      expect(after.session_root).toBe(root)
+      expect(after.expected_isa_path_absolute).toBe(frozenAbs)
+    } finally {
+      cleanup()
+    }
+  })
+
+  test("first ALGORITHM prompt with no existing record still freezes a root", async () => {
+    const { handleUserPromptSubmit } = await import(
+      "../../src/events/prompt-router.ts"
+    )
+    const { InferenceTest, FAIL_SAFE } = await import(
+      "../../src/services/inference.ts"
+    )
+    const { ClaudeSubprocessTest } = await import(
+      "../../src/services/claude-subprocess.ts"
+    )
+    const { ClassifierTelemetryTest } = await import(
+      "../../src/services/classifier-telemetry.ts"
+    )
+    const { SessionState } = await import(
+      "../../src/services/session-state.ts"
+    )
+
+    const { root, cleanup } = stage("router-freeze-first")
+    try {
+      const sid = "router-freeze-2"
+      const sharedState = SessionStateTest()
+      const inferenceLayer = InferenceTest(() => ({
+        ...FAIL_SAFE,
+        reason: "test → ALGORITHM E3",
+        latencyMs: 0,
+      }))
+      const payload = decode({
+        _tag: "UserPromptSubmit",
+        session_id: sid,
+        hook_event_name: "UserPromptSubmit",
+        cwd: root,
+        prompt: "design the new caching layer",
+      })
+      const after = await Effect.runPromise(
+        Effect.gen(function* () {
+          yield* handleUserPromptSubmit(payload)
+          const s = yield* SessionState
+          return yield* s.get(sid)
+        }).pipe(
+          Effect.provide(sharedState),
+          Effect.provide(inferenceLayer),
+          Effect.provide(ClaudeSubprocessTest()),
+          Effect.provide(ClassifierTelemetryTest().layer),
+        ),
+      )
+      expect(after.engagement_required).toBe(true)
+      expect(after.session_root).not.toBe(null)
+      expect(after.expected_isa_path_absolute).not.toBe(null)
+    } finally {
+      cleanup()
+    }
+  })
+})

@@ -103,19 +103,28 @@ export const handleUserPromptSubmit = (
     // for a one-off NATIVE prompt) from "no ISA after ALGORITHM E3+ was
     // demanded" (a doctrine violation).
     //
-    // ISA identity is a session invariant: we freeze the project root and
-    // the absolute ISA path here so a later Bash `cd` cannot move the
-    // expected target. The relative `expected_isa_path` stays for display
-    // and back-compat; downstream gates prefer `expected_isa_path_absolute`.
+    // ISA identity is a session invariant. We freeze `session_root` and
+    // `expected_isa_path_absolute` write-once for the lifetime of a
+    // session: if a prior ALGORITHM prompt already froze them, subsequent
+    // prompts MUST NOT overwrite (even if `payload.cwd` has drifted since
+    // — e.g. after a Bash `cd ~/.claude/skills/...`). The relative
+    // `expected_isa_path` stays for display and back-compat; downstream
+    // gates prefer `expected_isa_path_absolute`.
     const engagementRequired = plan !== null
+    const existing = yield* state
+      .get(sessionId)
+      .pipe(Effect.catchAll(() => Effect.succeed(null)))
     const initialCwd =
       typeof payload.cwd === "string" && payload.cwd.length > 0
         ? payload.cwd
         : process.cwd()
-    const sessionRoot = engagementRequired ? detectSessionRoot(initialCwd) : null
+    const sessionRoot = engagementRequired
+      ? (existing?.session_root ?? detectSessionRoot(initialCwd))
+      : null
     const expectedIsaPathAbsolute =
       engagementRequired && sessionRoot !== null && plan !== null
-        ? safeResolvePath(sessionRoot, plan.isaPath)
+        ? (existing?.expected_isa_path_absolute ??
+          safeResolvePath(sessionRoot, plan.isaPath))
         : null
     yield* state
       .update(sessionId, {
