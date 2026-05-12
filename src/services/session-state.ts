@@ -9,7 +9,34 @@ import { withFileLock } from "./file-lock.ts";
 
 export type VerificationStatus = "passed" | "failed" | "none";
 
-export interface SessionStateRecord {
+/**
+ * Engagement state — fields the ALGORITHM-engagement choreography reads
+ * and writes (UserPromptSubmit → PreToolUse gate → Stop absence gate).
+ * Owned conceptually by the prompt-router + engagement-gate; persisted
+ * inline in the unified SessionStateRecord (no on-disk migration).
+ *
+ * `stop_blocked_once` belongs here because its sole consumer is the
+ * Stop ISA-absence gate — the boolean is the one-shot release for the
+ * engagement absence rule, not a generic verification field.
+ */
+export interface EngagementState {
+  readonly engagement_required: boolean;
+  readonly expected_isa_path: string | null;
+  /** Stable project root frozen at engagement creation. */
+  readonly session_root: string | null;
+  /** Frozen absolute form of `expected_isa_path`. */
+  readonly expected_isa_path_absolute: string | null;
+  readonly isa_engaged_at: string | null;
+  readonly last_tier: number | null;
+  readonly stop_blocked_once: boolean;
+}
+
+/**
+ * Verification ledger — append-only evidence collected during a session.
+ * Owned by the PostToolUse / session-ledger handlers; read by the Stop
+ * "files changed but no verification" gate and the subagent-scope gate.
+ */
+export interface VerificationLedger {
   readonly files_read: ReadonlyArray<string>;
   readonly files_changed: ReadonlyArray<string>;
   readonly commands_run: ReadonlyArray<string>;
@@ -17,21 +44,32 @@ export interface SessionStateRecord {
   readonly tests_run: ReadonlyArray<string>;
   readonly verification_status: VerificationStatus;
   readonly next_required_action: string | null;
-  readonly stop_blocked_once: boolean;
-  readonly source_urls: ReadonlyArray<string>;
   readonly subagent_starts: ReadonlyArray<string>;
   readonly subagent_stops: ReadonlyArray<string>;
+}
+
+/**
+ * Mode/workflow cache — classifier outputs the Stop gates and the
+ * engagement directive consult on subsequent turns. Includes the
+ * research source-URL ledger because its only Stop-gate consumer
+ * (research-mode source-ledger) keys off `last_workflow`.
+ */
+export interface ModeCache {
   readonly last_workflow: string | null;
   readonly last_mode: string | null;
-  readonly last_tier: number | null;
-  readonly engagement_required: boolean;
-  readonly expected_isa_path: string | null;
-  /** Stable project root frozen at engagement creation; see schema. */
-  readonly session_root: string | null;
-  /** Frozen absolute form of `expected_isa_path`; see schema. */
-  readonly expected_isa_path_absolute: string | null;
-  readonly isa_engaged_at: string | null;
+  readonly source_urls: ReadonlyArray<string>;
 }
+
+/**
+ * Unified on-disk record. Composed from the three focused sub-records
+ * above; persisted as a single JSON file per session so this split has
+ * no migration cost. Each handler reads/writes through the SessionState
+ * service but conceptually touches only one slice.
+ */
+export interface SessionStateRecord
+  extends EngagementState,
+    VerificationLedger,
+    ModeCache {}
 
 export const EMPTY_SESSION_STATE: SessionStateRecord = {
   files_read: [],
@@ -533,3 +571,52 @@ export const SessionStateTest = (
       });
     }),
   );
+
+// ─────────────────────────────────────────────────────────────────────
+// Focused projections — sub-record views over the unified record.
+//
+// The three slices are persisted inline in one JSON file (no migration),
+// but conceptually each handler should only touch the slice it owns.
+// These projections make that intent legible at call sites that want it,
+// without forcing the 50+ existing call sites to migrate at once.
+//
+// Engagement: prompt-router (write), pretool engagement gate (read),
+//   Stop ISA-absence gate (read + stop_blocked_once write), TaskCompleted
+//   evidence gate (read).
+// Verification: post-edit-quality (write), session-ledger (write), Stop
+//   files-changed-without-verification gate (read), subagent-scope gate
+//   (read), batch-context-governor (read).
+// ModeCache: prompt-router (write last_workflow / last_mode), Stop
+//   research-mode gate (read last_workflow, source_urls).
+// ─────────────────────────────────────────────────────────────────────
+
+/** Project the engagement slice from a unified record. */
+export const engagementOf = (r: SessionStateRecord): EngagementState => ({
+  engagement_required: r.engagement_required,
+  expected_isa_path: r.expected_isa_path,
+  session_root: r.session_root,
+  expected_isa_path_absolute: r.expected_isa_path_absolute,
+  isa_engaged_at: r.isa_engaged_at,
+  last_tier: r.last_tier,
+  stop_blocked_once: r.stop_blocked_once,
+});
+
+/** Project the verification slice from a unified record. */
+export const verificationOf = (r: SessionStateRecord): VerificationLedger => ({
+  files_read: r.files_read,
+  files_changed: r.files_changed,
+  commands_run: r.commands_run,
+  commands_failed: r.commands_failed,
+  tests_run: r.tests_run,
+  verification_status: r.verification_status,
+  next_required_action: r.next_required_action,
+  subagent_starts: r.subagent_starts,
+  subagent_stops: r.subagent_stops,
+});
+
+/** Project the mode-cache slice from a unified record. */
+export const modeCacheOf = (r: SessionStateRecord): ModeCache => ({
+  last_workflow: r.last_workflow,
+  last_mode: r.last_mode,
+  source_urls: r.source_urls,
+});

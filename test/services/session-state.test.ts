@@ -4,6 +4,9 @@ import {
   SessionState,
   SessionStateTest,
   EMPTY_SESSION_STATE,
+  engagementOf,
+  verificationOf,
+  modeCacheOf,
 } from "../../src/services/session-state.ts";
 
 describe("SessionState (test layer)", () => {
@@ -72,5 +75,78 @@ describe("SessionState (test layer)", () => {
     expect(r.commands_run).toEqual([]);
     expect(r.tests_run).toEqual([]);
     expect(r.verification_status).toBe("none");
+  });
+});
+
+describe("SessionStateRecord — focused sub-record projections", () => {
+  // The split is type-level + projection-helpers only; the on-disk record
+  // stays unified. These tests pin (a) that each projection returns
+  // exactly the fields the owning concern needs and (b) that the three
+  // slices partition the record cleanly with no overlap.
+  test("engagementOf returns engagement-owned fields only", () => {
+    const r = {
+      ...EMPTY_SESSION_STATE,
+      engagement_required: true,
+      expected_isa_path: ".claude-hooks/work/x/ISA.md",
+      session_root: "/tmp/root",
+      expected_isa_path_absolute: "/tmp/root/.claude-hooks/work/x/ISA.md",
+      isa_engaged_at: "2026-05-11T00:00:00.000Z",
+      last_tier: 3,
+      stop_blocked_once: true,
+      // mode-cache / verification fields below — must NOT leak into the
+      // engagement projection.
+      last_mode: "ALGORITHM",
+      last_workflow: "research.foo",
+      files_changed: ["/a"],
+      verification_status: "passed" as const,
+    };
+    expect(engagementOf(r)).toEqual({
+      engagement_required: true,
+      expected_isa_path: ".claude-hooks/work/x/ISA.md",
+      session_root: "/tmp/root",
+      expected_isa_path_absolute: "/tmp/root/.claude-hooks/work/x/ISA.md",
+      isa_engaged_at: "2026-05-11T00:00:00.000Z",
+      last_tier: 3,
+      stop_blocked_once: true,
+    });
+  });
+
+  test("verificationOf returns ledger fields only", () => {
+    const r = {
+      ...EMPTY_SESSION_STATE,
+      files_changed: ["/a"],
+      commands_run: ["ls"],
+      tests_run: ["t1"],
+      verification_status: "passed" as const,
+      next_required_action: "go",
+      subagent_starts: ["sub1"],
+      subagent_stops: ["sub1"],
+      // engagement / mode fields — must not leak
+      engagement_required: true,
+      last_mode: "ALGORITHM",
+      source_urls: ["http://x"],
+    };
+    const v = verificationOf(r);
+    expect(v.files_changed).toEqual(["/a"]);
+    expect(v.verification_status).toBe("passed");
+    expect((v as Record<string, unknown>)["engagement_required"]).toBeUndefined();
+    expect((v as Record<string, unknown>)["source_urls"]).toBeUndefined();
+  });
+
+  test("modeCacheOf returns mode/workflow/source-url fields only", () => {
+    const r = {
+      ...EMPTY_SESSION_STATE,
+      last_mode: "ALGORITHM",
+      last_workflow: "research.foo",
+      source_urls: ["http://x"],
+      // engagement field — must not leak
+      engagement_required: true,
+      last_tier: 3,
+    };
+    expect(modeCacheOf(r)).toEqual({
+      last_mode: "ALGORITHM",
+      last_workflow: "research.foo",
+      source_urls: ["http://x"],
+    });
   });
 });
