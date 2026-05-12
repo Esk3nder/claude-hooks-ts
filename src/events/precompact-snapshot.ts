@@ -1,4 +1,5 @@
 import { Effect } from "effect"
+import { createHash } from "node:crypto"
 import { existsSync, mkdirSync, readFileSync } from "node:fs"
 import * as path from "node:path"
 import type { HookPayload } from "../schema/payloads.ts"
@@ -108,6 +109,39 @@ const truncate = (s: string, max: number): string =>
 
 const sanitize = (s: string): string => s.replace(/[^a-zA-Z0-9._-]/g, "_")
 
+const sanitizeTag = (s: string): string =>
+  sanitize(s.toLowerCase())
+    .replace(/_+/g, "_")
+    .replace(/^_+|_+$/g, "") || "unknown"
+
+const slugifyCustomInstructions = (s: string): string => {
+  const words = s
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, " ")
+    .trim()
+    .split(/\s+/)
+    .filter((part) => part.length > 0)
+
+  const picked: string[] = []
+  let total = 0
+  for (const word of words) {
+    const next = picked.length === 0 ? word.length : word.length + 1
+    if (total + next > 20) break
+    picked.push(word)
+    total += next
+  }
+
+  return picked.join("_") || "none"
+}
+
+const customInstructionsTag = (customInstructions: string | undefined): string => {
+  const raw = customInstructions?.trim() ?? ""
+  if (raw.length === 0) return "none"
+  const slug = slugifyCustomInstructions(raw)
+  const hash = createHash("sha256").update(raw).digest("hex").slice(0, 8)
+  return `${slug}-${hash}`
+}
+
 export const handlePreCompact = (
   payload: HookPayload,
 ): Effect.Effect<HookDecision, never, FileSystem | SessionState | Project> =>
@@ -133,13 +167,15 @@ export const handlePreCompact = (
     const ts = Date.now()
     const tsIso = new Date(ts).toISOString()
     const safeId = sanitize(payload.session_id)
+    const safeTrigger = sanitizeTag(payload.trigger ?? "unknown")
+    const safeInstructions = customInstructionsTag(payload.custom_instructions)
     const safeTs = sanitize(tsIso)
     const snapshotPath = path.join(
       root,
       ".claude-hooks",
       "state",
       "compact-snapshots",
-      `${safeId}-${safeTs}.md`,
+      `${safeId}-${safeTrigger}-${safeInstructions}-${safeTs}.md`,
     )
 
     const fmtList = (xs: ReadonlyArray<string>): string =>

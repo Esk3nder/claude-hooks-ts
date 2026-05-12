@@ -34,6 +34,13 @@ interface ArchiveCandidate {
  *
  * Pure: reads files but does not write. The handler does the writes.
  */
+const permissionBoundaryLines = (
+  reason: string | undefined,
+): ReadonlyArray<string> =>
+  reason === "bypass_permissions_disabled"
+    ? ["- permission_boundary: bypass_permissions_disabled"]
+    : []
+
 const findCompletedIsas = (root: string, dateIso: string): ArchiveCandidate[] => {
   const out: ArchiveCandidate[] = []
   const date = dateIso.slice(0, 10) // YYYY-MM-DD
@@ -109,6 +116,7 @@ export const handleSessionEnd = (
       `- session_id: ${payload.session_id}`,
       `- ended_at: ${tsIso}`,
       `- reason: ${payload.reason ?? "(unspecified)"}`,
+      ...permissionBoundaryLines(payload.reason),
       `- verification_status: ${record.verification_status}`,
       `- next_required_action: ${record.next_required_action ?? "(none)"}`,
       "",

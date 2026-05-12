@@ -56,6 +56,30 @@ describe("handleSessionEnd", () => {
     expect(r.content).toContain("verification_status: passed")
   })
 
+  test("preserves bypass_permissions_disabled and marks it as a permission boundary", async () => {
+    const layer = Layer.mergeAll(
+      FileSystemTest(),
+      SessionStateTest(),
+      ProjectTest({ root: "/proj" }),
+    )
+    const payload = decode({
+      _tag: "SessionEnd",
+      session_id: "sid-perm",
+      hook_event_name: "SessionEnd",
+      reason: "bypass_permissions_disabled",
+    })
+    const program = Effect.gen(function* () {
+      yield* handleSessionEnd(payload)
+      const fs = yield* FileSystem
+      return yield* fs.readFile(
+        "/proj/.claude-hooks/state/sessions/sid-perm.md",
+      )
+    })
+    const content = await Effect.runPromise(program.pipe(Effect.provide(layer)))
+    expect(content).toContain("- reason: bypass_permissions_disabled")
+    expect(content).toContain("- permission_boundary: bypass_permissions_disabled")
+  })
+
   test("non-SessionEnd payload → SAFE_DEFAULT, no write", async () => {
     const layer = Layer.mergeAll(
       FileSystemTest(),

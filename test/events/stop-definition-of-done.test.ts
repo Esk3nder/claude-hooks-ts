@@ -114,4 +114,42 @@ describe("handleStop (definition of done)", () => {
     )
     expect(d).toEqual({})
   })
+
+  test("state-driven loop guard does not depend on doc-derived stop_hook_active payload semantics", async () => {
+    const layer = SessionStateTest(
+      new Map([
+        [
+          "sid-7",
+          {
+            ...EMPTY_SESSION_STATE,
+            files_changed: ["/repo/a.ts"],
+            verification_status: "none" as const,
+          },
+        ],
+      ]),
+    )
+
+    const program = Effect.gen(function* () {
+      const first = yield* handleStop(
+        {
+          ...stop("sid-7"),
+          stop_hook_active: true,
+        } as ReturnType<typeof stop> & { stop_hook_active: boolean },
+      )
+      const state = yield* SessionState
+      const afterFirst = yield* state.get("sid-7")
+      const second = yield* handleStop(
+        {
+          ...stop("sid-7"),
+          stop_hook_active: false,
+        } as ReturnType<typeof stop> & { stop_hook_active: boolean },
+      )
+      return { first, afterFirst, second }
+    })
+
+    const result = await Effect.runPromise(program.pipe(Effect.provide(layer)))
+    expect((result.first as { decision?: string }).decision).toBe("block")
+    expect(result.afterFirst.stop_blocked_once).toBe(true)
+    expect(result.second).toEqual({})
+  })
 })

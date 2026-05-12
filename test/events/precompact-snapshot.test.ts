@@ -1,4 +1,6 @@
 import { describe, expect, test } from "bun:test"
+import { createHash } from "node:crypto"
+import { basename } from "node:path"
 import { Effect, Layer, Schema } from "effect"
 import { handlePreCompact } from "../../src/events/precompact-snapshot.ts"
 import { HookPayload } from "../../src/schema/payloads.ts"
@@ -73,6 +75,57 @@ describe("handlePreCompact (red-team #9)", () => {
     expect(r.content).toContain("Finish the post-edit hook")
     expect(r.content).toContain("bun test")
     expect(r.content).toContain("https://example.com/doc")
+  })
+
+  test("tags snapshot filename with sanitized trigger and bounded custom-instructions slug/hash", async () => {
+    const customInstructions = "Ship auth! keep login flow stable; verify OAuth callback + csrf."
+    const fsLayer = FileSystemTest()
+    const layer = Layer.mergeAll(
+      fsLayer,
+      SessionStateTest(
+        new Map([
+          [
+            "sid tag/1",
+            {
+              ...EMPTY_SESSION_STATE,
+              next_required_action: "Preserve compact state",
+            },
+          ],
+        ]),
+      ),
+      ProjectTest({ root: "/proj" }),
+    )
+
+    const program = Effect.gen(function* () {
+      const decision = yield* handlePreCompact(
+        decode({
+          _tag: "PreCompact",
+          session_id: "sid tag/1",
+          hook_event_name: "PreCompact",
+          trigger: "manual compact",
+          custom_instructions: customInstructions,
+        }),
+      )
+      const fs = yield* FileSystem
+      const out = decision as { hookSpecificOutput: { additionalContext: string } }
+      const ctx = out.hookSpecificOutput.additionalContext
+      const m = ctx.match(/snapshot: (\S+)/)
+      const snapshotPath = m === null ? "" : m[1]!
+      const content = yield* fs.readFile(snapshotPath)
+      return { snapshotPath, content }
+    })
+
+    const r = await Effect.runPromise(program.pipe(Effect.provide(layer)))
+    const fileName = basename(r.snapshotPath)
+    const expectedHash = createHash("sha256")
+      .update(customInstructions)
+      .digest("hex")
+      .slice(0, 8)
+
+    expect(fileName).toMatch(/^sid_tag_1-manual_compact-/)
+    expect(fileName).toContain(`ship_auth_keep_login-${expectedHash}`)
+    expect(fileName.length).toBeLessThanOrEqual(120)
+    expect(r.content).toContain(customInstructions)
   })
 
   test("non-PreCompact payload → SAFE_DEFAULT", async () => {
