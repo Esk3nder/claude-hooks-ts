@@ -196,7 +196,7 @@ const WEB_SOURCES_REQUIRED: ReadonlyArray<RegExp> = [
   /\bonline (?:research|sources?|references?)\b/i,
   /\bwhat'?s the latest (?:news|on|in)\b/i,
   /\blatest news (?:on|about|in)\b/i,
-  /\bcurrent best practice/i,
+  /\bcurrent best practices?\b/i,
   /\bstate of the art\b/i,
   /\brecent (?:news|update)s?\b/i,
 ]

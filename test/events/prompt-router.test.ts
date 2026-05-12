@@ -288,12 +288,13 @@ describe("handleUserPromptSubmit", () => {
   })
 
   test("persists requires_web_sources=false for a loose research.web priming match", async () => {
-    // Reproduction of the in-session bug: "are we on the latest" classified
-    // as research.web by the priming regex (loose `latest` match — now
-    // tightened, but a similar loose match could recur), yet must NOT
-    // engage the Stop research-mode gate. The strict predicate stays
-    // false, so the persisted gate signal is false even when the priming
-    // tag is research.web.
+    // This is the decoupling contract: the priming tag is `research.web`
+    // (because "look up" matches the priming regex) but the STRICT
+    // `requiresWebSources` predicate does NOT fire for "look up my notes"
+    // — there's no `search the web`, `cite authoritative sources`, etc.
+    // Old behavior would have blocked Stop on the loose priming match;
+    // the new contract requires `requires_web_sources=false` here so the
+    // Stop gate doesn't fire.
     const { SessionState } = await import(
       "../../src/services/session-state.ts"
     )
@@ -301,11 +302,7 @@ describe("handleUserPromptSubmit", () => {
       _tag: "UserPromptSubmit",
       session_id: "loose-research",
       hook_event_name: "UserPromptSubmit",
-      // Today the priming regex puts this into `unknown` (we tightened
-      // `latest`), but the persistence contract still has to hold for any
-      // future loose research.web match — set up the strict predicate
-      // check directly via the prompt below.
-      prompt: "find some background on this in the repo",
+      prompt: "look up my notes from yesterday",
     })
     const record = await Effect.runPromise(
       Effect.gen(function* () {
@@ -319,6 +316,9 @@ describe("handleUserPromptSubmit", () => {
         Effect.provide(ClassifierTelemetryTest().layer),
       ),
     )
+    // Priming tag is the loose research.web (via "look up"), but the
+    // strict gate signal stays false — this is the decoupling.
+    expect(record.last_workflow).toBe("research.web")
     expect(record.requires_web_sources).toBe(false)
   })
 
