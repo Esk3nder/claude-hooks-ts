@@ -33,11 +33,11 @@ const RESEARCH_BLOCK_REASON =
 /**
  * Stop handler.
  *
- * Loop-protection note: the official Claude Code Stop event payload does NOT
- * carry a `stop_hook_active` field (despite earlier docs/community examples).
- * We instead rely on `SessionState.stop_blocked_once` — once a session has
- * blocked one Stop, the next Stop in that session is allowed through to
- * avoid an infinite block loop.
+ * Loop protection is session-state driven inside this Effect handler:
+ * `SessionState.stop_blocked_once` is the only loop guard. Any external or
+ * doc-derived `stop_hook_active` payload semantics are intentionally ignored,
+ * so once a session has blocked one Stop, the next Stop in that session is
+ * allowed through to avoid an infinite block loop.
  */
 export const handleStop = (
   payload: HookPayload,
