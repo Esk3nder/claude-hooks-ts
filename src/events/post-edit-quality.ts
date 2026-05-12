@@ -187,7 +187,10 @@ export const handlePostToolUse = (
     // flip-without-commit class of bug — when probes flip a checkbox via
     // hook-side writeFileSync, no PostToolUse fires, so the façade must
     // run checkpoint inline.
-    yield* handlePostToolUseIsaEffects(isaRoot)
+    // Pass the session record so probe targeting honors session-scoped
+    // ISA identity (a stale foreign-slug ISA under session_root must NOT
+    // be flipped by the current session's probe runner).
+    yield* handlePostToolUseIsaEffects(isaRoot, record ?? undefined)
 
     // Branch (b): formatter. Only runs when this was a file edit AND the
     // file isn't an ISA AND a formatter is registered for the extension.

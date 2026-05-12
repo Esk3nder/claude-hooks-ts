@@ -66,9 +66,6 @@ describe("handlePostToolUseIsaEffects — session-scoped ISA identity", () => {
       // resolver can scope the lookup. Current (buggy) main accepts only cwd
       // and would walk findLatestISA(root) → pick up the foreign ISA.
       await Effect.runPromise(
-        // The GREEN signature takes (cwd, record?). RED runs against current
-        // main which ignores `record` — the foreign ISA will be flipped.
-        // @ts-expect-error — second arg is the new signature introduced by GREEN.
         handlePostToolUseIsaEffects(root, record),
       )
 

@@ -6,8 +6,7 @@ import type { HookPayload } from "../schema/payloads.ts"
 import type { HookDecision } from "../schema/decisions.ts"
 import { SAFE_DEFAULT } from "../schema/decisions.ts"
 import { SessionState } from "../services/session-state.ts"
-import { findLatestISA, findProjectIsa } from "../algorithm/isa/locate.ts"
-import { checkStopReadiness } from "../algorithm/isa/lifecycle.ts"
+import { checkStopReadiness, resolveActiveIsa } from "../algorithm/isa/lifecycle.ts"
 import { loadRegenerateRules, matchRules } from "../policies/regenerate.ts"
 
 const execFileAsync = promisify(execFile)
@@ -107,11 +106,11 @@ export const handleStop = (
     // reasons first; this gate is the doctrinal fallback. Fires once per
     // session via stop_blocked_once.
     if (record.engagement_required) {
-      const projectIsa = findProjectIsa(sessionRoot)
-      const taskIsa = findLatestISA(sessionRoot)
-      const hasAnyIsa =
-        (projectIsa !== null && existsSync(projectIsa)) ||
-        (taskIsa !== null && existsSync(taskIsa))
+      // Session-scoped: a project ISA or the session's OWN expected ISA
+      // satisfies the gate. A stale foreign-slug ISA under session_root
+      // must NOT — that's the bug this resolver fixes.
+      const activeIsa = resolveActiveIsa({ sessionRoot, record })
+      const hasAnyIsa = activeIsa !== null && existsSync(activeIsa)
       if (!hasAnyIsa) {
         yield* state
           .update(payload.session_id, { stop_blocked_once: true })
