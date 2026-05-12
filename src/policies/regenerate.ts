@@ -31,6 +31,7 @@
 
 import { existsSync, readFileSync } from "node:fs"
 import { join } from "node:path"
+import { normalizePathPattern } from "./path-utils.ts"
 
 const REGENERATE_SUBPATH = [".claude-hooks", "regenerate.yaml"] as const
 
@@ -210,7 +211,7 @@ export const matchRules = (
 ): ReadonlyArray<RegenerateRule> => {
   const matched: RegenerateRule[] = []
   for (const r of rules) {
-    const re = globToRegex(r.source)
+    const re = globToRegex(normalizePathPattern(r.source))
     if (changedFiles.some((f) => re.test(f))) matched.push(r)
   }
   return matched

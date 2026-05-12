@@ -17,6 +17,11 @@ import * as path from "node:path";
 import * as os from "node:os";
 import { loadProbes, parseTestStrategy } from "../src/algorithm/isa/probes.ts";
 import { parseSections } from "../src/algorithm/isa/sections.ts";
+import { splitShellWords } from "../src/services/shell-words.ts";
+import {
+  parseVerifyMapYaml,
+  verifyMapPathFor,
+} from "../src/policies/verify-map.ts";
 
 interface CliArgs {
   target: string;
@@ -91,7 +96,7 @@ const isOurDispatcherCmd = (cmd: string): boolean =>
  * and similar shapes. Returns null if no path-like token is found.
  */
 const extractScriptPath = (cmd: string): string | null => {
-  const tokens = cmd.trim().split(/\s+/);
+  const tokens = splitShellWords(cmd);
   for (const tok of tokens) {
     if (
       tok.includes("/") &&
@@ -250,7 +255,7 @@ const checkDispatcherRoundtrip = async (
     };
   }
   // Build argv: if command is `bun run <path> ARG ...` use that, else `<path> ARG ...`
-  const tokens = target.command.trim().split(/\s+/);
+  const tokens = splitShellWords(target.command);
   // Replace event arg with SessionStart
   const argv: string[] = [];
   let scriptIdx = -1;
@@ -777,6 +782,47 @@ const checkProbeRegistry = async (
   };
 };
 
+/**
+ * Verify-map health check. Returns null when no `verify-map.yaml` exists
+ * (feature is opt-in; absence is not a defect). When present, reports PASS
+ * if the file parses to ≥1 rule, WARN on parse-to-zero-rules, FAIL on
+ * read errors.
+ */
+const checkVerifyMap = (cwd: string): CheckResult | null => {
+  const p = verifyMapPathFor(cwd);
+  if (!fs.existsSync(p)) return null;
+  let raw: string;
+  try {
+    raw = fs.readFileSync(p, "utf-8");
+  } catch (e) {
+    return {
+      name: "verify-map.yaml health",
+      status: "FAIL",
+      detail: `read failed: ${String(e).slice(0, 120)}`,
+    };
+  }
+  const parsed = parseVerifyMapYaml(raw);
+  if (parsed._tag === "fail") {
+    return {
+      name: "verify-map.yaml health",
+      status: "FAIL",
+      detail: `parse failed: ${parsed.message}`,
+    };
+  }
+  if (parsed.rules.length === 0) {
+    return {
+      name: "verify-map.yaml health",
+      status: "WARN",
+      detail: "file present but no rules parsed (check indentation / `rules:` key)",
+    };
+  }
+  return {
+    name: "verify-map.yaml health",
+    status: "PASS",
+    detail: `${parsed.rules.length} rule(s) loaded`,
+  };
+};
+
 export const runDoctor = async (
   argv: ReadonlyArray<string>,
   out: NodeJS.WritableStream = process.stdout,
@@ -826,6 +872,9 @@ export const runDoctor = async (
 
   const probeCheck = await checkProbeRegistry(args.cwd);
   if (probeCheck !== null) results.push(probeCheck);
+
+  const verifyMapCheck = checkVerifyMap(args.cwd);
+  if (verifyMapCheck !== null) results.push(verifyMapCheck);
 
   const otel = await checkOtelEndpoint();
   if (otel !== null) results.push(otel);

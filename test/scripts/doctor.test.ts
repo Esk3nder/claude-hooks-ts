@@ -2,6 +2,7 @@ import { describe, expect, test, beforeEach, afterEach } from "bun:test";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
+import { shellQuote } from "../../src/services/shell-words.ts";
 
 const stripAnsi = (s: string): string => s.replace(/\x1b\[[0-9;]*m/g, "");
 
@@ -78,6 +79,19 @@ const writeSettingsWithDispatcher = (
   fs.writeFileSync(target, JSON.stringify(settings, null, 2), "utf8");
 };
 
+const writeSettingsWithCommand = (target: string, command: string): void => {
+  const settings = {
+    hooks: {
+      SessionStart: [
+        {
+          hooks: [{ type: "command", command, timeout: 30 }],
+        },
+      ],
+    },
+  };
+  fs.writeFileSync(target, JSON.stringify(settings, null, 2), "utf8");
+};
+
 describe("doctor CLI", () => {
   test("FAIL when settings.json is missing", async () => {
     const target = path.join(tmpDir, "missing.json");
@@ -123,6 +137,19 @@ describe("doctor CLI", () => {
     expect(text).toContain("[PASS] state dir writable");
     expect(text).toContain("[PASS] dispatcher round-trip");
     expect(text).toContain("[INFO] last 5 ledger entries");
+    expect(res.code).toBe(0);
+  }, 15000);
+
+  test("PASS round-trip with a quoted dispatcher path containing spaces", async () => {
+    const target = path.join(tmpDir, "settings.json");
+    const spacedRoot = path.join(tmpDir, "repo with spaces");
+    fs.symlinkSync(REPO_ROOT, spacedRoot, "dir");
+    const shim = path.join(spacedRoot, "bin", "claude-hook");
+    writeSettingsWithCommand(target, `${shellQuote(shim)} SessionStart`);
+    const res = await runDoctor(["--target", target, "--cwd", tmpDir]);
+    const text = stripAnsi(res.stdout);
+    expect(text).toContain("[PASS] wired hook commands resolve");
+    expect(text).toContain("[PASS] dispatcher round-trip");
     expect(res.code).toBe(0);
   }, 15000);
 

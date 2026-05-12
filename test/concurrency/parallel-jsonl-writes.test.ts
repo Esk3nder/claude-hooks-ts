@@ -3,7 +3,9 @@ import * as fs from "node:fs";
 import * as fsp from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
+import { Cause, Effect, Exit } from "effect";
 import { withFileLock } from "../../src/services/file-lock.ts";
+import { FileSystem, FileSystemLive } from "../../src/services/filesystem.ts";
 
 const tmpFile = (name: string): string =>
   path.join(fs.mkdtempSync(path.join(os.tmpdir(), "jsonl-lock-")), name);
@@ -87,5 +89,38 @@ describe("withFileLock parallel JSONL writes", () => {
     } finally {
       fs.unlinkSync(lockPath);
     }
+  });
+
+  test("callback failure is not retried as lock contention", async () => {
+    const file = tmpFile("body-error.jsonl");
+    let attempts = 0;
+
+    await expect(
+      withFileLock(file, async () => {
+        attempts += 1;
+        throw new Error("body failed");
+      }),
+    ).rejects.toThrow("body failed");
+
+    expect(attempts).toBe(1);
+    expect(fs.existsSync(`${file}.lock`)).toBe(false);
+  });
+
+  test("FileSystemLive.withLock preserves body failures", async () => {
+    const file = tmpFile("fs-body-error.jsonl");
+    const exit = await Effect.runPromiseExit(
+      Effect.gen(function* () {
+        const fsApi = yield* FileSystem;
+        yield* fsApi.withLock(file, Effect.fail("body-failure"));
+      }).pipe(Effect.provide(FileSystemLive)),
+    );
+
+    expect(Exit.isFailure(exit)).toBe(true);
+    if (Exit.isFailure(exit)) {
+      const failure = Cause.failureOption(exit.cause);
+      expect(failure._tag).toBe("Some");
+      if (failure._tag === "Some") expect(failure.value).toBe("body-failure");
+    }
+    expect(fs.existsSync(`${file}.lock`)).toBe(false);
   });
 });

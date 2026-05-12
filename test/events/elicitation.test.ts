@@ -36,8 +36,20 @@ describe("handleElicitation", () => {
   })
 
   test("lookup miss -> SAFE_DEFAULT", async () => {
+    const program = Effect.gen(function* () {
+      const d = yield* handleElicitation(samplePayload)
+      const e = yield* Elicitations
+      const pending = yield* e.findLatestPending(
+        "s1",
+        "/proj",
+        "mcp.foo",
+        "ask",
+      )
+      return { d, pending }
+    })
     const layer = Layer.mergeAll(ProjectTest({ root: "/proj" }), PolicyConfigTest({ elicitationDenylist: [] }), ElicitationsTest())
-    const d = await Effect.runPromise(handleElicitation(samplePayload).pipe(Effect.provide(layer)))
+    const { d, pending } = await Effect.runPromise(program.pipe(Effect.provide(layer)))
     expect(d).toEqual({})
+    expect(pending?.requestSignature).toBe(elicitationSignature({ prompt: "?" }))
   })
 })

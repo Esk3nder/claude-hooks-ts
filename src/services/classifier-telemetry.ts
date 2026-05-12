@@ -16,6 +16,7 @@
  */
 
 import { Context, Effect, Layer } from "effect"
+import * as crypto from "node:crypto"
 import * as fs from "node:fs/promises"
 import * as path from "node:path"
 import type { Mode, Tier, ClassificationSource } from "./inference.ts"
@@ -24,7 +25,9 @@ export interface ClassifierTelemetryRecord {
   /** ISO 8601 timestamp. */
   readonly timestamp: string
   readonly session_id: string
-  /** First 120 chars of the user prompt — matches the prompt_excerpt slice. */
+  /** SHA-256 digest prefix of the prompt; avoids logging prompt contents. */
+  readonly prompt_hash: string
+  /** Kept for backward-compatible shape; intentionally empty to avoid leaks. */
   readonly prompt_excerpt: string
   readonly mode: Mode
   readonly tier: Tier | null
@@ -42,9 +45,12 @@ export class ClassifierTelemetry extends Context.Tag("ClassifierTelemetry")<
   ClassifierTelemetryApi
 >() {}
 
-/** Build the prompt_excerpt the same way this package does. */
-export const buildPromptExcerpt = (prompt: string): string =>
-  prompt.slice(0, 120)
+/** Build a stable prompt hash without logging prompt contents. */
+export const buildPromptHash = (prompt: string): string =>
+  crypto.createHash("sha256").update(prompt).digest("hex").slice(0, 16)
+
+/** Build the prompt_excerpt field. Intentionally blank for local-secret safety. */
+export const buildPromptExcerpt = (_prompt: string): string => ""
 
 /** Build a single record. Used by the prompt-router and by tests. */
 export const buildRecord = (input: {
@@ -58,6 +64,7 @@ export const buildRecord = (input: {
 }): ClassifierTelemetryRecord => ({
   timestamp: new Date().toISOString(),
   session_id: input.sessionId,
+  prompt_hash: buildPromptHash(input.prompt),
   prompt_excerpt: buildPromptExcerpt(input.prompt),
   mode: input.mode,
   tier: input.tier,

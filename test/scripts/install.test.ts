@@ -7,6 +7,8 @@ import {
   runInstallDetailed,
   verifyDispatcherRoundtrip,
 } from "../../scripts/install.ts";
+import { HOOK_EVENT_NAMES } from "../../src/schema/hook-events.ts";
+import { splitShellWords } from "../../src/services/shell-words.ts";
 
 const stripAnsi = (s: string): string => s.replace(/\x1b\[[0-9;]*m/g, "");
 
@@ -49,7 +51,7 @@ describe("install script (VAL-M5-004)", () => {
     const txt = stripAnsi(out.buf);
     expect(txt).toContain("dry-run");
     expect(txt).toContain("PreToolUse");
-    expect(txt).toContain("/opt/claude-hooks-ts/bin/claude-hook");
+    expect(txt).toContain("'/opt/claude-hooks-ts/bin/claude-hook'");
   });
 
   test("--apply writes settings atomically", () => {
@@ -63,9 +65,52 @@ describe("install script (VAL-M5-004)", () => {
     const parsed = JSON.parse(fs.readFileSync(target, "utf8")) as {
       hooks: Record<string, Array<{ hooks: Array<{ command: string }> }>>;
     };
-    expect(parsed.hooks["PreToolUse"]?.[0]?.hooks?.[0]?.command).toContain(
-      "/opt/claude-hooks-ts/bin/claude-hook PreToolUse",
+    const cmd = parsed.hooks["PreToolUse"]?.[0]?.hooks?.[0]?.command ?? "";
+    expect(splitShellWords(cmd)).toEqual([
+      "/opt/claude-hooks-ts/bin/claude-hook",
+      "PreToolUse",
+    ]);
+    for (const ev of HOOK_EVENT_NAMES) {
+      expect(parsed.hooks[ev]?.[0]?.hooks?.[0]?.command).toBeDefined();
+    }
+  });
+
+  test("--apply refuses to overwrite malformed existing settings", () => {
+    fs.writeFileSync(target, "{ not json", "utf8");
+    const out = new StringSink();
+    const code = runInstall(
+      ["--apply", "--target", target, "--install-root", installRoot],
+      sinkAsStream(out),
     );
+    expect(code).toBe(1);
+    expect(fs.readFileSync(target, "utf8")).toBe("{ not json");
+    expect(stripAnsi(out.buf)).toContain("settings.json is invalid JSON");
+  });
+
+  test("hook command quotes install roots with spaces", () => {
+    const rootWithSpaces = path.join(tmpDir, "root with spaces");
+    const out = new StringSink();
+    const code = runInstall(
+      [
+        "--apply",
+        "--no-binary",
+        "--target",
+        target,
+        "--install-root",
+        rootWithSpaces,
+      ],
+      sinkAsStream(out),
+    );
+    expect(code).toBe(0);
+    const parsed = JSON.parse(fs.readFileSync(target, "utf8")) as {
+      hooks: Record<string, Array<{ hooks: Array<{ command: string }> }>>;
+    };
+    const cmd = parsed.hooks["SessionStart"]?.[0]?.hooks?.[0]?.command ?? "";
+    expect(cmd.startsWith("'")).toBe(true);
+    expect(splitShellWords(cmd)).toEqual([
+      path.join(rootWithSpaces, "bin", "claude-hook"),
+      "SessionStart",
+    ]);
   });
 
   test("--apply twice is idempotent (no duplicate hook entries)", () => {

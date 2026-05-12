@@ -136,10 +136,20 @@ const liveImpl: ClaudeSubprocessApi = {
             }
           }
 
-          const finish = (result: ClaudeSpawnResult): void => {
+          const finish = (
+            result: ClaudeSpawnResult,
+            opts: { readonly clearKillTimer?: boolean } = {
+              clearKillTimer: true,
+            },
+          ): void => {
             if (resolved) return
             resolved = true
-            if (sigkillTimer !== undefined) clearTimeout(sigkillTimer)
+            if (
+              opts.clearKillTimer !== false &&
+              sigkillTimer !== undefined
+            ) {
+              clearTimeout(sigkillTimer)
+            }
             detachListeners()
             resolve(result)
           }
@@ -193,13 +203,16 @@ const liveImpl: ClaudeSubprocessApi = {
             // Don't keep the parent process alive waiting for the SIGKILL
             // timer if we're shutting down.
             if (typeof sigkillTimer.unref === "function") sigkillTimer.unref()
-            finish({
-              stdout,
-              stderr,
-              exitCode: -1,
-              latencyMs: Date.now() - startedAt,
-              timedOut: true,
-            })
+            finish(
+              {
+                stdout,
+                stderr,
+                exitCode: -1,
+                latencyMs: Date.now() - startedAt,
+                timedOut: true,
+              },
+              { clearKillTimer: false },
+            )
           }, opts.timeoutMs)
 
           // implements the classifier: on close, emit success or non-zero

@@ -17,6 +17,8 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import * as os from "node:os";
 import { spawnSync } from "node:child_process";
+import { HOOK_EVENT_NAMES } from "../src/schema/hook-events.ts";
+import { shellQuote, splitShellWords } from "../src/services/shell-words.ts";
 
 const DISPATCHER_MARKERS = ["claude-hooks-ts/bin/claude-hook", "claude-hook"];
 const DEFAULT_TARGET = path.join(os.homedir(), ".claude", "settings.json");
@@ -47,31 +49,14 @@ interface HookMatcher {
   hooks: HookCommandEntry[];
 }
 
-type HookEvent = string;
+type HookEvent = (typeof HOOK_EVENT_NAMES)[number];
 
 interface SettingsShape {
-  hooks?: Record<HookEvent, HookMatcher[]>;
+  hooks?: Record<string, HookMatcher[]>;
   [k: string]: unknown;
 }
 
-const HOOK_EVENTS: ReadonlyArray<HookEvent> = [
-  "SessionStart",
-  "UserPromptSubmit",
-  "PreToolUse",
-  "PostToolUse",
-  "PostToolBatch",
-  "PostToolUseFailure",
-  "Stop",
-  "PreCompact",
-  "SessionEnd",
-  "PermissionRequest",
-  "ConfigChange",
-  "FileChanged",
-  "SubagentStart",
-  "SubagentStop",
-  "TaskCreated",
-  "TaskCompleted",
-];
+const HOOK_EVENTS: ReadonlyArray<HookEvent> = HOOK_EVENT_NAMES;
 
 /**
  * Lazy build. `bun add -g` blocks postinstall scripts by default, so we
@@ -135,29 +120,30 @@ const buildEntries = (
   out: NodeJS.WritableStream = process.stdout,
 ): Record<HookEvent, HookMatcher[]> => {
   const dispatcher = resolveDispatcherPath(installRoot, noBinary, out);
-  const entries: Record<HookEvent, HookMatcher[]> = {};
+  const entries: Partial<Record<HookEvent, HookMatcher[]>> = {};
   for (const ev of HOOK_EVENTS) {
     entries[ev] = [
       {
         hooks: [
           {
             type: "command",
-            command: `${dispatcher} ${ev}`,
+            command: `${shellQuote(dispatcher)} ${ev}`,
             timeout: 30,
           },
         ],
       },
     ];
   }
-  return entries;
+  return entries as Record<HookEvent, HookMatcher[]>;
 };
 
-const readJsonOr = <T>(file: string, fallback: T): T => {
+const readSettings = (file: string): SettingsShape => {
+  if (!fs.existsSync(file)) return {};
+  const raw = fs.readFileSync(file, "utf8");
   try {
-    const raw = fs.readFileSync(file, "utf8");
-    return JSON.parse(raw) as T;
-  } catch {
-    return fallback;
+    return JSON.parse(raw) as SettingsShape;
+  } catch (err) {
+    throw new Error(`settings.json is invalid JSON: ${String(err)}`);
   }
 };
 
@@ -181,7 +167,7 @@ const mergeHooks = (
   mode: "install" | "uninstall",
 ): SettingsShape => {
   const next: SettingsShape = { ...existing };
-  const hooks: Record<HookEvent, HookMatcher[]> = { ...(existing.hooks ?? {}) };
+  const hooks: Record<string, HookMatcher[]> = { ...(existing.hooks ?? {}) };
   for (const ev of HOOK_EVENTS) {
     const stripped = stripOurMatchers(hooks[ev] ?? []);
     if (mode === "install") {
@@ -282,7 +268,20 @@ export const runInstallDetailed = (
   out: NodeJS.WritableStream = process.stdout,
 ): InstallResult => {
   const args = parseArgs(argv);
-  const existing = readJsonOr<SettingsShape>(args.target, {});
+  let existing: SettingsShape;
+  try {
+    existing = readSettings(args.target);
+  } catch (err) {
+    out.write(`${RED}error:${RESET} ${String(err)}\n`);
+    return {
+      code: 1,
+      applied: false,
+      backupPath: null,
+      target: args.target,
+      installRoot: args.installRoot,
+      uninstall: args.uninstall,
+    };
+  }
   const ours = buildEntries(args.installRoot, args.noBinary, out);
   const merged = mergeHooks(
     existing,
@@ -362,7 +361,7 @@ const findDispatcherEntry = (
       for (const h of m.hooks ?? []) {
         if (typeof h.command !== "string") continue;
         if (!isOurEntry(h)) continue;
-        const tokens = h.command.trim().split(/\s+/);
+        const tokens = splitShellWords(h.command);
         for (const tok of tokens) {
           if (
             tok.includes("/") &&
@@ -414,7 +413,7 @@ export const verifyDispatcherRoundtrip = async (
     rollback(result, out);
     return 1;
   }
-  const tokens = entry.command.trim().split(/\s+/);
+  const tokens = splitShellWords(entry.command);
   const argv: string[] = [];
   let scriptIdx = -1;
   for (let i = 0; i < tokens.length; i += 1) {

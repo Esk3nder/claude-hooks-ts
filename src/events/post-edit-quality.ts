@@ -75,6 +75,16 @@ const formatterFor = (filePath: string): FormatterSpec | null => {
   return null
 }
 
+const finishWithWarning = (warningContext: string | null): HookDecision =>
+  warningContext === null
+    ? SAFE_DEFAULT
+    : {
+        hookSpecificOutput: {
+          hookEventName: "PostToolUse",
+          additionalContext: warningContext,
+        },
+      }
+
 /**
  * Two-branch handler:
  *   (a) Edit/Write of an ISA file → run checkpoint module (commits ISC
@@ -104,6 +114,7 @@ export const handlePostToolUse = (
     const file = filePathFromInput(payload.tool_input)
     const isEdit = EDIT_TOOLS.has(payload.tool_name)
     const isIsaEdit = isEdit && file !== null && isIsaFilePath(file)
+    let warningContext: string | null = null
 
     const state = yield* SessionState
     const sid = payload.session_id
@@ -163,6 +174,7 @@ export const handlePostToolUse = (
       })
       if (scanFinding.secretDetected) {
         const warning = renderWarning(scanFinding)
+        warningContext = warning
         process.stderr.write(`${warning}\n`)
         // Continue with branches — scan is report-only.
       }
@@ -190,7 +202,7 @@ export const handlePostToolUse = (
           )
         }
       })
-      return SAFE_DEFAULT
+      return finishWithWarning(warningContext)
     }
 
     // Branch (c): probes — run against latest ISA on EVERY non-ISA-edit
@@ -209,16 +221,16 @@ export const handlePostToolUse = (
 
     // Branch (b): formatter. Only runs when this was a file edit AND the
     // file isn't an ISA AND a formatter is registered for the extension.
-    if (!isEdit) return SAFE_DEFAULT
-    if (file === null) return SAFE_DEFAULT
+    if (!isEdit) return finishWithWarning(warningContext)
+    if (file === null) return finishWithWarning(warningContext)
     const fmt = formatterFor(file)
-    if (fmt === null) return SAFE_DEFAULT
+    if (fmt === null) return finishWithWarning(warningContext)
     const shell = yield* Shell
     void (yield* Project) // ensure Project is in the context for symmetry / future use
 
     // Probe availability
     const probeCmdE = makeShellCommand(fmt.probe.cmd, fmt.probe.args)
-    if (probeCmdE._tag === "Left") return SAFE_DEFAULT
+    if (probeCmdE._tag === "Left") return finishWithWarning(warningContext)
     const probe = yield* shell
       .run(probeCmdE.right, { timeoutMs: 1500 })
       .pipe(
@@ -230,11 +242,11 @@ export const handlePostToolUse = (
           return Effect.succeed({ stdout: "", stderr: "", exitCode: -1 })
         }),
       )
-    if (probe.exitCode !== 0) return SAFE_DEFAULT
+    if (probe.exitCode !== 0) return finishWithWarning(warningContext)
 
     // Run formatter best-effort
     const runCmdE = makeShellCommand(fmt.run.cmd, fmt.run.args(file))
-    if (runCmdE._tag === "Left") return SAFE_DEFAULT
+    if (runCmdE._tag === "Left") return finishWithWarning(warningContext)
     yield* shell
       .run(runCmdE.right, { timeoutMs: 5000 })
       .pipe(
@@ -246,5 +258,5 @@ export const handlePostToolUse = (
           return Effect.succeed({ stdout: "", stderr: "", exitCode: -1 })
         }),
       )
-    return SAFE_DEFAULT
+    return finishWithWarning(warningContext)
   })
