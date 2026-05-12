@@ -66,7 +66,13 @@ export const ElicitationDecision = Schema.Struct({
   }),
 })
 
-export const NoOp = Schema.Struct({})
+/**
+ * No-op hook response. This must be exactly `{}`, not "any object".
+ *
+ * `Schema.Struct({})` accepts unknown object keys, which would let malformed
+ * hook responses satisfy the HookDecision union through the no-op arm.
+ */
+export const NoOp = Schema.Record({ key: Schema.String, value: Schema.Never })
 
 export const HookDecision = Schema.Union(
   PreToolUseDecision,

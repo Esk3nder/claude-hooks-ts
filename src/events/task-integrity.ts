@@ -21,6 +21,9 @@ export const handleTaskCreated = (
     return SAFE_DEFAULT
   })
 
+const hasEvidenceItem = (value: unknown): value is string =>
+  typeof value === "string" && value.trim().length > 0
+
 /**
  * Inspect the active ISA (project ISA wins over latest task ISA) and decide
  * whether ISC-side state contradicts a TaskCompleted claim. Returns a
@@ -102,7 +105,7 @@ export const handleTaskCompleted = (
     const ac = payload.acceptance_criteria ?? meta?.acceptance_criteria
     const ev = payload.evidence ?? meta?.evidence
     const missingAc = typeof ac !== "string" || ac.trim().length === 0
-    const missingEv = !Array.isArray(ev) || ev.length === 0
+    const missingEv = !Array.isArray(ev) || !ev.some(hasEvidenceItem)
 
     // ISC-evidence requirement (slice 3c). Runs FIRST so ISA-side gaps
     // surface their specific guidance instead of a generic field message.

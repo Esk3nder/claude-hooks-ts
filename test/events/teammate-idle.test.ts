@@ -84,8 +84,8 @@ describe("handleTeammateIdle", () => {
     const d = await Effect.runPromise(
       handleTeammateIdle(payloadFor("s3")).pipe(Effect.provide(layer)),
     );
-    const out = d as { continue: boolean; stopReason: string };
-    expect(out.continue).toBe(false);
-    expect(out.stopReason).toContain("Files changed (2)");
+    const out = d as { decision: string; reason: string };
+    expect(out.decision).toBe("block");
+    expect(out.reason).toContain("Files changed (2)");
   });
 });

@@ -46,22 +46,46 @@ export const handleTeammateIdle = (
       teammate_type: payload.teammate_type,
       ts: new Date().toISOString(),
     }
-    yield* Effect.gen(function* () {
-      const existsE = yield* Effect.either(fs.exists(ledgerPath))
-      const prior =
-        existsE._tag === "Right" && existsE.right
-          ? yield* fs
-              .readFile(ledgerPath)
-              .pipe(Effect.catchAll(() => Effect.succeed("")))
-          : ""
-      const next =
-        (prior.length === 0 || prior.endsWith("\n") ? prior : prior + "\n") +
-        JSON.stringify(entry) +
-        "\n"
-      yield* fs.writeFile(ledgerPath, next)
-    }).pipe(Effect.catchAll(() => Effect.succeed(undefined)))
+    yield* fs
+      .withLock(
+        ledgerPath,
+        Effect.gen(function* () {
+          const existsE = yield* Effect.either(fs.exists(ledgerPath))
+          const prior =
+            existsE._tag === "Right" && existsE.right
+              ? yield* fs
+                  .readFile(ledgerPath)
+                  .pipe(Effect.catchAll(() => Effect.succeed("")))
+              : ""
+          const next =
+            (prior.length === 0 || prior.endsWith("\n") ? prior : prior + "\n") +
+            JSON.stringify(entry) +
+            "\n"
+          yield* fs.writeFile(ledgerPath, next)
+        }),
+      )
+      .pipe(
+        Effect.tapError((cause) =>
+          Effect.sync(() => {
+            process.stderr.write(
+              `[TeammateIdle] ledger append failed: ${String(cause).slice(0, 160)}\n`,
+            )
+          }),
+        ),
+        Effect.catchAll(() => Effect.succeed(undefined)),
+      )
 
-    const stateE = yield* Effect.either(state.get(payload.session_id))
+    const stateE = yield* Effect.either(
+      state.get(payload.session_id).pipe(
+        Effect.tapError((cause) =>
+          Effect.sync(() => {
+            process.stderr.write(
+              `[TeammateIdle] session-state op=get failed: sid=${payload.session_id} cause=${String(cause).slice(0, 160)}\n`,
+            )
+          }),
+        ),
+      ),
+    )
     if (stateE._tag === "Right") {
       const rec = stateE.right
       if (
@@ -69,8 +93,8 @@ export const handleTeammateIdle = (
         rec.verification_status !== "passed"
       ) {
         return {
-          continue: false,
-          stopReason: `Files changed (${rec.files_changed.length}) without verification — finish current work before going idle.`,
+          decision: "block",
+          reason: `Files changed (${rec.files_changed.length}) without verification — finish current work before going idle.`,
         }
       }
     }

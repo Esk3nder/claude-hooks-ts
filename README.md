@@ -59,6 +59,7 @@ Cuts dispatcher cold-start by ~3x, paid on every tool call. On macOS the install
 A few of the things wired into specific events:
 
 - **`PreToolUse`** — denies edits to `protected-paths.yaml` entries, refuses writes to `generated-files.yaml`, blocks destructive shell patterns, gates ISA-required sessions to writing the spec first.
+- **`PreToolUse` + `SubagentStart` / `SubagentStop`** — turns `Task` / `Agent` launches into bounded workers by injecting scope/output contracts and requiring evidence from investigative subagents.
 - **`UserPromptSubmit`** — classifies the prompt's cognitive mode (MINIMAL / NATIVE / ALGORITHM with tier E1–E5), records the classification, and injects it as `additionalContext` so the model enters the right depth. Conservative fail-safe to ALGORITHM E3 on any error.
 - **`PostToolUse`** — runs your `.claude-hooks/probes.ts` (hot-loaded) against the active ISA; on pass, flips `[ ]` to `[x]` and auto-commits.
 - **`Stop`** — blocks when the active ISA is `phase: complete` but tier-required sections are missing or ISCs are unchecked. Runs declarative regenerate rules when source files changed.
@@ -69,7 +70,7 @@ A few of the things wired into specific events:
 - **`WorktreeCreate` / `WorktreeRemove`** — mirrors `.claude-hooks/` config into worktrees; archives ledger and completed ISAs back to the main repo on removal.
 - **`Elicitation` / `ElicitationResult`** — caches MCP elicitation answers and auto-replays them.
 
-Full per-event reference (inputs, outputs, behavior, edge cases) is in [`docs/HOOK-EVENTS.md`](./docs/HOOK-EVENTS.md).
+Full per-event reference (inputs, outputs, behavior, edge cases) is in [`docs/HOOK-EVENTS.md`](./docs/HOOK-EVENTS.md). The worker-control-plane design is in [`docs/WORKER-ARCHITECTURE.md`](./docs/WORKER-ARCHITECTURE.md).
 
 ---
 

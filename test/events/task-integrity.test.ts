@@ -487,6 +487,24 @@ describe("metadata-fallback for AC/evidence (harness-bridge)", () => {
     }
   })
 
+  test("E2b: metadata.evidence with only non-string/blank entries → block", async () => {
+    const p = decode({
+      session_id: "s",
+      hook_event_name: "TaskCompleted",
+      task_id: "t1",
+      metadata: {
+        acceptance_criteria: "done",
+        evidence: [null, "   "],
+      },
+    })
+    const d = await Effect.runPromise(handleTaskCompleted(p))
+    expect("decision" in d).toBe(true)
+    if ("decision" in d) {
+      expect(d.decision).toBe("block")
+      expect(d.reason).toContain("evidence")
+    }
+  })
+
   test("E3: metadata.acceptance_criteria missing (only evidence under metadata) → block", async () => {
     const p = decode({
       session_id: "s",

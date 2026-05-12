@@ -4,6 +4,7 @@ import { handlePreToolUse } from "../../src/events/pretool-policy.ts"
 import { HookPayload } from "../../src/schema/payloads.ts"
 import { PreToolUseDecision } from "../../src/schema/decisions.ts"
 import { SessionStateTest } from "../../src/services/session-state.ts"
+import { WORKER_CONTRACT_MARKER } from "../../src/policies/worker-contract.ts"
 
 const payload = (toolName: string, toolInput: unknown) => {
   const raw = {
@@ -149,5 +150,39 @@ describe("handlePreToolUse — red-team M2 assertions", () => {
   test("allow path: Write src/new.ts → no decision (passthrough)", async () => {
     const d = await run("Write", { file_path: "/repo/src/new.ts", content: "x" })
     expect(d).toEqual({})
+  })
+
+  test("Task launch is rewritten with a bounded worker contract", async () => {
+    const d = await run("Task", {
+      description: "inspect auth",
+      prompt: "Find where auth is implemented.",
+      subagent_type: "Explore",
+    })
+    expectDecision(d, "allow")
+    const out = d as {
+      hookSpecificOutput: {
+        updatedInput?: { prompt?: string; subagent_type?: string }
+      }
+    }
+    expect(out.hookSpecificOutput.updatedInput?.prompt).toContain(
+      WORKER_CONTRACT_MARKER,
+    )
+    expect(out.hookSpecificOutput.updatedInput?.prompt).toContain(
+      "read-only investigator",
+    )
+  })
+
+  test("Task launch with an existing worker contract is not rewritten twice", async () => {
+    const d = await run("Task", {
+      description: "inspect auth",
+      prompt: `Find auth.\n\n${WORKER_CONTRACT_MARKER}\ncontract already here`,
+      subagent_type: "Explore",
+    })
+    expect(d).toEqual({})
+  })
+
+  test("malformed Task launch asks instead of silently dropping worker scope", async () => {
+    const d = await run("Task", { description: "missing prompt" })
+    expectDecision(d, "ask")
   })
 })

@@ -19,6 +19,7 @@ import { evaluateGeneratedFile } from "../policies/generated-files.ts"
 import { evaluateLockfile } from "../policies/lockfile-paths.ts"
 import { shouldRewrite, rewriteTestCommand } from "../policies/test-output-rewrite.ts"
 import { evaluateEngagementGate } from "../policies/engagement-gate.ts"
+import { evaluateWorkerTaskPrompt } from "../policies/worker-contract.ts"
 import { SessionState } from "../services/session-state.ts"
 
 const ENGAGEMENT_BYPASS_ENV = "CLAUDE_HOOKS_DISABLE_ISA_PRETOOL_GATE"
@@ -205,6 +206,25 @@ export const handlePreToolUse = (
     const base = toHookDecision(result)
     // Only attach updatedInput when not denied/asked.
     if (result.kind === "deny" || result.kind === "ask") return base
+
+    const workerPrompt = evaluateWorkerTaskPrompt(
+      payload.tool_name,
+      payload.tool_input,
+    )
+    if (workerPrompt.kind === "ask") {
+      return decision("ask", workerPrompt.reason)
+    }
+    if (workerPrompt.kind === "rewrite") {
+      return {
+        hookSpecificOutput: {
+          hookEventName: "PreToolUse" as const,
+          permissionDecision: "allow" as const,
+          permissionDecisionReason: workerPrompt.reason,
+          updatedInput: workerPrompt.updatedInput,
+        },
+      }
+    }
+
     const rewrite = tryRewriteBashInput(payload.tool_name, payload.tool_input)
     if (rewrite === null) return base
     const inputObj =

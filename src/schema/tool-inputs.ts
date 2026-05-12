@@ -66,6 +66,7 @@ export const WebSearchInput = Schema.Struct({
 export const AgentInput = Schema.Struct({
   description: Schema.String,
   prompt: Schema.String,
+  agent_type: Schema.optional(Schema.String),
   subagent_type: Schema.optional(Schema.String),
 })
 

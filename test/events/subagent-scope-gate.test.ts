@@ -41,6 +41,7 @@ describe("VAL-M4-003 subagent-scope-gate", () => {
       const out = d.hookSpecificOutput as { additionalContext: string }
       expect(out.additionalContext).toContain("read-only investigator")
       expect(out.additionalContext).toContain("Explore")
+      expect(out.additionalContext).toContain("Output contract")
     }
   })
 
@@ -112,6 +113,23 @@ describe("VAL-M4-003 subagent-scope-gate", () => {
       ).pipe(Effect.provide(SessionStateTest())),
     )
     expect(d).toEqual({})
+  })
+
+  test("investigative subagent stop still blocks after a prior missing-evidence block", async () => {
+    const payload = stopPayload("Explore", "ok done")
+    const program = Effect.gen(function* () {
+      const first = yield* handleSubagentStop(payload)
+      const second = yield* handleSubagentStop(payload)
+      return { first, second }
+    }).pipe(Effect.provide(SessionStateTest()))
+
+    const r = await Effect.runPromise(program)
+    expect("decision" in r.first).toBe(true)
+    expect("decision" in r.second).toBe(true)
+    if ("decision" in r.second) {
+      expect(r.second.decision).toBe("block")
+      expect(r.second.reason).toContain("Output contract")
+    }
   })
 })
 

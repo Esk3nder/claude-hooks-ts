@@ -88,7 +88,7 @@ export const handleSubagentStart = (
     );
     const role = lookupRole(agentType);
     const subagentLabel = agentType === "unknown" ? "subagent" : agentType;
-    const additionalContext = `Subagent ${subagentLabel} (${role.mode}): ${role.scopeRule}`;
+    const additionalContext = `Subagent ${subagentLabel} (${role.mode}): ${role.scopeRule} ${role.outputContract}`;
     const decision: HookDecision = {
       hookSpecificOutput: {
         hookEventName: "SubagentStart",
@@ -114,8 +114,6 @@ export const handleSubagentStop = (
       },
     );
 
-    const alreadyBlocked = prev.subagent_stops.includes(`${key}:blocked`);
-
     if (!prev.subagent_stops.includes(key)) {
       yield* state
         .append(payload.session_id, "subagent_stops", key)
@@ -127,19 +125,19 @@ export const handleSubagentStop = (
     );
     const role = lookupRole(agentType);
     if (!role.investigative) return SAFE_DEFAULT;
-    if (alreadyBlocked) return SAFE_DEFAULT;
     // Canonical field is `output`; older payloads may carry `result`.
     const evidenceText = payload.output ?? payload.result;
     if (hasEvidence(evidenceText)) return SAFE_DEFAULT;
 
-    yield* state
-      .append(payload.session_id, "subagent_stops", `${key}:blocked`)
-      .pipe(Effect.catchAll(() => Effect.succeed(undefined as void)));
+    if (!prev.subagent_stops.includes(`${key}:blocked`)) {
+      yield* state
+        .append(payload.session_id, "subagent_stops", `${key}:blocked`)
+        .pipe(Effect.catchAll(() => Effect.succeed(undefined as void)));
+    }
 
     const decision: HookDecision = {
       decision: "block",
-      reason:
-        "Subagent output lacks evidence. Continue and return findings with file paths, commands run, and confidence.",
+      reason: `Subagent output lacks evidence. ${role.outputContract}`,
     };
     return decision;
   });
