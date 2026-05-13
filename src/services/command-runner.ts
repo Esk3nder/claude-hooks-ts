@@ -60,8 +60,9 @@ const mergeEnv = (opts?: CommandRunOptions): Record<string, string | undefined> 
 const collectTextCapped = (
   stream: Stream.Stream<Uint8Array, unknown, unknown>,
   cap: number,
-): Effect.Effect<string, unknown, unknown> =>
-  Stream.runFold(
+): Effect.Effect<string, unknown, unknown> => {
+  const decoder = new TextDecoder()
+  return Stream.runFold(
     stream,
     { text: "", bytes: 0, truncated: false },
     (acc, chunk) => {
@@ -69,16 +70,18 @@ const collectTextCapped = (
       const remaining = cap - acc.bytes
       const next = chunk.length > remaining ? chunk.slice(0, remaining) : chunk
       return {
-        text: acc.text + new TextDecoder().decode(next),
+        text: acc.text + decoder.decode(next, { stream: true }),
         bytes: acc.bytes + next.length,
         truncated: acc.truncated || chunk.length > remaining,
       }
     },
   ).pipe(
-    Effect.map((acc) =>
-      acc.truncated ? `${acc.text}\n[command-runner] output truncated at ${cap} bytes` : acc.text,
-    ),
+    Effect.map((acc) => {
+      const text = acc.truncated ? acc.text : acc.text + decoder.decode()
+      return acc.truncated ? `${text}\n[command-runner] output truncated at ${cap} bytes` : text
+    }),
   )
+}
 
 const releaseProcess = (process: Process): Effect.Effect<void> =>
   process.isRunning.pipe(

@@ -39,6 +39,35 @@ describe("WorkerQueueLive", () => {
     }
   })
 
+  test("redacts raw string payloads before persistence", async () => {
+    const root = mkdtempSync(join(tmpdir(), "chts-workers-"))
+    try {
+      const job = {
+        id: "job-raw",
+        queue: "default",
+        payload: "raw tool_input and prompt content must not persist",
+        enqueuedAt: Date.now(),
+        attempts: 0,
+      }
+
+      await Effect.runPromise(
+        Effect.gen(function* () {
+          const queue = yield* WorkerQueue
+          yield* queue.offer(job)
+        }).pipe(Effect.provide(WorkerQueueLive(root)), Effect.provide(EventStoreLive)),
+      )
+
+      const file = join(root, ".claude-hooks", "state", "workers", "default.jsonl")
+      const persisted = readFileSync(file, "utf8")
+      expect(persisted).toContain("job-raw")
+      expect(persisted).toContain("redacted")
+      expect(persisted).not.toContain("raw tool_input")
+      expect(persisted).not.toContain("prompt content")
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
   test("offer fails instead of silently enqueueing when persistence fails", async () => {
     const root = join(mkdtempSync(join(tmpdir(), "chts-workers-")), "not-a-dir")
     writeFileSync(root, "file")

@@ -4,7 +4,7 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { eventStream } from "../../src/schema/events.ts"
-import { EventStore, EventStoreLive } from "../../src/services/event-store.ts"
+import { EventStore, EventStoreLive, EventStoreTest } from "../../src/services/event-store.ts"
 
 const TestEventSchema = Schema.Struct({
   id: Schema.String,
@@ -177,5 +177,37 @@ describe("EventStoreLive", () => {
     } finally {
       rmSync(root, { recursive: true, force: true })
     }
+  })
+})
+
+describe("EventStoreTest", () => {
+  test("compact mirrors live maxRecords policy", async () => {
+    const stream = eventStream("test-compact", "/tmp/test-compact.jsonl", Schema.Struct({ id: Schema.Number }), {
+      maxRecords: 2,
+    })
+
+    const records = await Effect.runPromise(
+      Effect.gen(function* () {
+        const store = yield* EventStore
+        yield* store.append(stream, { id: 1 })
+        yield* store.append(stream, { id: 2 })
+        yield* store.append(stream, { id: 3 })
+        yield* store.compact(stream.name)
+        return yield* Stream.runCollect(store.tail(stream, 10)).pipe(Effect.map(Chunk.toReadonlyArray))
+      }).pipe(Effect.provide(EventStoreTest())),
+    )
+
+    expect(records.map((record) => record.id)).toEqual([2, 3])
+  })
+
+  test("compact fails for unknown streams like the live layer", async () => {
+    const result = await Effect.runPromiseExit(
+      Effect.gen(function* () {
+        const store = yield* EventStore
+        yield* store.compact("missing-stream")
+      }).pipe(Effect.provide(EventStoreTest())),
+    )
+
+    expect(result._tag).toBe("Failure")
   })
 })

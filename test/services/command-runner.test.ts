@@ -32,6 +32,20 @@ describe("CommandRunner", () => {
     expect(result.stdout).toContain("output truncated at 3 bytes")
   })
 
+  test("preserves multibyte UTF-8 split across process writes", async () => {
+    const result = await runCommandLive("bun", [
+      "-e",
+      [
+        "process.stdout.write(Buffer.from([0xe2]));",
+        "setTimeout(() => process.stdout.write(Buffer.from([0x82])), 10);",
+        "setTimeout(() => process.stdout.write(Buffer.from([0xac])), 20);",
+      ].join(""),
+    ])
+
+    expect(result.exitCode).toBe(0)
+    expect(result.stdout).toBe("€")
+  })
+
   test("applies Claude env scrubbing at the runner boundary", async () => {
     const result = await runCommandLive(
       "sh",

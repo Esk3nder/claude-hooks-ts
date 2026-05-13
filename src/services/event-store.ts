@@ -285,24 +285,25 @@ export const EventStoreTest = (): Layer.Layer<EventStore> =>
     EventStore,
     Effect.gen(function* () {
       const records = yield* Ref.make<Map<EventStreamName, ReadonlyArray<unknown>>>(new Map())
+      const streams = yield* Ref.make<Map<EventStreamName, EventStream<unknown>>>(new Map())
+      const remember = <A>(stream: EventStream<A>): Effect.Effect<void> =>
+        Ref.update(streams, (map) => new Map(map).set(stream.name, stream as EventStream<unknown>))
       return EventStore.of({
         append: <A>(stream: EventStream<A>, event: A) =>
-          prepareEvent(stream, event, "append").pipe(
-            Effect.flatMap((decoded) =>
-              ensureLineWithinCap(stream, JSON.stringify(decoded), "append").pipe(
-                Effect.zipRight(
-                  Ref.update(records, (map) => {
-                    const next = new Map(map)
-                    next.set(stream.name, [...(next.get(stream.name) ?? []), decoded])
-                    return next
-                  }),
-                ),
-              ),
-            ),
-          ),
+          Effect.gen(function* () {
+            yield* remember(stream)
+            const decoded = yield* prepareEvent(stream, event, "append")
+            yield* ensureLineWithinCap(stream, JSON.stringify(decoded), "append")
+            yield* Ref.update(records, (map) => {
+              const next = new Map(map)
+              next.set(stream.name, [...(next.get(stream.name) ?? []), decoded])
+              return next
+            })
+          }),
         tail: <A>(stream: EventStream<A>, n: number) =>
           Stream.unwrap(
-            Ref.get(records).pipe(
+            remember(stream).pipe(
+              Effect.zipRight(Ref.get(records)),
               Effect.map((map) =>
                 Stream.fromIterable((() => {
                   const limit = Math.max(0, Math.min(n, stream.maxRecords ?? DEFAULT_MAX_RECORDS))
@@ -313,11 +314,20 @@ export const EventStoreTest = (): Layer.Layer<EventStore> =>
             ),
           ),
         compact: (name) =>
-          Ref.update(records, (map) => {
-            const next = new Map(map)
-            const current = next.get(name) ?? []
-            next.set(name, current.slice(-DEFAULT_MAX_RECORDS))
-            return next
+          Effect.gen(function* () {
+            const map = yield* Ref.get(streams)
+            const stream = map.get(name)
+            if (stream === undefined) {
+              return yield* Effect.fail(
+                new EventStoreError({ op: "compact", stream: name, path: "", message: "unknown stream" }),
+              )
+            }
+            yield* Ref.update(records, (recordMap) => {
+              const next = new Map(recordMap)
+              const current = next.get(name) ?? []
+              next.set(name, current.slice(-(stream.maxRecords ?? DEFAULT_MAX_RECORDS)))
+              return next
+            })
           }),
       })
     }),

@@ -2,7 +2,7 @@ import { Context, Effect, Layer, Queue, Stream } from "effect"
 import * as path from "node:path"
 import { EventStoreError } from "../schema/errors.ts"
 import { eventStream, WorkerJobSchema, type WorkerJob } from "../schema/events.ts"
-import { EventStore } from "./event-store.ts"
+import { EventStore, redactForPersistence } from "./event-store.ts"
 
 export interface WorkerQueueApi {
   readonly offer: (job: WorkerJob) => Effect.Effect<void, EventStoreError>
@@ -12,12 +12,20 @@ export interface WorkerQueueApi {
 
 export class WorkerQueue extends Context.Tag("WorkerQueue")<WorkerQueue, WorkerQueueApi>() {}
 
+const WORKER_PAYLOAD_KEYS = new Set(["payload"])
+
 export const workerJobsStream = (root: string, queueName: string = "default") =>
   eventStream(
     `worker-jobs:${queueName}`,
     path.join(root, ".claude-hooks", "state", "workers", `${queueName}.jsonl`),
     WorkerJobSchema,
-    { maxRecords: 1_000 },
+    {
+      maxRecords: 1_000,
+      redact: (job) => ({
+        ...job,
+        payload: redactForPersistence(job.payload, "payload", 0, { sensitiveKeys: WORKER_PAYLOAD_KEYS }),
+      }),
+    },
   )
 
 export const WorkerQueueLive = (
