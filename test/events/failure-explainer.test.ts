@@ -42,7 +42,7 @@ FAILED test/test_foo.py::test_add - AssertionError: assert 2 == 3
     }
   })
 
-  test("empty error → SAFE_DEFAULT", async () => {
+  test("empty error → NO_DECISION", async () => {
     const d = await Effect.runPromise(handlePostToolUseFailure(failurePayload("")))
     expect(d).toEqual({})
   })

@@ -11,7 +11,7 @@ import { ProjectTest } from "../../src/services/project.ts"
 const decode = (raw: unknown) => Schema.decodeUnknownSync(HookPayload)(raw)
 
 describe("handleNotification", () => {
-  test("ledger entry + SAFE_DEFAULT", async () => {
+  test("ledger entry + NO_DECISION", async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "chts-notification-"))
     try {
       const layer = Layer.mergeAll(EventStoreLive, ProjectTest({ root }))

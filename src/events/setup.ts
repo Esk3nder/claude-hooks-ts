@@ -3,11 +3,12 @@ import * as path from "node:path"
 import * as fsSync from "node:fs"
 import type { HookPayload } from "../schema/payloads.ts"
 import type { HookDecision } from "../schema/decisions.ts"
-import { SAFE_DEFAULT } from "../schema/decisions.ts"
+import { NO_DECISION } from "../schema/decisions.ts"
 import { eventStream, SetupRecordSchema } from "../schema/events.ts"
 import { EventStore, summarizeEventStoreError } from "../services/event-store.ts"
 import { Project } from "../services/project.ts"
 import { Approvals } from "../services/approvals.ts"
+import { logWarning } from "../services/diagnostics.ts"
 
 interface SetupLedgerEntry {
   readonly session_id: string
@@ -102,7 +103,7 @@ export const handleSetup = (
   payload: HookPayload,
 ): Effect.Effect<HookDecision, never, EventStore | Project | Approvals> =>
   Effect.gen(function* () {
-    if (payload._tag !== "Setup") return SAFE_DEFAULT
+    if (payload._tag !== "Setup") return NO_DECISION
     const eventStore = yield* EventStore
     const project = yield* Project
     const approvals = yield* Approvals
@@ -117,11 +118,7 @@ export const handleSetup = (
     }
     yield* eventStore.append(eventStream("setup", ledgerPath, SetupRecordSchema, { maxRecords: 1_000 }), entry).pipe(
       Effect.catchAll((err) =>
-        Effect.sync(() => {
-          process.stderr.write(
-            `setup: ledger write failed: ${summarizeEventStoreError(err)}\n`,
-          )
-        }),
+        logWarning(`setup: ledger write failed: ${summarizeEventStoreError(err)}`),
       ),
     )
 
@@ -182,5 +179,5 @@ export const handleSetup = (
       }
     }
 
-    return SAFE_DEFAULT
+    return NO_DECISION
   })

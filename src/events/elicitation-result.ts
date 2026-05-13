@@ -2,7 +2,7 @@ import { Effect } from "effect"
 import * as crypto from "node:crypto"
 import type { HookPayload } from "../schema/payloads.ts"
 import type { HookDecision } from "../schema/decisions.ts"
-import { SAFE_DEFAULT } from "../schema/decisions.ts"
+import { NO_DECISION } from "../schema/decisions.ts"
 import { Project } from "../services/project.ts"
 import { Elicitations } from "../services/elicitations.ts"
 
@@ -19,7 +19,7 @@ export const handleElicitationResult = (
   payload: HookPayload,
 ): Effect.Effect<HookDecision, never, Project | Elicitations> =>
   Effect.gen(function* () {
-    if (payload._tag !== "ElicitationResult") return SAFE_DEFAULT
+    if (payload._tag !== "ElicitationResult") return NO_DECISION
     const project = yield* Project
     const cwd = yield* project.root()
     const elicitations = yield* Elicitations
@@ -37,5 +37,5 @@ export const handleElicitationResult = (
     yield* elicitations
       .record(cwd, payload.server_name, payload.tool_name, signature, payload.action, payload.content)
       .pipe(Effect.catchAll(() => Effect.succeed(undefined)))
-    return SAFE_DEFAULT
+    return NO_DECISION
   })

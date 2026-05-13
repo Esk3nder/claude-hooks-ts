@@ -31,7 +31,7 @@ afterEach(() => {
 })
 
 describe("handleWorktreeRemove", () => {
-  test("ledger entry + SAFE_DEFAULT", async () => {
+  test("ledger entry + NO_DECISION", async () => {
     const root = mkTmp()
     const layer = Layer.mergeAll(
       CommandRunnerTest(),

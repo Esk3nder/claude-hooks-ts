@@ -1,7 +1,7 @@
 import { Effect } from "effect"
 import type { HookPayload } from "../schema/payloads.ts"
 import type { HookDecision } from "../schema/decisions.ts"
-import { SAFE_DEFAULT } from "../schema/decisions.ts"
+import { NO_DECISION } from "../schema/decisions.ts"
 import { parseFailure } from "../policies/failure-parsers.ts"
 import { DEFAULT_POLICY } from "../services/policy-config.ts"
 
@@ -43,9 +43,9 @@ export const handlePostToolUseFailure = (
   payload: HookPayload,
 ): Effect.Effect<HookDecision> =>
   Effect.sync(() => {
-    if (payload._tag !== "PostToolUseFailure") return SAFE_DEFAULT
+    if (payload._tag !== "PostToolUseFailure") return NO_DECISION
     const text = errorToText(payload.error)
-    if (text.trim().length === 0) return SAFE_DEFAULT
+    if (text.trim().length === 0) return NO_DECISION
     // Per the official spec, payloads carry an `error_type` hint
     // (e.g. "vitest", "tsc"). Prefer it as the category when present;
     // otherwise fall back to heuristic detection in `parseFailure`.

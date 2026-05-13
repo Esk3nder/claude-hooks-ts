@@ -3,9 +3,10 @@ import * as path from "node:path"
 import * as fs from "node:fs"
 import type { HookPayload } from "../schema/payloads.ts"
 import type { HookDecision } from "../schema/decisions.ts"
-import { SAFE_DEFAULT } from "../schema/decisions.ts"
+import { NO_DECISION } from "../schema/decisions.ts"
 import { Shell } from "../services/shell.ts"
 import { makeShellCommand } from "../schema/branded.ts"
+import { logWarningSync } from "../services/diagnostics.ts"
 
 /**
  * Best-effort: copy YAML config files from <sourceCwd>/.claude-hooks/ into
@@ -28,15 +29,13 @@ const mirrorClaudeHooksConfig = (sourceCwd: string, target: string): void => {
       try {
         fs.mkdirSync(dstDir, { recursive: true })
       } catch (e) {
-        process.stderr.write(`worktree-create: mkdir ${dstDir}: ${String(e)}\n`)
+        logWarningSync(`worktree-create: mkdir ${dstDir}: ${String(e)}`)
       }
       let entries: fs.Dirent[] = []
       try {
         entries = fs.readdirSync(srcDir, { withFileTypes: true })
       } catch (e) {
-        process.stderr.write(
-          `worktree-create: readdir ${srcDir}: ${String(e)}\n`,
-        )
+        logWarningSync(`worktree-create: readdir ${srcDir}: ${String(e)}`)
       }
       for (const ent of entries) {
         if (ent.name === "state") continue
@@ -47,19 +46,17 @@ const mirrorClaudeHooksConfig = (sourceCwd: string, target: string): void => {
         try {
           fs.copyFileSync(from, to)
         } catch (e) {
-          process.stderr.write(
-            `worktree-create: copy ${from} -> ${to}: ${String(e)}\n`,
-          )
+          logWarningSync(`worktree-create: copy ${from} -> ${to}: ${String(e)}`)
         }
       }
     }
     try {
       fs.mkdirSync(stateDir, { recursive: true })
     } catch (e) {
-      process.stderr.write(`worktree-create: mkdir ${stateDir}: ${String(e)}\n`)
+      logWarningSync(`worktree-create: mkdir ${stateDir}: ${String(e)}`)
     }
   } catch (e) {
-    process.stderr.write(`worktree-create: mirror error: ${String(e)}\n`)
+    logWarningSync(`worktree-create: mirror error: ${String(e)}`)
   }
 }
 
@@ -73,11 +70,11 @@ export const handleWorktreeCreate = (
   payload: HookPayload,
 ): Effect.Effect<HookDecision, never, Shell> =>
   Effect.gen(function* () {
-    if (payload._tag !== "WorktreeCreate") return SAFE_DEFAULT
+    if (payload._tag !== "WorktreeCreate") return NO_DECISION
     const shell = yield* Shell
     const target = path.join(payload.base_path, payload.worktree_name)
     const cmdE = makeShellCommand("git", ["worktree", "add", target])
-    if (Either.isLeft(cmdE)) return SAFE_DEFAULT
+    if (Either.isLeft(cmdE)) return NO_DECISION
     const result = yield* shell
       .run(cmdE.right)
       .pipe(
@@ -85,7 +82,7 @@ export const handleWorktreeCreate = (
           Effect.succeed({ stdout: "", stderr: "shell-error", exitCode: 1 }),
         ),
       )
-    if (result.exitCode !== 0) return SAFE_DEFAULT
+    if (result.exitCode !== 0) return NO_DECISION
     const sourceCwd = payload.cwd ?? process.cwd()
     yield* Effect.sync(() => mirrorClaudeHooksConfig(sourceCwd, target))
     return { worktreePath: target }

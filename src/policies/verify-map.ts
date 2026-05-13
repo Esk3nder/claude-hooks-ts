@@ -43,6 +43,7 @@ import { existsSync, readFileSync } from "node:fs"
 import { join } from "node:path"
 import { normalizePathPattern } from "./path-utils.ts"
 import { runCommandLive, runShellCommandLive } from "../services/command-runner.ts"
+import { logWarningSync } from "../services/diagnostics.ts"
 
 const VERIFY_MAP_SUBPATH = [".claude-hooks", "verify-map.yaml"] as const
 
@@ -241,7 +242,7 @@ export const loadVerifyRules = (
   }
   const parsed = parseVerifyMapYaml(raw)
   if (parsed._tag === "fail") {
-    process.stderr.write(`[verify-map] parse failed: ${parsed.message}\n`)
+    logWarningSync(`[verify-map] parse failed: ${parsed.message}`)
     return []
   }
   return parsed.rules

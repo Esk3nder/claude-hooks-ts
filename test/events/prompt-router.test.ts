@@ -332,7 +332,7 @@ describe("handleUserPromptSubmit", () => {
     expect(record.requires_web_sources).toBe(false)
   })
 
-  test("non-UserPromptSubmit payload → SAFE_DEFAULT", async () => {
+  test("non-UserPromptSubmit payload → NO_DECISION", async () => {
     const payload = decode({
       _tag: "Stop",
       session_id: "s",

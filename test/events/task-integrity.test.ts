@@ -126,7 +126,7 @@ describe("VAL-M4-004 task-integrity", () => {
     expect(d).toEqual({})
   })
 
-  test("TaskCompleted missing acceptance_criteria without active ISA → SAFE_DEFAULT (lightweight bookkeeping)", async () => {
+  test("TaskCompleted missing acceptance_criteria without active ISA → NO_DECISION (lightweight bookkeeping)", async () => {
     const p = decode({
       _tag: "TaskCompleted",
       session_id: "s",
@@ -169,7 +169,7 @@ describe("VAL-M4-004 task-integrity", () => {
     expect(d).toEqual({})
   })
 
-  test("TaskCompleted missing AC/evidence WITH active fully-verified ISA → SAFE_DEFAULT (ISA is the evidence)", async () => {
+  test("TaskCompleted missing AC/evidence WITH active fully-verified ISA → NO_DECISION (ISA is the evidence)", async () => {
     const { root, cleanup } = stage()
     try {
       writeProjectIsa(root, ISA_ALL_CHECKED_WITH_VERIFICATION)

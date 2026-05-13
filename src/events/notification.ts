@@ -2,10 +2,11 @@ import { Effect } from "effect"
 import * as path from "node:path"
 import type { HookPayload } from "../schema/payloads.ts"
 import type { HookDecision } from "../schema/decisions.ts"
-import { SAFE_DEFAULT } from "../schema/decisions.ts"
+import { NO_DECISION } from "../schema/decisions.ts"
 import { eventStream, NotificationRecordSchema } from "../schema/events.ts"
 import { EventStore, summarizeEventStoreError } from "../services/event-store.ts"
 import { Project } from "../services/project.ts"
+import { logWarning } from "../services/diagnostics.ts"
 
 interface NotificationLedgerEntry {
   readonly session_id: string
@@ -16,14 +17,14 @@ interface NotificationLedgerEntry {
 
 /**
  * Notification — appends a ledger entry under <cwd>/.claude-hooks/state/notifications.jsonl
- * for future correlation (e.g. idle/waiting nudges). Always returns SAFE_DEFAULT.
+ * for future correlation (e.g. idle/waiting nudges). Always returns NO_DECISION.
  * EventStore owns locking, schema decode, redaction, and line caps.
  */
 export const handleNotification = (
   payload: HookPayload,
 ): Effect.Effect<HookDecision, never, EventStore | Project> =>
   Effect.gen(function* () {
-    if (payload._tag !== "Notification") return SAFE_DEFAULT
+    if (payload._tag !== "Notification") return NO_DECISION
     const eventStore = yield* EventStore
     const project = yield* Project
     const root = yield* project.root()
@@ -43,12 +44,8 @@ export const handleNotification = (
       .append(eventStream("notifications", ledgerPath, NotificationRecordSchema, { maxRecords: 1_000 }), entry)
       .pipe(
         Effect.catchAll((err) =>
-          Effect.sync(() => {
-            process.stderr.write(
-              `notification: ledger write failed: ${summarizeEventStoreError(err)}\n`,
-            )
-          }),
+          logWarning(`notification: ledger write failed: ${summarizeEventStoreError(err)}`),
         ),
       )
-    return SAFE_DEFAULT
+    return NO_DECISION
   })

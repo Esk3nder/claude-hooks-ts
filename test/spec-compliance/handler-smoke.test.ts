@@ -3,7 +3,7 @@
 //
 // Verdict legend (annotated alongside each test, not enforced):
 //   OK                 — payload decodes; handler returns a well-formed
-//                        HookDecision (SAFE_DEFAULT, block, or richer
+//                        HookDecision (NO_DECISION, block, or richer
 //                        hookSpecificOutput shape).
 //   POLICY_EXTENSION   — handler may block by intentional package policy
 //                        (e.g. task-integrity AC/evidence gate).
@@ -61,7 +61,7 @@ import { runHook } from "./helpers.ts"
 
 const decode = (raw: unknown) => Schema.decodeUnknownSync(HookPayload)(raw)
 
-// HookDecision is a union: SAFE_DEFAULT `{}`, block `{decision,reason}`,
+// HookDecision is a union: NO_DECISION `{}`, block `{decision,reason}`,
 // PreToolUseDecision/PermissionRequestDecision/ContextInjection
 // `{hookSpecificOutput:...}`, WorktreeCreateDecision (a raw string), etc.
 const isWellFormedDecision = (d: unknown): boolean =>

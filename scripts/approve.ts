@@ -22,6 +22,7 @@ import {
   type ApprovalRecord,
   type ApprovalStatus,
 } from "../src/services/approvals.ts"
+import { writeCliStderr, writeCliStdout } from "./io.ts"
 
 interface ParsedArgs {
   readonly pattern: string | null
@@ -110,26 +111,26 @@ export const main = async (argv: ReadonlyArray<string>): Promise<number> => {
   try {
     args = parseArgs(argv)
   } catch (e) {
-    process.stderr.write(`error: ${(e as Error).message}\n${usage}`)
+    writeCliStderr(`error: ${(e as Error).message}\n${usage}`)
     return 2
   }
   if (args.help) {
-    process.stdout.write(usage)
+    writeCliStdout(usage)
     return 0
   }
   if (args.list) {
     const pending = listPending(args.cwd)
     if (pending.length === 0) {
-      process.stdout.write("(no pending approvals)\n")
+      writeCliStdout("(no pending approvals)\n")
       return 0
     }
     for (const p of pending) {
-      process.stdout.write(`${p.pattern}\n`)
+      writeCliStdout(`${p.pattern}\n`)
     }
     return 0
   }
   if (args.pattern === null) {
-    process.stderr.write(`error: missing <pattern>\n${usage}`)
+    writeCliStderr(`error: missing <pattern>\n${usage}`)
     return 2
   }
   const record: ApprovalRecord = {
@@ -143,7 +144,7 @@ export const main = async (argv: ReadonlyArray<string>): Promise<number> => {
     yield* approvals.record(record)
   }).pipe(Effect.provide(ApprovalsLive))
   await Effect.runPromise(program)
-  process.stdout.write(
+  writeCliStdout(
     `recorded ${record.status} for pattern ${record.pattern} in ${record.cwd}\n`,
   )
   return 0

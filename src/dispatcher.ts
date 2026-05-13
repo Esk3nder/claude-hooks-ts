@@ -1,7 +1,7 @@
 import { Effect, Schema, Cause, Match, Layer, Option, Logger } from "effect"
 import * as fsSync from "node:fs"
 import * as path from "node:path"
-import { SAFE_DEFAULT, type HookDecision } from "./schema/decisions.ts"
+import { NO_DECISION, SAFE_DEFAULT, type HookDecision } from "./schema/decisions.ts"
 import {
   RawHookPayload,
   NormalizedHookEvent,
@@ -392,7 +392,7 @@ const dispatchPayload = (
     const hangSleepMs = cap + 1_000
     const baseHandler: Effect.Effect<HookDecision, never, AppServices> =
       hang !== null && hang === payload._tag
-        ? Effect.sleep(`${hangSleepMs} millis`).pipe(Effect.as(SAFE_DEFAULT))
+        ? Effect.sleep(`${hangSleepMs} millis`).pipe(Effect.as(NO_DECISION))
         : routeByTag(payload)
 
     // Per-handler cap (per-tag) → on timeout, fall back to safe default ({}).

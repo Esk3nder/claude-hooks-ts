@@ -132,7 +132,7 @@ const isPositivePraise = (prompt: string): boolean => {
  * Exported (renamed `isSystemTextPrompt`) so the prompt-router can check it
  * BEFORE calling classify(). This is handled with `process.exit(0)`
  * — emits NO additionalContext at all. The router mirrors
- * that by returning SAFE_DEFAULT and NOT invoking classify or telemetry on
+ * that by returning NO_DECISION and NOT invoking classify or telemetry on
  * system-text input.
  */
 export const isSystemTextPrompt = (prompt: string): boolean =>

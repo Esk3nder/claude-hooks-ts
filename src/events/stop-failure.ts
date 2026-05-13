@@ -2,10 +2,11 @@ import { Effect } from "effect";
 import * as path from "node:path";
 import type { HookPayload } from "../schema/payloads.ts";
 import type { HookDecision } from "../schema/decisions.ts";
-import { SAFE_DEFAULT } from "../schema/decisions.ts";
+import { NO_DECISION } from "../schema/decisions.ts";
 import { eventStream, StopFailureRecordSchema } from "../schema/events.ts";
 import { EventStore, summarizeEventStoreError } from "../services/event-store.ts";
 import { Project } from "../services/project.ts";
+import { logWarning } from "../services/diagnostics.ts";
 
 interface StopFailureLedgerEntry {
   readonly session_id: string;
@@ -72,13 +73,13 @@ const persistedErrorMessage = (
  * StopFailure — appends to <cwd>/.claude-hooks/state/failures.jsonl, then
  * categorizes the error and may emit a ContextInjection for actionable
  * categories (rate_limit, authentication). Other categories return
- * SAFE_DEFAULT to avoid polluting context with transient noise.
+ * NO_DECISION to avoid polluting context with transient noise.
  */
 export const handleStopFailure = (
   payload: HookPayload,
 ): Effect.Effect<HookDecision, never, EventStore | Project> =>
   Effect.gen(function* () {
-    if (payload._tag !== "StopFailure") return SAFE_DEFAULT;
+    if (payload._tag !== "StopFailure") return NO_DECISION;
     const eventStore = yield* EventStore;
     const project = yield* Project;
     const root = yield* project.root();
@@ -103,11 +104,7 @@ export const handleStopFailure = (
       .append(eventStream("stop-failures", ledgerPath, StopFailureRecordSchema, { maxRecords: 1_000 }), entry)
       .pipe(
         Effect.catchAll((err) =>
-          Effect.sync(() => {
-            process.stderr.write(
-              `stop-failure: ledger write failed: ${summarizeEventStoreError(err)}\n`,
-            );
-          }),
+          logWarning(`stop-failure: ledger write failed: ${summarizeEventStoreError(err)}`),
         ),
       );
 
@@ -128,5 +125,5 @@ export const handleStopFailure = (
         },
       };
     }
-    return SAFE_DEFAULT;
+    return NO_DECISION;
   });

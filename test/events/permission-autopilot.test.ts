@@ -83,7 +83,7 @@ describe("VAL-M4-002 permission-autopilot (M11 spec-conformant output)", () => {
     expect(d).toEqual({})
   })
 
-  test("unseen pattern → SAFE_DEFAULT no-op (lets Claude Code show its dialog)", async () => {
+  test("unseen pattern → NO_DECISION no-op (lets Claude Code show its dialog)", async () => {
     const layer = Layer.mergeAll(ProjectTest({ root: "/repo" }), ApprovalsTest())
     const d = await Effect.runPromise(
       handlePermissionRequest(

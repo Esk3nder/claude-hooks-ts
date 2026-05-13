@@ -2,6 +2,7 @@ import * as fs from "node:fs"
 import * as path from "node:path"
 import { Context, Effect, Layer, Schema } from "effect"
 import { parse as parseYaml } from "yaml"
+import { logWarningSync } from "./diagnostics.ts"
 
 export interface PolicyConfigData {
   readonly destructiveCommandPatterns: ReadonlyArray<RegExp>
@@ -91,7 +92,7 @@ const compilePatterns = (patterns: ReadonlyArray<string>): ReadonlyArray<RegExp>
     try {
       return [new RegExp(pattern)]
     } catch {
-      process.stderr.write(`policy-config: ignored invalid regexp ${JSON.stringify(pattern)}\n`)
+      logWarningSync(`policy-config: ignored invalid regexp ${JSON.stringify(pattern)}`)
       return []
     }
   })

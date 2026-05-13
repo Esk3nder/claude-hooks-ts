@@ -1,7 +1,7 @@
 import { Effect } from "effect"
 import type { HookPayload } from "../schema/payloads.ts"
 import type { HookDecision } from "../schema/decisions.ts"
-import { SAFE_DEFAULT } from "../schema/decisions.ts"
+import { NO_DECISION } from "../schema/decisions.ts"
 import {
   classifyPrompt,
   requiresWebSources,
@@ -37,7 +37,7 @@ import { reportHookFailure } from "../services/hook-failure.ts"
  *
  * 1. System-text short-circuit. If the prompt is a
  * `<system-reminder>`, `<task-notification>`, or other system-injected
- * string, emit NO additionalContext, no telemetry — just SAFE_DEFAULT.
+ * string, emit NO additionalContext, no telemetry — just NO_DECISION.
  * this package does this with `process.exit(0)`; we return.
  *
  * 2. Regex `workflow-classifier` (cheap, sync). Owns `last_workflow` in
@@ -74,11 +74,11 @@ export const handleUserPromptSubmit = (
   SessionState | Inference | ClaudeSubprocess | ClassifierTelemetry | CommandRunner
 > =>
   Effect.gen(function* () {
-    if (payload._tag !== "UserPromptSubmit") return SAFE_DEFAULT
+    if (payload._tag !== "UserPromptSubmit") return NO_DECISION
 
     // Step 1 — system-text short-circuit.
     if (isSystemTextPrompt(payload.prompt)) {
-      return SAFE_DEFAULT
+      return NO_DECISION
     }
 
     // Step 2 — regex workflow tagger. Two outputs:

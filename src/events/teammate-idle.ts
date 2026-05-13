@@ -2,11 +2,12 @@ import { Effect } from "effect"
 import * as path from "node:path"
 import type { HookPayload } from "../schema/payloads.ts"
 import type { HookDecision } from "../schema/decisions.ts"
-import { SAFE_DEFAULT } from "../schema/decisions.ts"
+import { NO_DECISION } from "../schema/decisions.ts"
 import { eventStream, TeammateIdleRecordSchema } from "../schema/events.ts"
 import { EventStore, summarizeEventStoreError } from "../services/event-store.ts"
 import { Project } from "../services/project.ts"
 import { SessionState } from "../services/session-state.ts"
+import { logWarning } from "../services/diagnostics.ts"
 
 interface TeammateIdleLedgerEntry {
   readonly session_id: string
@@ -29,7 +30,7 @@ export const handleTeammateIdle = (
   EventStore | Project | SessionState
 > =>
   Effect.gen(function* () {
-    if (payload._tag !== "TeammateIdle") return SAFE_DEFAULT
+    if (payload._tag !== "TeammateIdle") return NO_DECISION
     const eventStore = yield* EventStore
     const project = yield* Project
     const state = yield* SessionState
@@ -51,11 +52,7 @@ export const handleTeammateIdle = (
       .append(eventStream("teammate-idle", ledgerPath, TeammateIdleRecordSchema, { maxRecords: 1_000 }), entry)
       .pipe(
         Effect.tapError((cause) =>
-          Effect.sync(() => {
-            process.stderr.write(
-              `[TeammateIdle] ledger append failed: ${summarizeEventStoreError(cause)}\n`,
-            )
-          }),
+          logWarning(`[TeammateIdle] ledger append failed: ${summarizeEventStoreError(cause)}`),
         ),
         Effect.catchAll(() => Effect.succeed(undefined)),
       )
@@ -63,11 +60,9 @@ export const handleTeammateIdle = (
     const stateE = yield* Effect.either(
       state.get(payload.session_id).pipe(
         Effect.tapError((cause) =>
-          Effect.sync(() => {
-            process.stderr.write(
-              `[TeammateIdle] session-state op=get failed: sid=${payload.session_id} cause=${String(cause).slice(0, 160)}\n`,
-            )
-          }),
+          logWarning(
+            `[TeammateIdle] session-state op=get failed: sid=${payload.session_id} cause=${String(cause).slice(0, 160)}`,
+          ),
         ),
       ),
     )
@@ -83,5 +78,5 @@ export const handleTeammateIdle = (
         }
       }
     }
-    return SAFE_DEFAULT
+    return NO_DECISION
   })

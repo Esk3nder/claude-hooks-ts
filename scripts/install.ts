@@ -19,6 +19,7 @@ import * as os from "node:os";
 import { HOOK_EVENT_NAMES } from "../src/schema/hook-events.ts";
 import { shellQuote, splitShellWords } from "../src/services/shell-words.ts";
 import { runCommandLive } from "../src/services/command-runner.ts";
+import { writeCliStderr, writeCliStdout } from "./io.ts";
 
 const DISPATCHER_MARKERS = ["claude-hooks-ts/bin/claude-hook", "claude-hook"];
 const DEFAULT_TARGET = path.join(os.homedir(), ".claude", "settings.json");
@@ -230,7 +231,7 @@ const atomicWrite = (file: string, contents: string): AtomicWriteResult => {
     const ts = new Date().toISOString().replace(/[:.]/g, "-");
     backupPath = `${file}.bak.${ts}`;
     fs.copyFileSync(file, backupPath);
-    process.stdout.write(`${CYAN}backup:${RESET} ${backupPath}\n`);
+    writeCliStdout(`${CYAN}backup:${RESET} ${backupPath}\n`);
   }
   const tmp = `${file}.tmp`;
   fs.writeFileSync(tmp, contents, "utf8");
@@ -514,7 +515,7 @@ const rollback = (result: InstallResult, out: NodeJS.WritableStream): void => {
 if (import.meta.main) {
   const bunPath = await Bun.which("bun");
   if (!bunPath) {
-    process.stderr.write(
+    writeCliStderr(
       "claude-hooks-install: bun is required but not on PATH.\n" +
         "Install: curl -fsSL https://bun.sh/install | bash\n",
     );

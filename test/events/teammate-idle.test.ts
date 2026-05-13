@@ -24,7 +24,7 @@ const payloadFor = (sid: string) =>
   });
 
 describe("handleTeammateIdle", () => {
-  test("ledger entry + SAFE_DEFAULT for empty state", async () => {
+  test("ledger entry + NO_DECISION for empty state", async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "chts-teammate-idle-"));
     try {
       const layer = Layer.mergeAll(
@@ -42,7 +42,7 @@ describe("handleTeammateIdle", () => {
     }
   });
 
-  test("SAFE_DEFAULT when files_changed but verification passed", async () => {
+  test("NO_DECISION when files_changed but verification passed", async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "chts-teammate-idle-"));
     try {
       const layer = Layer.mergeAll(

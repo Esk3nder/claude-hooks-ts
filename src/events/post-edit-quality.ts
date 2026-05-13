@@ -1,7 +1,7 @@
 import { Effect } from "effect"
 import type { HookPayload } from "../schema/payloads.ts"
 import type { HookDecision } from "../schema/decisions.ts"
-import { SAFE_DEFAULT } from "../schema/decisions.ts"
+import { NO_DECISION } from "../schema/decisions.ts"
 import { Project } from "../services/project.ts"
 import { Shell } from "../services/shell.ts"
 import { SessionState } from "../services/session-state.ts"
@@ -10,6 +10,7 @@ import { isIsaFilePath } from "../algorithm/isa/locate.ts"
 import { runCheckpoint } from "../algorithm/isa/checkpoint.ts"
 import { handlePostToolUseIsaEffects } from "../algorithm/isa/lifecycle.ts"
 import { Redact } from "../services/redact.ts"
+import { logWarning } from "../services/diagnostics.ts"
 import {
   buildFinding,
   coerceForScan,
@@ -77,7 +78,7 @@ const formatterFor = (filePath: string): FormatterSpec | null => {
 
 const finishWithWarning = (warningContext: string | null): HookDecision =>
   warningContext === null
-    ? SAFE_DEFAULT
+    ? NO_DECISION
     : {
         hookSpecificOutput: {
           hookEventName: "PostToolUse",
@@ -109,7 +110,7 @@ export const handlePostToolUse = (
   Project | Shell | Redact | SessionState
 > =>
   Effect.gen(function* () {
-    if (payload._tag !== "PostToolUse") return SAFE_DEFAULT
+    if (payload._tag !== "PostToolUse") return NO_DECISION
 
     const file = filePathFromInput(payload.tool_input)
     const isEdit = EDIT_TOOLS.has(payload.tool_name)
@@ -122,10 +123,9 @@ export const handlePostToolUse = (
       .get(sid)
       .pipe(
         Effect.catchAll((cause) => {
-          process.stderr.write(
-            `[PostToolUse] session-state op=get failed: sid=${sid} cause=${String(cause).slice(0, 160)}\n`,
-          )
-          return Effect.succeed(null)
+          return logWarning(
+            `[PostToolUse] session-state op=get failed: sid=${sid} cause=${String(cause).slice(0, 160)}`,
+          ).pipe(Effect.as(null))
         }),
       )
 
@@ -141,10 +141,9 @@ export const handlePostToolUse = (
         })
         .pipe(
           Effect.catchAll((cause) => {
-            process.stderr.write(
-              `[PostToolUse] session-state op=isa-engaged-marker failed: sid=${sid} cause=${String(cause).slice(0, 160)}\n`,
+            return logWarning(
+              `[PostToolUse] session-state op=isa-engaged-marker failed: sid=${sid} cause=${String(cause).slice(0, 160)}`,
             )
-            return Effect.succeed(undefined)
           }),
         )
     }
@@ -175,7 +174,7 @@ export const handlePostToolUse = (
       if (scanFinding.secretDetected) {
         const warning = renderWarning(scanFinding)
         warningContext = warning
-        process.stderr.write(`${warning}\n`)
+        yield* logWarning(warning)
         // Continue with branches — scan is report-only.
       }
     }
@@ -197,13 +196,11 @@ export const handlePostToolUse = (
         try: async () => {
           await runCheckpoint(file, isaRoot)
         },
-        catch: (err) => {
-          process.stderr.write(
-            `[checkpoint] uncaught: ${String(err)}\n`,
-          )
-          return new Error(String(err))
-        },
-      }).pipe(Effect.catchAll(() => Effect.succeed(undefined)))
+        catch: (err) => new Error(String(err)),
+      }).pipe(
+        Effect.tapError((err) => logWarning(`[checkpoint] uncaught: ${String(err)}`)),
+        Effect.catchAll(() => Effect.succeed(undefined)),
+      )
       return finishWithWarning(warningContext)
     }
 
@@ -238,10 +235,9 @@ export const handlePostToolUse = (
       .pipe(
         Effect.catchAll((cause: unknown) => {
           const msg = String(cause).slice(0, 120)
-          process.stderr.write(
-            `post-edit-quality: ${fmt.probe.cmd} failed silently: ${msg}\n`,
-          )
-          return Effect.succeed({ stdout: "", stderr: "", exitCode: -1 })
+          return logWarning(
+            `post-edit-quality: ${fmt.probe.cmd} failed; continuing: ${msg}`,
+          ).pipe(Effect.as({ stdout: "", stderr: "", exitCode: -1 }))
         }),
       )
     if (probe.exitCode !== 0) return finishWithWarning(warningContext)
@@ -254,10 +250,9 @@ export const handlePostToolUse = (
       .pipe(
         Effect.catchAll((cause: unknown) => {
           const msg = String(cause).slice(0, 120)
-          process.stderr.write(
-            `post-edit-quality: ${fmt.run.cmd} failed silently: ${msg}\n`,
-          )
-          return Effect.succeed({ stdout: "", stderr: "", exitCode: -1 })
+          return logWarning(
+            `post-edit-quality: ${fmt.run.cmd} failed; continuing: ${msg}`,
+          ).pipe(Effect.as({ stdout: "", stderr: "", exitCode: -1 }))
         }),
       )
     return finishWithWarning(warningContext)

@@ -2,11 +2,12 @@ import { Effect } from "effect";
 import * as path from "node:path";
 import type { HookPayload } from "../schema/payloads.ts";
 import type { HookDecision } from "../schema/decisions.ts";
-import { SAFE_DEFAULT } from "../schema/decisions.ts";
+import { NO_DECISION } from "../schema/decisions.ts";
 import { eventStream, PermissionDeniedRecordSchema } from "../schema/events.ts";
 import { collectStream, EventStore, summarizeEventStoreError } from "../services/event-store.ts";
 import { Project } from "../services/project.ts";
 import { derivePatternKey } from "../policies/permission-patterns.ts";
+import { logWarning } from "../services/diagnostics.ts";
 
 interface PermissionDeniedLedgerEntry {
   readonly session_id: string;
@@ -41,7 +42,7 @@ export const handlePermissionDenied = (
   payload: HookPayload,
 ): Effect.Effect<HookDecision, never, EventStore | Project> =>
   Effect.gen(function* () {
-    if (payload._tag !== "PermissionDenied") return SAFE_DEFAULT;
+    if (payload._tag !== "PermissionDenied") return NO_DECISION;
     const project = yield* Project;
     const eventStore = yield* EventStore;
     const root = yield* project.root();
@@ -63,12 +64,9 @@ export const handlePermissionDenied = (
       .pipe(
         Effect.zipRight(collectStream(eventStore.tail(stream, TAIL_LINES))),
         Effect.catchAll((err) =>
-          Effect.sync(() => {
-            process.stderr.write(
-              `permission-denied: event-store append/tail failed: ${summarizeEventStoreError(err)}\n`,
-            );
-            return [] as ReadonlyArray<PermissionDeniedLedgerEntry>;
-          }),
+          logWarning(
+            `permission-denied: event-store append/tail failed: ${summarizeEventStoreError(err)}`,
+          ).pipe(Effect.as([] as ReadonlyArray<PermissionDeniedLedgerEntry>)),
         ),
       );
 
@@ -94,5 +92,5 @@ export const handlePermissionDenied = (
         },
       };
     }
-    return SAFE_DEFAULT;
+    return NO_DECISION;
   });

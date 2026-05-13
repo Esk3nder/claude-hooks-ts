@@ -302,7 +302,7 @@ describe("TaskCompleted ISA evidence — cwd drift", () => {
       )
       const out = await runTaskCompleted(drift, ENGAGED(root))
       // If the gate erroneously followed drift, it'd see the
-      // all-checked-with-verification ISA and SAFE_DEFAULT. Using
+      // all-checked-with-verification ISA and NO_DECISION. Using
       // session_root correctly, it sees the unchecked ISA and blocks.
       expect(out.decision).toBe("block")
       expect(out.reason ?? "").toContain("unchecked")

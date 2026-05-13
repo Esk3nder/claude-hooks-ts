@@ -1,5 +1,6 @@
 #!/usr/bin/env bun
 import { currentProcessEnv } from "../src/bootstrap/env.ts"
+import { writeCliStdout } from "./io.ts"
 /**
  * Postinstall — INTENTIONALLY MINIMAL.
  *
@@ -14,7 +15,7 @@ import { currentProcessEnv } from "../src/bootstrap/env.ts"
 
 const QUIET = currentProcessEnv()["CLAUDE_HOOKS_QUIET_POSTINSTALL"] === "1"
 if (!QUIET) {
-  process.stdout.write(
+  writeCliStdout(
     "claude-hooks-ts installed. Next steps:\n" +
       "  claude-hooks-install --apply         # wire dispatcher into ~/.claude/settings.json\n" +
       "  claude-hooks-init                    # create per-project state dir\n" +

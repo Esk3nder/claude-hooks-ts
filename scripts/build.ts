@@ -2,6 +2,7 @@
 import * as fs from "node:fs"
 import * as path from "node:path"
 import { runCommandLive } from "../src/services/command-runner.ts"
+import { writeCliStderr, writeCliStdout } from "./io.ts"
 
 const platform =
   process.platform === "darwin"
@@ -28,11 +29,11 @@ const result = await runCommandLive(
   ],
   { timeoutMs: 120_000 },
 )
-if (result.stdout.length > 0) process.stdout.write(result.stdout)
-if (result.stderr.length > 0) process.stderr.write(result.stderr)
+if (result.stdout.length > 0) writeCliStdout(result.stdout)
+if (result.stderr.length > 0) writeCliStderr(result.stderr)
 if (result.exitCode !== 0 || result.timedOut) {
   process.exit(result.exitCode > 0 ? result.exitCode : 1)
 }
 
 const stat = fs.statSync(outfile)
-console.log(`built ${outfile} (${(stat.size / 1024 / 1024).toFixed(1)} MB)`)
+writeCliStdout(`built ${outfile} (${(stat.size / 1024 / 1024).toFixed(1)} MB)\n`)

@@ -92,7 +92,7 @@ describe("UserPromptSubmit emits BOTH layered classifier lines (B4)", () => {
       baseAlgoT3,
     )
     // the classifier: process.exit(0) without emission. We return
-    // SAFE_DEFAULT (empty {}), so additionalContext is undefined → raw is "".
+    // NO_DECISION (empty {}), so additionalContext is undefined → raw is "".
     expect(raw).toBe("")
     expect(inferenceCalls).toBe(0)
   })

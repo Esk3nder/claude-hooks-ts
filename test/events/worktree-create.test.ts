@@ -43,7 +43,7 @@ describe("handleWorktreeCreate", () => {
     expect(d).toEqual({ worktreePath: "/repo/.wt/feat-x" })
   })
 
-  test("returns SAFE_DEFAULT on git failure", async () => {
+  test("returns NO_DECISION on git failure", async () => {
     const layer = ShellTest(() => ({
       stdout: "",
       stderr: "fatal: exists",

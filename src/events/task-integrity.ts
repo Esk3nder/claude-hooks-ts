@@ -2,7 +2,7 @@ import { Effect } from "effect"
 import { readFileSync } from "node:fs"
 import type { HookPayload } from "../schema/payloads.ts"
 import type { HookDecision } from "../schema/decisions.ts"
-import { SAFE_DEFAULT } from "../schema/decisions.ts"
+import { NO_DECISION } from "../schema/decisions.ts"
 import { findLatestISA, findProjectIsa } from "../algorithm/isa/locate.ts"
 import { countCriteria } from "../algorithm/isa/criteria.ts"
 import { parseSections } from "../algorithm/isa/sections.ts"
@@ -11,14 +11,15 @@ import {
   type ResolveActiveIsaRecord,
 } from "../algorithm/isa/lifecycle.ts"
 import { SessionState } from "../services/session-state.ts"
+import { logWarning } from "../services/diagnostics.ts"
 
 export const handleTaskCreated = (
   payload: HookPayload,
 ): Effect.Effect<HookDecision> =>
   Effect.sync(() => {
-    if (payload._tag !== "TaskCreated") return SAFE_DEFAULT
+    if (payload._tag !== "TaskCreated") return NO_DECISION
     // M4: advisory only — never blocks task creation.
-    return SAFE_DEFAULT
+    return NO_DECISION
   })
 
 const hasEvidenceItem = (value: unknown): value is string =>
@@ -107,7 +108,7 @@ export const handleTaskCompleted = (
   payload: HookPayload,
 ): Effect.Effect<HookDecision, never, SessionState> =>
   Effect.gen(function* () {
-    if (payload._tag !== "TaskCompleted") return SAFE_DEFAULT
+    if (payload._tag !== "TaskCompleted") return NO_DECISION
 
     // Acceptance/evidence may arrive top-level (rich harness contract) or
     // under payload.metadata (current Claude Code TaskUpdate surface, which
@@ -134,10 +135,9 @@ export const handleTaskCompleted = (
       .get(sid)
       .pipe(
         Effect.catchAll((cause) => {
-          process.stderr.write(
-            `[TaskCompleted] session-state op=get failed: sid=${sid} cause=${String(cause).slice(0, 160)}\n`,
-          )
-          return Effect.succeed(null)
+          return logWarning(
+            `[TaskCompleted] session-state op=get failed: sid=${sid} cause=${String(cause).slice(0, 160)}`,
+          ).pipe(Effect.as(null))
         }),
       )
     const currentCwd =
@@ -150,13 +150,13 @@ export const handleTaskCompleted = (
       return { decision: "block", reason: isa.reason } satisfies HookDecision
     }
 
-    if (!missingAc && !missingEv) return SAFE_DEFAULT
+    if (!missingAc && !missingEv) return NO_DECISION
 
     // A `sufficient` ISA (counts.total > 0, all checked, Verification
     // non-empty) IS the evidence — duplicating AC/evidence on the
     // payload is redundant and unsatisfiable through Claude Code's
     // TaskUpdate (which drops user-provided `metadata`).
-    if (isa.kind === "sufficient") return SAFE_DEFAULT
+    if (isa.kind === "sufficient") return NO_DECISION
 
     // `missing` (no ISA) or `insufficient` (ISA stub with no checkbox
     // ISCs) means the ISA can't shoulder the evidence burden. The
@@ -176,7 +176,7 @@ export const handleTaskCompleted = (
     const hasEvSignal =
       payload.evidence !== undefined || meta?.evidence !== undefined
     const insufficientIsa = isa.kind === "insufficient"
-    if (!hasAcSignal && !hasEvSignal && !insufficientIsa) return SAFE_DEFAULT
+    if (!hasAcSignal && !hasEvSignal && !insufficientIsa) return NO_DECISION
 
     return {
       decision: "block",

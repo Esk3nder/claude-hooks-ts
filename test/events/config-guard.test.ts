@@ -21,7 +21,7 @@ describe("handleConfigChange", () => {
     expect(out.hookSpecificOutput.additionalContext).toContain("user")
   })
 
-  test("non-ConfigChange payload → SAFE_DEFAULT", async () => {
+  test("non-ConfigChange payload → NO_DECISION", async () => {
     const payload = decode({
       _tag: "Stop",
       session_id: "s",

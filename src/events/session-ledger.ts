@@ -4,12 +4,13 @@ import { basename, dirname, join as pathJoin } from "node:path"
 import * as path from "node:path"
 import type { HookPayload } from "../schema/payloads.ts"
 import type { HookDecision } from "../schema/decisions.ts"
-import { SAFE_DEFAULT } from "../schema/decisions.ts"
+import { NO_DECISION } from "../schema/decisions.ts"
 import { FileSystem } from "../services/filesystem.ts"
 import { SessionState, EMPTY_SESSION_STATE } from "../services/session-state.ts"
 import { Project } from "../services/project.ts"
 import { findLatestISA, findProjectIsa } from "../algorithm/isa/locate.ts"
 import { parseFrontmatter } from "../algorithm/isa/frontmatter.ts"
+import { logWarning } from "../services/diagnostics.ts"
 
 const sanitize = (s: string): string => s.replace(/[^a-zA-Z0-9._-]/g, "_")
 
@@ -88,7 +89,7 @@ export const handleSessionEnd = (
   payload: HookPayload,
 ): Effect.Effect<HookDecision, never, FileSystem | SessionState | Project> =>
   Effect.gen(function* () {
-    if (payload._tag !== "SessionEnd") return SAFE_DEFAULT
+    if (payload._tag !== "SessionEnd") return NO_DECISION
     const fs = yield* FileSystem
     const state = yield* SessionState
     const project = yield* Project
@@ -170,13 +171,10 @@ export const handleSessionEnd = (
         .pipe(
           Effect.catchAll((cause: unknown) => {
             const msg = String(cause).slice(0, 120)
-            process.stderr.write(
-              `session-ledger: archive failed for ${c.sourcePath}: ${msg}\n`,
-            )
-            return Effect.succeed(undefined)
+            return logWarning(`session-ledger: archive failed for ${c.sourcePath}: ${msg}`)
           }),
         )
     }
 
-    return SAFE_DEFAULT
+    return NO_DECISION
   })

@@ -32,6 +32,7 @@ import { homedir } from "node:os"
 import { parseCriteriaList, type CriterionEntry } from "./criteria.ts"
 import { parseFrontmatter } from "./frontmatter.ts"
 import { runCommandLive } from "../../services/command-runner.ts"
+import { logWarningSync } from "../../services/diagnostics.ts"
 
 /** the classifier — git command timeout. */
 export const GIT_TIMEOUT_MS = 5000
@@ -77,9 +78,7 @@ export const loadAllowlist = (
       .filter((l) => l.length > 0 && !l.startsWith("#"))
       .map(expandPath)
   } catch (err) {
-    process.stderr.write(
-      `[checkpoint] failed to read allowlist: ${String(err)}\n`,
-    )
+    logWarningSync(`[checkpoint] failed to read allowlist: ${String(err)}`)
     return []
   }
 }
@@ -107,9 +106,7 @@ export const loadState = (stateFile: string): CheckpointState => {
           : {},
     }
   } catch (err) {
-    process.stderr.write(
-      `[checkpoint] malformed state file ${stateFile}, resetting: ${String(err)}\n`,
-    )
+    logWarningSync(`[checkpoint] malformed state file ${stateFile}, resetting: ${String(err)}`)
     return { committed_iscs: [], last_commit_sha: {} }
   }
 }
@@ -119,9 +116,7 @@ export const saveState = (stateFile: string, state: CheckpointState): void => {
   try {
     writeFileSync(stateFile, `${JSON.stringify(state, null, 2)}\n`, "utf-8")
   } catch (err) {
-    process.stderr.write(
-      `[checkpoint] failed to write state ${stateFile}: ${String(err)}\n`,
-    )
+    logWarningSync(`[checkpoint] failed to write state ${stateFile}: ${String(err)}`)
   }
 }
 
@@ -200,7 +195,7 @@ export const sanitizeMessage = (s: string): string =>
  * `--no-verify` skips husky/pre-commit hooks; `--no-gpg-sign` avoids GPG
  * passphrase prompts that would block the session on stdin.
  *
- * Returns commit SHA on success, null on failure (logged to stderr).
+ * Returns commit SHA on success, null on failure (warning-logged).
  */
 export const commitInRepo = (
   repo: string,
@@ -240,9 +235,7 @@ const commitInRepoEffect = async (
   } catch (err) {
     const e = err as { message?: string }
     const detail = e.message ?? String(err)
-    process.stderr.write(
-      `[checkpoint] commit failed in ${repo} for ${iscId}: ${detail}\n`,
-    )
+    logWarningSync(`[checkpoint] commit failed in ${repo} for ${iscId}: ${detail}`)
     return null
   }
 }
@@ -310,9 +303,7 @@ const runCheckpointEffect = async (
   try {
     content = readFileSync(isaFilePath, "utf-8")
   } catch (err) {
-    process.stderr.write(
-      `[checkpoint] failed to read ${isaFilePath}: ${String(err)}\n`,
-    )
+    logWarningSync(`[checkpoint] failed to read ${isaFilePath}: ${String(err)}`)
     return empty("missing-file")
   }
 
@@ -330,7 +321,7 @@ const runCheckpointEffect = async (
 
   const allowlist = loadAllowlist(root)
   if (allowlist.length === 0) {
-    process.stderr.write("[checkpoint] no repos configured, skipping\n")
+    logWarningSync("[checkpoint] no repos configured, skipping")
     return empty("no-allowlist")
   }
 
@@ -342,17 +333,15 @@ const runCheckpointEffect = async (
     let committedThisIsc = false
     for (const repo of allowlist) {
       if (!existsSync(repo)) {
-        process.stderr.write(`[checkpoint] repo not found: ${repo}\n`)
+        logWarningSync(`[checkpoint] repo not found: ${repo}`)
         continue
       }
       if (!(await isGitRepo(repo))) {
-        process.stderr.write(`[checkpoint] not a git repo: ${repo}\n`)
+        logWarningSync(`[checkpoint] not a git repo: ${repo}`)
         continue
       }
       if (!isPathInside(repo, isaFilePath)) {
-        process.stderr.write(
-          `[checkpoint] ISA ${isaFilePath} not inside repo ${repo}, skipping\n`,
-        )
+        logWarningSync(`[checkpoint] ISA ${isaFilePath} not inside repo ${repo}, skipping`)
         continue
       }
       if (!(await hasChangesForFile(repo, isaFilePath))) continue

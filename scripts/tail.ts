@@ -11,6 +11,7 @@ import { Effect, Stream } from "effect"
 import * as fs from "node:fs"
 import * as fsP from "node:fs/promises"
 import * as path from "node:path"
+import { writeCliStderr, writeCliStdout } from "./io.ts"
 
 const INITIAL_TAIL_MAX_BYTES = 1024 * 1024
 
@@ -282,7 +283,7 @@ export const runTail = (
       }),
       Stream.runForEach((entry) =>
         Effect.sync(() => {
-          process.stdout.write(prettyPrint(entry, color) + "\n")
+          writeCliStdout(prettyPrint(entry, color) + "\n")
         }),
       ),
     )
@@ -290,7 +291,7 @@ export const runTail = (
     yield* stream.pipe(
       Effect.catchAll((error) =>
         Effect.sync(() => {
-          process.stderr.write(`[claude-hooks-tail] ${error.message}\n`)
+          writeCliStderr(`[claude-hooks-tail] ${error.message}\n`)
           process.exitCode = 1
         }),
       ),

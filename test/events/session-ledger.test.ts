@@ -80,7 +80,7 @@ describe("handleSessionEnd", () => {
     expect(content).toContain("- permission_boundary: bypass_permissions_disabled")
   })
 
-  test("non-SessionEnd payload → SAFE_DEFAULT, no write", async () => {
+  test("non-SessionEnd payload → NO_DECISION, no write", async () => {
     const layer = Layer.mergeAll(
       FileSystemTest(),
       SessionStateTest(),

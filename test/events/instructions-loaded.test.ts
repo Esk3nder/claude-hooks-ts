@@ -11,7 +11,7 @@ import { ProjectTest } from "../../src/services/project.ts";
 const decode = (raw: unknown) => Schema.decodeUnknownSync(HookPayload)(raw);
 
 describe("handleInstructionsLoaded", () => {
-  test("captures file_path / memory_type / load_reason; SAFE_DEFAULT for fresh file", async () => {
+  test("captures file_path / memory_type / load_reason; NO_DECISION for fresh file", async () => {
     const tmp = fsSync.mkdtempSync(path.join(os.tmpdir(), "m13b-il-fresh-"));
     const root = fsSync.mkdtempSync(path.join(os.tmpdir(), "m13b-il-root-"));
     try {

@@ -2,7 +2,7 @@ import { Effect } from "effect"
 import { existsSync } from "node:fs"
 import type { HookPayload } from "../schema/payloads.ts"
 import type { HookDecision } from "../schema/decisions.ts"
-import { SAFE_DEFAULT } from "../schema/decisions.ts"
+import { NO_DECISION } from "../schema/decisions.ts"
 import { SessionState } from "../services/session-state.ts"
 import { checkStopReadiness, resolveActiveIsa } from "../algorithm/isa/lifecycle.ts"
 import { loadRegenerateRules, matchRules } from "../policies/regenerate.ts"
@@ -14,6 +14,7 @@ import {
   tailOf,
 } from "../policies/verify-map.ts"
 import { runCommandLive, runShellCommandLive } from "../services/command-runner.ts"
+import { logWarning } from "../services/diagnostics.ts"
 const REGEN_TIMEOUT_MS = 10_000
 // Total wall-clock budget the Stop handler is willing to spend. Sits under
 // the dispatcher Stop cap (28_000 ms) and the installer's external 30_000 ms
@@ -40,22 +41,21 @@ export const handleStop = (
   payload: HookPayload,
 ): Effect.Effect<HookDecision, never, SessionState> =>
   Effect.gen(function* () {
-    if (payload._tag !== "Stop") return SAFE_DEFAULT
+    if (payload._tag !== "Stop") return NO_DECISION
     const state = yield* SessionState
     const sid = payload.session_id
     const record = yield* state
       .get(sid)
       .pipe(
         Effect.catchAll((cause) => {
-          process.stderr.write(
-            `[Stop] session-state op=get failed: sid=${sid} cause=${String(cause).slice(0, 160)}\n`,
-          )
-          return Effect.succeed(null)
+          return logWarning(
+            `[Stop] session-state op=get failed: sid=${sid} cause=${String(cause).slice(0, 160)}`,
+          ).pipe(Effect.as(null))
         }),
       )
-    if (record === null) return SAFE_DEFAULT
+    if (record === null) return NO_DECISION
     // Local loop-guard: never block twice in the same session.
-    if (record.stop_blocked_once) return SAFE_DEFAULT
+    if (record.stop_blocked_once) return NO_DECISION
 
     // ISA completeness gate — runs first because an ISA declaring
     // phase: complete with missing sections / unchecked ISCs is a
@@ -80,10 +80,9 @@ export const handleStop = (
         .update(sid, { stop_blocked_once: true })
         .pipe(
           Effect.catchAll((cause) => {
-            process.stderr.write(
-              `[Stop] session-state op=stop-blocked-once failed: sid=${sid} cause=${String(cause).slice(0, 160)}\n`,
+            return logWarning(
+              `[Stop] session-state op=stop-blocked-once failed: sid=${sid} cause=${String(cause).slice(0, 160)}`,
             )
-            return Effect.succeed(undefined)
           }),
         )
       const out: HookDecision = {
@@ -108,10 +107,9 @@ export const handleStop = (
         .update(sid, { stop_blocked_once: true })
         .pipe(
           Effect.catchAll((cause) => {
-            process.stderr.write(
-              `[Stop] session-state op=stop-blocked-once failed: sid=${sid} cause=${String(cause).slice(0, 160)}\n`,
+            return logWarning(
+              `[Stop] session-state op=stop-blocked-once failed: sid=${sid} cause=${String(cause).slice(0, 160)}`,
             )
-            return Effect.succeed(undefined)
           }),
         )
       const out: HookDecision = {
@@ -137,8 +135,8 @@ export const handleStop = (
         const cmdPreview = Array.isArray(selectedVerify.command)
           ? selectedVerify.command.join(" ")
           : selectedVerify.command
-        process.stderr.write(
-          `[verify-map] running (timeoutMs=${selectedVerify.timeoutMs}): ${cmdPreview.slice(0, 200)}${cmdPreview.length > 200 ? "..." : ""}\n`,
+        yield* logWarning(
+          `[verify-map] running (timeoutMs=${selectedVerify.timeoutMs}): ${cmdPreview.slice(0, 200)}${cmdPreview.length > 200 ? "..." : ""}`,
         )
         // runVerifyCommand is internally fault-tolerant: it converts
         // successful exits and command-runner failures into a
@@ -150,11 +148,7 @@ export const handleStop = (
           catch: (cause) => new Error(String(cause)),
         }).pipe(
           Effect.tapError((cause) =>
-            Effect.sync(() => {
-              process.stderr.write(
-                `[verify-map] runner crashed: ${String(cause).slice(0, 200)}\n`,
-              )
-            }),
+            logWarning(`[verify-map] runner crashed: ${String(cause).slice(0, 200)}`),
           ),
           Effect.orElseSucceed(() => null),
         )
@@ -201,10 +195,9 @@ export const handleStop = (
         .update(sid, { stop_blocked_once: true })
         .pipe(
           Effect.catchAll((cause) => {
-            process.stderr.write(
-              `[Stop] session-state op=stop-blocked-once failed: sid=${sid} cause=${String(cause).slice(0, 160)}\n`,
+            return logWarning(
+              `[Stop] session-state op=stop-blocked-once failed: sid=${sid} cause=${String(cause).slice(0, 160)}`,
             )
-            return Effect.succeed(undefined)
           }),
         )
       const out: HookDecision = {
@@ -272,11 +265,11 @@ export const handleStop = (
         // Require REGEN_TIMEOUT_MS + 1s safety margin so a regen that
         // runs to its own timeout still leaves headroom for state I/O
         // and command-runner cleanup before we hit the dispatcher cap
-        // (which would turn our decision into SAFE_DEFAULT).
+        // (which would force the dispatcher to emit its hook-safe fallback).
         const REGEN_SAFETY_MARGIN_MS = 1_000
         if (remaining < REGEN_TIMEOUT_MS + REGEN_SAFETY_MARGIN_MS) {
-          process.stderr.write(
-            `[regenerate] skipping ${rule.derived}: ${remaining}ms remaining, need ${REGEN_TIMEOUT_MS + REGEN_SAFETY_MARGIN_MS}ms\n`,
+          yield* logWarning(
+            `[regenerate] skipping ${rule.derived}: ${remaining}ms remaining, need ${REGEN_TIMEOUT_MS + REGEN_SAFETY_MARGIN_MS}ms`,
           )
           continue
         }
@@ -286,8 +279,8 @@ export const handleStop = (
         const cmdPreview = Array.isArray(rule.command)
           ? rule.command.join(" ")
           : rule.command
-        process.stderr.write(
-          `[regenerate] running for ${rule.derived}: ${cmdPreview.slice(0, 160)}${cmdPreview.length > 160 ? "..." : ""}\n`,
+        yield* logWarning(
+          `[regenerate] running for ${rule.derived}: ${cmdPreview.slice(0, 160)}${cmdPreview.length > 160 ? "..." : ""}`,
         )
         yield* Effect.tryPromise({
           try: async () => {
@@ -312,15 +305,15 @@ export const handleStop = (
               )
             }
           },
-          catch: (cause) => {
-            process.stderr.write(
-              `[regenerate] ${rule.derived} failed: ${String(cause).slice(0, 200)}\n`,
-            )
-            return new Error(String(cause))
-          },
-        }).pipe(Effect.catchAll(() => Effect.succeed(undefined)))
+          catch: (cause) => new Error(String(cause)),
+        }).pipe(
+          Effect.tapError((cause) =>
+            logWarning(`[regenerate] ${rule.derived} failed: ${String(cause).slice(0, 200)}`),
+          ),
+          Effect.catchAll(() => Effect.succeed(undefined)),
+        )
       }
     }
 
-    return SAFE_DEFAULT
+    return NO_DECISION
   })

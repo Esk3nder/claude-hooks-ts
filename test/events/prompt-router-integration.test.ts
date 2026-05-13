@@ -4,7 +4,7 @@
  * - transcript_path → context flows into Inference (L10)
  * - Telemetry record is appended (L11)
  * - cleanPrompt runs before subprocess (L12)
- * - System-text returns SAFE_DEFAULT, NO classification, NO telemetry (L14)
+ * - System-text returns NO_DECISION, NO classification, NO telemetry (L14)
  * - Workflow line + mode line are emitted in order (B4)
  */
 import { describe, expect, test } from "bun:test"
@@ -152,7 +152,7 @@ describe("UserPromptSubmit E2E — all this package features", () => {
     }
   })
 
-  test("system-text prompt: SAFE_DEFAULT, NO classification, NO telemetry", async () => {
+  test("system-text prompt: NO_DECISION, NO classification, NO telemetry", async () => {
     const result = await runE2E({
       prompt: "<system-reminder>this is injected</system-reminder>",
       subprocResponse: `{"mode":"ALGORITHM","tier":3,"mode_reason":"should not be reached"}`,

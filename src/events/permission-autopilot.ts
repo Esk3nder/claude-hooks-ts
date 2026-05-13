@@ -1,7 +1,7 @@
 import { Effect } from "effect"
 import type { HookPayload } from "../schema/payloads.ts"
 import type { HookDecision } from "../schema/decisions.ts"
-import { SAFE_DEFAULT } from "../schema/decisions.ts"
+import { NO_DECISION } from "../schema/decisions.ts"
 import { Approvals } from "../services/approvals.ts"
 import { Project } from "../services/project.ts"
 import { derivePatternKey } from "../policies/permission-patterns.ts"
@@ -19,7 +19,7 @@ import { derivePatternKey } from "../policies/permission-patterns.ts"
  * - "allow"  emitted on a prior recorded approval for the pattern.
  * - "deny"   emitted on a prior recorded denial for the pattern (with reason
  *            in `message`).
- * - SAFE_DEFAULT (`{}`) emitted for unseen / pending patterns: this is what
+ * - NO_DECISION (`{}`) emitted for unseen / pending patterns: this is what
  *            causes Claude Code to show its built-in permission dialog
  *            (the implicit "ask" — there is no explicit "ask" behavior in
  *            the official spec).
@@ -28,7 +28,7 @@ export const handlePermissionRequest = (
   payload: HookPayload,
 ): Effect.Effect<HookDecision, never, Approvals | Project> =>
   Effect.gen(function* () {
-    if (payload._tag !== "PermissionRequest") return SAFE_DEFAULT
+    if (payload._tag !== "PermissionRequest") return NO_DECISION
     const approvals = yield* Approvals
     const project = yield* Project
     const cwd = payload.cwd ?? (yield* project.root())
@@ -46,12 +46,12 @@ export const handlePermissionRequest = (
 
     if (resolved === null) {
       // No prior decision — record a "pending" stub so downstream tooling can
-      // resolve the same pattern key, and emit the safe default to defer to
+      // resolve the same pattern key, and emit no decision to defer to
       // Claude Code's normal permission dialog.
       yield* approvals
         .record({ cwd, pattern, status: "pending", recordedAt: Date.now() })
         .pipe(Effect.catchAll(() => Effect.succeed(undefined as void)))
-      return SAFE_DEFAULT
+      return NO_DECISION
     }
 
     if (resolved.status === "approved") {

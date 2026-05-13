@@ -3,10 +3,11 @@ import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import * as path from "node:path";
 import type { HookPayload } from "../schema/payloads.ts";
 import type { HookDecision } from "../schema/decisions.ts";
-import { SAFE_DEFAULT } from "../schema/decisions.ts";
+import { NO_DECISION } from "../schema/decisions.ts";
 import { eventStream, PostCompactRecordSchema } from "../schema/events.ts";
 import { EventStore, summarizeEventStoreError } from "../services/event-store.ts";
 import { Project } from "../services/project.ts";
+import { logWarning } from "../services/diagnostics.ts";
 
 const sanitize = (s: string): string => s.replace(/[^a-zA-Z0-9._-]/g, "_");
 
@@ -76,7 +77,7 @@ interface PostCompactLedgerEntry {
 /**
  * PostCompact handler — appends an audit entry to a JSONL ledger so we can
  * reconstruct what happened around each compaction event. Best-effort:
- * always returns SAFE_DEFAULT and never propagates write failures.
+ * always returns NO_DECISION and never propagates write failures.
  *
  * Cross-process safety: EventStore owns locking, line caps, and append
  * serialization so sibling dispatcher processes don't interleave partial
@@ -86,7 +87,7 @@ export const handlePostCompact = (
   payload: HookPayload,
 ): Effect.Effect<HookDecision, never, EventStore | Project> =>
   Effect.gen(function* () {
-    if (payload._tag !== "PostCompact") return SAFE_DEFAULT;
+    if (payload._tag !== "PostCompact") return NO_DECISION;
     const eventStore = yield* EventStore;
     const project = yield* Project;
 
@@ -122,8 +123,7 @@ export const handlePostCompact = (
     yield* eventStore.append(eventStream("postcompact", ledgerPath, PostCompactRecordSchema, { maxRecords: 1_000 }), entry).pipe(
       Effect.catchAll((cause: unknown) => {
         const msg = summarizeEventStoreError(cause);
-        process.stderr.write(`postcompact-ledger: write failed: ${msg}\n`);
-        return Effect.succeed(undefined);
+        return logWarning(`postcompact-ledger: write failed: ${msg}`);
       }),
     );
 
@@ -133,15 +133,15 @@ export const handlePostCompact = (
     // against. We emit just the `## Active ISAs` section as additionalContext
     // so the model can re-read those files itself if needed.
     const latestSnap = findLatestSnapshot(root, payload.session_id);
-    if (latestSnap === null) return SAFE_DEFAULT;
+    if (latestSnap === null) return NO_DECISION;
     let snapshotMd: string;
     try {
       snapshotMd = readFileSync(latestSnap, "utf-8");
     } catch {
-      return SAFE_DEFAULT;
+      return NO_DECISION;
     }
     const isaSection = extractActiveIsasSection(snapshotMd);
-    if (isaSection.length === 0) return SAFE_DEFAULT;
+    if (isaSection.length === 0) return NO_DECISION;
     const additionalContext = truncate(
       `Rehydrated ISA context (post-compact, from ${latestSnap}):\n${isaSection}`,
       MAX_REHYDRATE_INJECT,

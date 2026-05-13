@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { Effect, Layer, Schema, Stream } from "effect";
+import { Effect, Layer, Logger, Schema, Stream } from "effect";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -20,7 +20,7 @@ const postCompact = (sid: string, trigger?: string) =>
   });
 
 describe("handlePostCompact", () => {
-  test("appends ledger entry, returns SAFE_DEFAULT", async () => {
+  test("appends ledger entry, returns NO_DECISION", async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "chts-postcompact-"));
     try {
       const layer = Layer.mergeAll(EventStoreLive, ProjectTest({ root }));
@@ -41,7 +41,7 @@ describe("handlePostCompact", () => {
     }
   });
 
-  test("ledger write failure → still returns SAFE_DEFAULT and emits stderr", async () => {
+  test("ledger write failure → still returns NO_DECISION and logs warning", async () => {
     const failingStore = Layer.succeed(
       EventStore,
       EventStore.of({
@@ -54,29 +54,22 @@ describe("handlePostCompact", () => {
     const layer = Layer.mergeAll(failingStore, ProjectTest({ root: "/proj" }));
 
     const captured: string[] = [];
-    const origWrite = process.stderr.write.bind(process.stderr);
-    (process.stderr.write as unknown) = (
-      chunk: string | Uint8Array,
-    ): boolean => {
-      const s2 =
-        typeof chunk === "string" ? chunk : new TextDecoder().decode(chunk);
-      captured.push(s2);
-      return true;
-    };
-    try {
-      const d = await Effect.runPromise(
-        handlePostCompact(postCompact("sid-fail")).pipe(Effect.provide(layer)),
-      );
-      expect(d).toEqual({});
-      const joined = captured.join("");
-      expect(joined).toContain("postcompact-ledger:");
-      expect(joined).toContain("write failed:");
-    } finally {
-      (process.stderr.write as unknown) = origWrite;
-    }
+    const logger = Logger.make(({ message }) => {
+      captured.push(String(message));
+    });
+    const d = await Effect.runPromise(
+      handlePostCompact(postCompact("sid-fail")).pipe(
+        Effect.provide(layer),
+        Effect.provide(Logger.replace(Logger.defaultLogger, logger)),
+      ),
+    );
+    expect(d).toEqual({});
+    const joined = captured.join("");
+    expect(joined).toContain("postcompact-ledger:");
+    expect(joined).toContain("write failed:");
   });
 
-  test("non-PostCompact payload → SAFE_DEFAULT", async () => {
+  test("non-PostCompact payload → NO_DECISION", async () => {
     const layer = Layer.mergeAll(
       EventStoreLive,
       ProjectTest({ root: "/proj" }),

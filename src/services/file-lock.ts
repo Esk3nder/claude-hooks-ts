@@ -4,14 +4,10 @@ import * as BunFileSystem from "@effect/platform-bun/BunFileSystem"
 import * as BunPath from "@effect/platform-bun/BunPath"
 import { Context, Data, Effect, Layer, Option, Schedule } from "effect"
 import * as fsSync from "node:fs"
-import { currentProcessEnv } from "../bootstrap/env.ts"
-import { durationMillis, runtimeConfigFromEnv } from "./runtime-config.ts"
+import { durationMillis, RuntimeConfigLive, RuntimeConfigService } from "./runtime-config.ts"
 
 const STALE_LOCK_MS = 30_000
 const RETRY_INITIAL_MS = 5
-
-const defaultRetryTimeoutMs = (): number =>
-  durationMillis(runtimeConfigFromEnv(currentProcessEnv()).lockRetryTimeoutMs)
 
 export interface LockOptions {
   readonly staleMs?: number
@@ -188,6 +184,8 @@ export const FileLockLive = Layer.effect(
   Effect.gen(function* () {
     const fs = yield* PlatformFileSystem.FileSystem
     const path = yield* PlatformPath.Path
+    const runtimeConfig = yield* RuntimeConfigService
+    const config = yield* runtimeConfig.load()
     return FileLock.of({
       withLock: <A, E, R>(
         targetPath: string,
@@ -195,7 +193,7 @@ export const FileLockLive = Layer.effect(
         opts: LockOptions = {},
       ) => {
         const staleMs = opts.staleMs ?? STALE_LOCK_MS
-        const timeoutMs = opts.timeoutMs ?? defaultRetryTimeoutMs()
+        const timeoutMs = opts.timeoutMs ?? durationMillis(config.lockRetryTimeoutMs)
         const lockPath = `${targetPath}.lock`
         const policy = Schedule.intersect(
           Schedule.intersect(lockRetrySchedule, Schedule.recurUpTo(`${timeoutMs} millis`)),
@@ -226,7 +224,7 @@ export const FileLockLive = Layer.effect(
 
 export const FileLockPlatformLive = Layer.provide(
   FileLockLive,
-  Layer.merge(BunFileSystem.layer, BunPath.layer),
+  Layer.mergeAll(BunFileSystem.layer, BunPath.layer, RuntimeConfigLive),
 )
 
 /**

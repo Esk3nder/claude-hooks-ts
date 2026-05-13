@@ -20,6 +20,7 @@ import * as crypto from "node:crypto"
 import * as path from "node:path"
 import { ClassifierTelemetryRecordSchema, eventStream } from "../schema/events.ts"
 import { EventStore, EventStoreLive, summarizeEventStoreError } from "./event-store.ts"
+import { logWarning } from "./diagnostics.ts"
 import type { Mode, Tier, ClassificationSource } from "./inference.ts"
 
 export interface ClassifierTelemetryRecord {
@@ -110,11 +111,7 @@ export const ClassifierTelemetryLiveBase = (
         append: (record) =>
           store.append(stream, record).pipe(
             Effect.catchAll((err) =>
-              Effect.sync(() => {
-                process.stderr.write(
-                  `classifier-telemetry: append failed: ${summarizeEventStoreError(err)}\n`,
-                )
-              }),
+              logWarning(`classifier-telemetry: append failed: ${summarizeEventStoreError(err)}`),
             ),
           ),
       })

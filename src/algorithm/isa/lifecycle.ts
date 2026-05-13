@@ -24,6 +24,7 @@ import type { Classification, Tier } from "../../services/inference.ts"
 import { safeResolvePath } from "../../services/path-resolution.ts"
 import type { SessionStateRecord } from "../../services/session-state.ts"
 import { runCheckpoint } from "./checkpoint.ts"
+import { logWarningSync } from "../../services/diagnostics.ts"
 import { checkCompleteness } from "./completeness.ts"
 import { countCriteria, parseCriteriaList } from "./criteria.ts"
 import { parseFrontmatter } from "./frontmatter.ts"
@@ -330,7 +331,7 @@ const flipIscCheckbox = (isaPath: string, iscId: string): boolean => {
     writeFileSync(isaPath, next, "utf-8")
     return true
   } catch (err) {
-    process.stderr.write(`[probes] failed to flip ${iscId}: ${String(err)}\n`)
+    logWarningSync(`[probes] failed to flip ${iscId}: ${String(err)}`)
     return false
   }
 }
@@ -348,7 +349,7 @@ const flipIscCheckbox = (isaPath: string, iscId: string): boolean => {
  * coupling — flip and checkpoint are a single atomic unit — to prevent
  * the F3-style flip-without-commit class of bug from reappearing.
  *
- * Non-blocking: errors are logged to stderr; the returned Effect never
+ * Non-blocking: errors are warning-logged; the returned Effect never
  * fails (defects are caught and swallowed at the boundary).
  *
  * No-ops when:
@@ -403,8 +404,8 @@ export const handlePostToolUseIsaEffects = (
           miss.registeredNames.length === 0
             ? "registry is empty"
             : `registry has [${miss.registeredNames.join(", ")}]`
-        process.stderr.write(
-          `[probes] ${miss.iscId} declares probe '${miss.probeName}' but ${known} — check that probes.ts exports a key matching the ISA's 'tool' column\n`,
+        logWarningSync(
+          `[probes] ${miss.iscId} declares probe '${miss.probeName}' but ${known} - check that probes.ts exports a key matching the ISA's 'tool' column`,
         )
       })
       let anyFlipped = false
@@ -424,14 +425,12 @@ export const handlePostToolUseIsaEffects = (
         try {
           await runCheckpoint(isa, cwd)
         } catch (err) {
-          process.stderr.write(
-            `[probes] post-flip checkpoint failed: ${String(err)}\n`,
-          )
+          logWarningSync(`[probes] post-flip checkpoint failed: ${String(err)}`)
         }
       }
     },
     catch: (cause) => {
-      process.stderr.write(`[probes] uncaught: ${String(cause)}\n`)
+      logWarningSync(`[probes] uncaught: ${String(cause)}`)
       return new Error(String(cause))
     },
   }).pipe(Effect.catchAll(() => Effect.succeed(undefined)))

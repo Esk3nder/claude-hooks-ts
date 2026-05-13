@@ -3,9 +3,12 @@ import * as fs from "node:fs";
 import * as fsp from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
-import { Cause, Effect, Exit } from "effect";
-import { withFileLock } from "../../src/services/file-lock.ts";
+import * as BunFileSystem from "@effect/platform-bun/BunFileSystem";
+import * as BunPath from "@effect/platform-bun/BunPath";
+import { Cause, Duration, Effect, Exit, Layer } from "effect";
+import { FileLock, FileLockLive, withFileLock } from "../../src/services/file-lock.ts";
 import { FileSystem, FileSystemLive } from "../../src/services/filesystem.ts";
+import { RuntimeConfigTest } from "../../src/services/runtime-config.ts";
 
 const tmpFile = (name: string): string =>
   path.join(fs.mkdtempSync(path.join(os.tmpdir(), "jsonl-lock-")), name);
@@ -141,5 +144,31 @@ describe("withFileLock parallel JSONL writes", () => {
       if (failure._tag === "Some") expect(failure.value).toBe("body-failure");
     }
     expect(fs.existsSync(`${file}.lock`)).toBe(false);
+  });
+
+  test("FileLockLive reads default retry timeout from RuntimeConfigService", async () => {
+    const file = tmpFile("runtime-config-timeout.jsonl");
+    const lockPath = `${file}.lock`;
+    fs.writeFileSync(lockPath, JSON.stringify({ pid: process.pid, createdAt: Date.now() }));
+    try {
+      const startedAt = Date.now();
+      const exit = await Effect.runPromiseExit(
+        Effect.gen(function* () {
+          const locks = yield* FileLock;
+          yield* locks.withLock(file, Effect.void, { staleMs: 60_000 });
+        }).pipe(
+          Effect.provide(FileLockLive),
+          Effect.provide(Layer.merge(BunFileSystem.layer, BunPath.layer)),
+          Effect.provide(
+            RuntimeConfigTest({ lockRetryTimeoutMs: Duration.millis(40) }),
+          ),
+        ),
+      );
+
+      expect(Exit.isFailure(exit)).toBe(true);
+      expect(Date.now() - startedAt).toBeLessThan(1_000);
+    } finally {
+      fs.unlinkSync(lockPath);
+    }
   });
 });

@@ -17,6 +17,7 @@ import { describe, expect, test } from "bun:test"
 import { Effect, Schema } from "effect"
 import { handlePreToolUse } from "../../src/events/pretool-policy.ts"
 import { HookPayload } from "../../src/schema/payloads.ts"
+import { HookFailureTest } from "../../src/services/hook-failure.ts"
 import { SessionStateTest } from "../../src/services/session-state.ts"
 
 interface PreToolDecision {
@@ -120,6 +121,38 @@ describe("schema decode failures must NOT silently fail open", () => {
     const bashOut = await run("Bash", { command: 42 })
     const readOut = await run("Read", { file_path: 42 })
     expect(decisionOf(bashOut)).toBe(decisionOf(readOut))
+  })
+
+  test("decode failure diagnostics include the hook-safe fallback decision", async () => {
+    const payload = decode({
+      _tag: "PreToolUse",
+      session_id: "schema-test",
+      hook_event_name: "PreToolUse",
+      cwd: "/tmp",
+      tool_name: "Read",
+      tool_input: { file_path: 42 },
+    })
+    const hookFailures = HookFailureTest()
+
+    const decision = await Effect.runPromise(
+      handlePreToolUse(payload).pipe(
+        Effect.provide(SessionStateTest()),
+        Effect.provide(hookFailures.layer),
+      ),
+    )
+
+    const record = hookFailures.records()[0]
+    if (record === undefined) throw new Error("missing hook failure record")
+    expect(decisionOf(decision as PreToolDecision)).toBe("ask")
+    expect(record.kind).toBe("payload_decode_failed")
+    expect(record.fallbackDecision).toEqual({
+      hookEventName: "PreToolUse",
+      permissionDecision: "ask",
+      decision: undefined,
+      reason: undefined,
+      permissionDecisionReason:
+        "Read input did not match expected schema; confirming for safety so secret-path checks aren't silently bypassed.",
+    })
   })
 })
 

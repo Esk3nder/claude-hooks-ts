@@ -12,7 +12,7 @@ import { ApprovalsTest } from "../../src/services/approvals.ts";
 const decode = (raw: unknown) => Schema.decodeUnknownSync(HookPayload)(raw);
 
 describe("handleSetup", () => {
-  test("appends ledger entry and returns SAFE_DEFAULT for non-handled trigger", async () => {
+  test("appends ledger entry and returns NO_DECISION for non-handled trigger", async () => {
     const root = fsSync.mkdtempSync(path.join(os.tmpdir(), "chts-setup-ledger-"));
     try {
       const layer = Layer.mergeAll(
@@ -20,7 +20,7 @@ describe("handleSetup", () => {
         ProjectTest({ root }),
         ApprovalsTest(),
       );
-      // Use an init trigger on an already-created hook dir so the decision is SAFE_DEFAULT.
+      // Use an init trigger on an already-created hook dir so the decision is NO_DECISION.
       fsSync.mkdirSync(path.join(root, ".claude-hooks", "state"), { recursive: true });
       fsSync.writeFileSync(path.join(root, ".claude-hooks", "README.md"), "ready\n");
       const payload = decode({

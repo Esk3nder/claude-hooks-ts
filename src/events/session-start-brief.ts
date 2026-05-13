@@ -1,7 +1,7 @@
 import { Effect } from "effect"
 import type { HookPayload } from "../schema/payloads.ts"
 import type { HookDecision } from "../schema/decisions.ts"
-import { SAFE_DEFAULT } from "../schema/decisions.ts"
+import { NO_DECISION } from "../schema/decisions.ts"
 import { Git } from "../services/git.ts"
 import { Project } from "../services/project.ts"
 import { Shell } from "../services/shell.ts"
@@ -32,7 +32,7 @@ export const handleSessionStart = (
   payload: HookPayload,
 ): Effect.Effect<HookDecision, never, Git | Project | Shell> =>
   Effect.gen(function* () {
-    if (payload._tag !== "SessionStart") return SAFE_DEFAULT
+    if (payload._tag !== "SessionStart") return NO_DECISION
     const git = yield* Git
     const project = yield* Project
     const cwd = payload.cwd

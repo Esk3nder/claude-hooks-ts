@@ -1,7 +1,7 @@
 import { Effect } from "effect";
 import type { NormalizedHookEvent } from "../schema/normalized.ts";
 import type { HookDecision } from "../schema/decisions.ts";
-import { SAFE_DEFAULT } from "../schema/decisions.ts";
+import { NO_DECISION } from "../schema/decisions.ts";
 import {
   SessionState,
   EMPTY_SESSION_STATE,
@@ -18,7 +18,7 @@ export const handleSubagentStart = (
   payload: NormalizedHookEvent,
 ): Effect.Effect<HookDecision, never, SessionState> =>
   Effect.gen(function* () {
-    if (payload._tag !== "SubagentStart") return SAFE_DEFAULT;
+    if (payload._tag !== "SubagentStart") return NO_DECISION;
     const state = yield* SessionState;
     const prev = yield* state
       .get(payload.session_id)
@@ -48,7 +48,7 @@ export const handleSubagentStop = (
   payload: NormalizedHookEvent,
 ): Effect.Effect<HookDecision, never, SessionState> =>
   Effect.gen(function* () {
-    if (payload._tag !== "SubagentStop") return SAFE_DEFAULT;
+    if (payload._tag !== "SubagentStop") return NO_DECISION;
     const state = yield* SessionState;
     const prev = yield* state
       .get(payload.session_id)
@@ -63,10 +63,10 @@ export const handleSubagentStop = (
 
     const agentType = payload.agent_type;
     const role = lookupRole(agentType);
-    if (!role.investigative) return SAFE_DEFAULT;
+    if (!role.investigative) return NO_DECISION;
     const evidenceText = payload.output;
     const evidenceOptions = role.judgmentOnly ? { judgmentOnly: true } : {};
-    if (hasEvidence(evidenceText, evidenceOptions)) return SAFE_DEFAULT;
+    if (hasEvidence(evidenceText, evidenceOptions)) return NO_DECISION;
 
     if (!prev.subagent_stops.includes(`${key}:blocked`)) {
       yield* state

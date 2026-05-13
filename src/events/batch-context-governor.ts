@@ -1,7 +1,7 @@
 import { Effect } from "effect"
 import type { HookPayload } from "../schema/payloads.ts"
 import type { HookDecision } from "../schema/decisions.ts"
-import { SAFE_DEFAULT } from "../schema/decisions.ts"
+import { NO_DECISION } from "../schema/decisions.ts"
 import { SessionState, type VerificationStatus } from "../services/session-state.ts"
 
 const EDIT_TOOLS = new Set(["Edit", "Write", "MultiEdit", "Update"])
@@ -97,7 +97,7 @@ export const handlePostToolBatch = (
   payload: HookPayload,
 ): Effect.Effect<HookDecision, never, SessionState> =>
   Effect.gen(function* () {
-    if (payload._tag !== "PostToolBatch") return SAFE_DEFAULT
+    if (payload._tag !== "PostToolBatch") return NO_DECISION
     const state = yield* SessionState
     const sessionId = payload.session_id
 

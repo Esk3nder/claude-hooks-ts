@@ -227,7 +227,7 @@ describe("PostCompact rehydrates ISA section as additionalContext", () => {
     }
   })
 
-  test("returns SAFE_DEFAULT when no snapshot exists for the session", async () => {
+  test("returns NO_DECISION when no snapshot exists for the session", async () => {
     const { root, cleanup } = stage()
     try {
       const post = decode({
@@ -249,7 +249,7 @@ describe("PostCompact rehydrates ISA section as additionalContext", () => {
     }
   })
 
-  test("snapshot without `## Active ISAs` section → SAFE_DEFAULT (back-compat with older snapshots)", async () => {
+  test("snapshot without `## Active ISAs` section → NO_DECISION (back-compat with older snapshots)", async () => {
     const { root, cleanup } = stage()
     try {
       // Create a snapshot manually that lacks the new section

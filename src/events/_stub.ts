@@ -1,7 +1,7 @@
 import { Effect } from "effect"
 import type { HookPayload } from "../schema/payloads.ts"
 import type { HookDecision } from "../schema/decisions.ts"
-import { SAFE_DEFAULT } from "../schema/decisions.ts"
+import { NO_DECISION } from "../schema/decisions.ts"
 
 /**
  * M1 stub handler — every event routes here and emits a NoOp decision.
@@ -10,4 +10,4 @@ import { SAFE_DEFAULT } from "../schema/decisions.ts"
 export const handleStub = (
   _action: string,
   _payload: HookPayload,
-): Effect.Effect<HookDecision> => Effect.succeed(SAFE_DEFAULT)
+): Effect.Effect<HookDecision> => Effect.succeed(NO_DECISION)

@@ -170,10 +170,10 @@ Tracing is fully no-op when the env var is unset — zero import cost. Nothing i
 
 The dispatcher is designed to fail closed in the right direction:
 
-- **Schema decode fails** → `SAFE_DEFAULT` (no block, no rewrite), exit 0.
-- **Handler throws or times out** (4s default; 30s for `UserPromptSubmit`) → `SAFE_DEFAULT`.
+- **Schema decode fails** → hook-safe fallback, exit 0. Malformed `PreToolUse` asks instead of silently allowing.
+- **Handler throws or times out** (4s default; 30s for `UserPromptSubmit`) → `SAFE_DEFAULT` with typed failure diagnostics.
 - **Classifier subprocess errors** → fail-safe to ALGORITHM E3 (over-escalate, never under-escalate).
-- **Probes fail to load or throw** → ISC stays `[ ]`, no commit, stderr logged.
+- **Probes fail to load or throw** → ISC stays `[ ]`, no commit, warning logged.
 - **Checkpoint allowlist missing or repo not in it** → no commit. Ever.
 
 The auto-checkpoint never resets, reverts, or force-pushes. It runs `git add` on the ISA and the touched files only, and commits with `--no-verify --no-gpg-sign` to a 5-second timeout.

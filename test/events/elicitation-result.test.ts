@@ -40,7 +40,7 @@ describe("handleElicitationResult", () => {
     expect((r.stored?.content as { answer: string }).answer).toBe("yes")
   })
 
-  test("SAFE_DEFAULT returned even if record fails", async () => {
+  test("NO_DECISION returned even if record fails", async () => {
     const failing = Layer.succeed(Elicitations, Elicitations.of({
       lookup: () => Effect.succeed(null),
       record: () => Effect.fail(new FsError({ op: "elicitations.record", path: "x", message: "boom" })),

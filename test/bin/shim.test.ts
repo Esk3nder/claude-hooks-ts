@@ -55,7 +55,7 @@ describe("bin/claude-hook shim", () => {
       encoding: "utf8",
     })
     expect(r.status).toBe(0)
-    // SAFE_DEFAULT or a valid decision; either way it's parseable JSON.
+    // NO_DECISION or a valid decision; either way it's parseable JSON.
     expect(() => JSON.parse(r.stdout)).not.toThrow()
   })
 

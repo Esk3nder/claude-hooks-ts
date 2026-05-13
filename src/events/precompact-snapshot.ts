@@ -4,7 +4,7 @@ import { existsSync, mkdirSync, readFileSync } from "node:fs"
 import * as path from "node:path"
 import type { HookPayload } from "../schema/payloads.ts"
 import type { HookDecision } from "../schema/decisions.ts"
-import { SAFE_DEFAULT } from "../schema/decisions.ts"
+import { NO_DECISION } from "../schema/decisions.ts"
 import { FileSystem } from "../services/filesystem.ts"
 import { SessionState, EMPTY_SESSION_STATE } from "../services/session-state.ts"
 import { Project } from "../services/project.ts"
@@ -146,7 +146,7 @@ export const handlePreCompact = (
   payload: HookPayload,
 ): Effect.Effect<HookDecision, never, FileSystem | SessionState | Project> =>
   Effect.gen(function* () {
-    if (payload._tag !== "PreCompact") return SAFE_DEFAULT
+    if (payload._tag !== "PreCompact") return NO_DECISION
     const fs = yield* FileSystem
     const state = yield* SessionState
     const project = yield* Project

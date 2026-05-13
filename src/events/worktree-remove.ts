@@ -3,11 +3,12 @@ import * as path from "node:path"
 import * as fs from "node:fs"
 import type { HookPayload } from "../schema/payloads.ts"
 import type { HookDecision } from "../schema/decisions.ts"
-import { SAFE_DEFAULT } from "../schema/decisions.ts"
+import { NO_DECISION } from "../schema/decisions.ts"
 import { eventStream, WorktreeRemoveRecordSchema } from "../schema/events.ts"
 import { CommandRunner } from "../services/command-runner.ts"
 import { EventStore, redactForPersistence, summarizeEventStoreError } from "../services/event-store.ts"
 import { Project } from "../services/project.ts"
+import { logWarning, logWarningSync } from "../services/diagnostics.ts"
 
 interface WorktreeRemoveLedgerEntry {
   readonly session_id: string
@@ -181,8 +182,8 @@ const archiveWorktreeLedgers = (worktreePath: string, mainRepo: string): void =>
     try {
       fs.mkdirSync(archiveDir, { recursive: true })
       if (capped) {
-        process.stderr.write(
-          `worktree-remove: archive capped at ${MAX_ARCHIVE_JSONL_FILES} jsonl files under ${stateDir}\n`,
+        logWarningSync(
+          `worktree-remove: archive capped at ${MAX_ARCHIVE_JSONL_FILES} jsonl files under ${stateDir}`,
         )
       }
       for (const from of found) {
@@ -192,15 +193,11 @@ const archiveWorktreeLedgers = (worktreePath: string, mainRepo: string): void =>
           fs.mkdirSync(path.dirname(to), { recursive: true })
           writeSanitizedJsonlArchive(from, to)
         } catch (e) {
-          process.stderr.write(
-            `worktree-remove: archive ${from.path} -> ${to}: ${String(e)}\n`,
-          )
+          logWarningSync(`worktree-remove: archive ${from.path} -> ${to}: ${String(e)}`)
         }
       }
     } catch (e) {
-      process.stderr.write(
-        `worktree-remove: mkdir ${archiveDir}: ${String(e)}\n`,
-      )
+      logWarningSync(`worktree-remove: mkdir ${archiveDir}: ${String(e)}`)
     }
   }
 }
@@ -216,13 +213,13 @@ const worktreeRemoveStream = (root: string) =>
 /**
  * WorktreeRemove — archives the worktree's JSONL ledgers into the main repo's
  * `.claude-hooks/state/archived/` before running `git worktree remove --force`.
- * Then appends a small ledger entry to the main repo. SAFE_DEFAULT.
+ * Then appends a small ledger entry to the main repo. NO_DECISION.
  */
 export const handleWorktreeRemove = (
   payload: HookPayload,
 ): Effect.Effect<HookDecision, never, CommandRunner | EventStore | Project> =>
   Effect.gen(function* () {
-    if (payload._tag !== "WorktreeRemove") return SAFE_DEFAULT
+    if (payload._tag !== "WorktreeRemove") return NO_DECISION
     const runner = yield* CommandRunner
     const eventStore = yield* EventStore
     const project = yield* Project
@@ -241,15 +238,13 @@ export const handleWorktreeRemove = (
         Effect.flatMap((result) =>
           result.exitCode === 0 && !result.timedOut
             ? Effect.void
-            : Effect.sync(() => {
+            : Effect.flatMap(Effect.sync(() => {
                 const detail = (result.stderr || result.stdout || `exit ${result.exitCode}`).slice(0, 200)
-                process.stderr.write(`worktree-remove: git remove failed: ${detail}\n`)
-              }),
+                return detail
+              }), (detail) => logWarning(`worktree-remove: git remove failed: ${detail}`)),
         ),
         Effect.catchAll((err) =>
-          Effect.sync(() => {
-            process.stderr.write(`worktree-remove: git remove: ${String(err).slice(0, 200)}\n`)
-          }),
+          logWarning(`worktree-remove: git remove: ${String(err).slice(0, 200)}`),
         ),
       )
 
@@ -260,12 +255,10 @@ export const handleWorktreeRemove = (
     }
     yield* eventStore.append(worktreeRemoveStream(root), entry).pipe(
       Effect.catchAll((err) =>
-        Effect.sync(() => {
-          process.stderr.write(
-            `worktree-remove: ledger append failed: ${summarizeEventStoreError(err)}\n`,
-          )
-        }),
+        logWarning(
+          `worktree-remove: ledger append failed: ${summarizeEventStoreError(err)}`,
+        ),
       ),
     )
-    return SAFE_DEFAULT
+    return NO_DECISION
   })

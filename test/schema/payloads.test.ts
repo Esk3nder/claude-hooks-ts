@@ -200,7 +200,7 @@ describe("HookPayload union", () => {
   /**
    * Regression: prior versions used `Schema.TaggedStruct` which required `_tag`
    * to already be present on input. Real Claude Code never sends `_tag`, so
-   * every real event silently fell through to SAFE_DEFAULT (allow). This test
+   * every real event silently fell through to NO_DECISION (allow). This test
    * locks the wire-format contract in place.
    */
   test("rejects no payload at all", () => {

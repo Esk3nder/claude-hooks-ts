@@ -35,7 +35,7 @@ describe("handleElicitation", () => {
     expect(out?.content?.ok).toBe(1)
   })
 
-  test("lookup miss -> SAFE_DEFAULT", async () => {
+  test("lookup miss -> NO_DECISION", async () => {
     const program = Effect.gen(function* () {
       const d = yield* handleElicitation(samplePayload)
       const e = yield* Elicitations

@@ -67,7 +67,7 @@ describe("handleSessionStart", () => {
     expect(ctx).toContain("and 5 more")
   })
 
-  test("non-SessionStart payload → SAFE_DEFAULT", async () => {
+  test("non-SessionStart payload → NO_DECISION", async () => {
     const payload = decode({
       _tag: "Stop",
       session_id: "s",

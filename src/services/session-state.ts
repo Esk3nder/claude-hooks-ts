@@ -6,6 +6,7 @@ import { FsError } from "../schema/errors.ts";
 import { SessionStateRecordSchema } from "../schema/session-state.ts";
 import { getCurrentSession } from "./session-context.ts";
 import { withFileLock } from "./file-lock.ts";
+import { logWarningSync } from "./diagnostics.ts";
 
 export type VerificationStatus = "passed" | "failed" | "none";
 
@@ -216,9 +217,7 @@ const parseRecordStrict = (
   } catch {
     // best-effort
   }
-  process.stderr.write(
-    `session-state: schema mismatch for ${sessionId}, resetting\n`,
-  );
+  logWarningSync(`session-state: schema mismatch for ${sessionId}, resetting`);
   return EMPTY_SESSION_STATE;
 };
 

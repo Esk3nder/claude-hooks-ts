@@ -1,7 +1,7 @@
 import { Effect, Schema } from "effect"
 import type { HookPayload } from "../schema/payloads.ts"
 import type { HookDecision } from "../schema/decisions.ts"
-import { SAFE_DEFAULT } from "../schema/decisions.ts"
+import { NO_DECISION } from "../schema/decisions.ts"
 import {
   BashInput,
   EditInput,
@@ -160,7 +160,7 @@ export const toHookDecision = (d: PolicyDecision): HookDecision => {
     case "allow":
       return decision("allow", d.reason ?? "policy allow")
     case "passthrough":
-      return SAFE_DEFAULT
+      return NO_DECISION
   }
 }
 
@@ -181,7 +181,7 @@ export const handlePreToolUse = (
 ): Effect.Effect<HookDecision, never, SessionState> => {
   const toolName = payload._tag === "PreToolUse" ? payload.tool_name : "<n/a>"
   return Effect.gen(function* () {
-    if (payload._tag !== "PreToolUse") return SAFE_DEFAULT
+    if (payload._tag !== "PreToolUse") return NO_DECISION
 
     // Engagement gate (runs FIRST among PreToolUse policies). When the
     // session was classified ALGORITHM tier ≥ 3 and the expected ISA file
@@ -241,12 +241,15 @@ export const handlePreToolUse = (
       payload.tool_name,
       payload.tool_input,
     )
+    const result = toolEvaluationResult.decision
+    const base = toHookDecision(result)
     if (toolEvaluationResult.decodeFailure !== undefined) {
       yield* reportHookFailure({
         kind: "payload_decode_failed",
         event: "PreToolUse",
         sessionId: payload.session_id,
         cause: toolEvaluationResult.decodeFailure,
+        fallbackDecision: base,
         hookSafe: true,
         context: {
           stage: "tool_input",
@@ -255,8 +258,6 @@ export const handlePreToolUse = (
         },
       })
     }
-    const result = toolEvaluationResult.decision
-    const base = toHookDecision(result)
     // Only attach updatedInput when not denied/asked.
     if (result.kind === "deny" || result.kind === "ask") return base
 
