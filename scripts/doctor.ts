@@ -73,6 +73,8 @@ const SYNTHETIC_PAYLOAD = JSON.stringify({
   model: "opus",
 });
 
+const LEDGER_TAIL_MAX_BYTES = 64 * 1024;
+
 const parseArgs = (argv: ReadonlyArray<string>): CliArgs => {
   let target = DEFAULT_TARGET;
   let cwd = process.cwd();
@@ -364,10 +366,7 @@ const checkLedgerEntries = (cwd: string): CheckResult => {
   const lines: string[] = [];
   for (const f of found) {
     try {
-      const raw = fs.readFileSync(f, "utf8").trim();
-      if (raw.length === 0) continue;
-      const fileLines = raw.split("\n");
-      for (const l of fileLines) lines.push(l);
+      lines.push(...readLedgerTailLines(f));
     } catch {
       // skip
     }
@@ -376,8 +375,50 @@ const checkLedgerEntries = (cwd: string): CheckResult => {
   return {
     name: "last 5 ledger entries",
     status: "INFO",
-    detail: `${found.length} ledgers, ${lines.length} entries; tail:\n${tail.join("\n")}`,
+    detail: `${found.length} ledgers, ${lines.length} entries sampled; tail:\n${tail.join("\n")}`,
   };
+};
+
+const readLedgerTailLines = (file: string): string[] => {
+  const stat = fs.statSync(file);
+  if (!stat.isFile() || stat.size <= 0) return [];
+  const length = Math.min(stat.size, LEDGER_TAIL_MAX_BYTES);
+  const start = Math.max(0, stat.size - length);
+  const fd = fs.openSync(file, "r");
+  try {
+    const buffer = Buffer.alloc(length);
+    const bytesRead = fs.readSync(fd, buffer, 0, length, start);
+    let raw = buffer.subarray(0, bytesRead).toString("utf8");
+    if (start > 0) {
+      const previous = Buffer.alloc(1);
+      const previousBytes = fs.readSync(fd, previous, 0, 1, start - 1);
+      const startsOnLineBoundary = previousBytes === 1 && (previous[0] === 0x0a || previous[0] === 0x0d);
+      if (!startsOnLineBoundary) {
+        const firstLineEnd = raw.indexOf("\n");
+        raw = firstLineEnd >= 0 ? raw.slice(firstLineEnd + 1) : "";
+      }
+    }
+    return raw.split(/\r?\n/).filter((line) => line.trim().length > 0);
+  } finally {
+    fs.closeSync(fd);
+  }
+};
+
+const displayEndpoint = (endpoint: string): string => {
+  try {
+    const url = new URL(endpoint);
+    const pathName = url.pathname.replace(/[A-Za-z0-9._~-]{16,}/g, "[redacted]");
+    return `${url.protocol}//${url.host}${pathName === "/" ? "" : pathName}`;
+  } catch {
+    return "[configured endpoint]";
+  }
+};
+
+const displayEndpointError = (cause: unknown): string => {
+  if (cause instanceof Error) {
+    return cause.name;
+  }
+  return "request failed";
 };
 
 const checkOtelEndpoint = async (
@@ -385,6 +426,7 @@ const checkOtelEndpoint = async (
 ): Promise<CheckResult | null> => {
   if (Option.isNone(config.otelEndpoint)) return null;
   const ep = Redacted.value(config.otelEndpoint.value);
+  const shown = displayEndpoint(ep);
   try {
     const res = await fetch(ep, {
       method: "HEAD",
@@ -394,19 +436,19 @@ const checkOtelEndpoint = async (
       return {
         name: "OTel endpoint",
         status: "PASS",
-        detail: `${ep} -> ${res.status}`,
+        detail: `${shown} -> ${res.status}`,
       };
     }
     return {
       name: "OTel endpoint",
       status: "FAIL",
-      detail: `${ep} -> ${res.status}`,
+      detail: `${shown} -> ${res.status}`,
     };
   } catch (e) {
     return {
       name: "OTel endpoint",
       status: "FAIL",
-      detail: `${ep}: ${String(e)}`,
+      detail: `${shown}: ${displayEndpointError(e)}`,
     };
   }
 };
