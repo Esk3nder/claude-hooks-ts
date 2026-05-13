@@ -21,8 +21,11 @@ export const GC_INTERVAL_MS = 24 * 60 * 60 * 1000; // 24 hours
  * True if more than `GC_INTERVAL_MS` (24h) has elapsed since the last gc run.
  * Pure helper — easy to unit test, no Schedule needed.
  */
-export const shouldGc = (now: number, lastGc: number): boolean =>
-  now - lastGc > GC_INTERVAL_MS;
+export const shouldGc = (
+  now: number,
+  lastGc: number,
+  intervalMs: number = GC_INTERVAL_MS,
+): boolean => now - lastGc > intervalMs;
 
 export interface ApprovalsApi {
   readonly lookup: (

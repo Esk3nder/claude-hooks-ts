@@ -8,7 +8,7 @@
  * of any other ISAs in the project.
  */
 import { afterEach, beforeEach, describe, expect, test } from "bun:test"
-import { Effect, Schema } from "effect"
+import { Effect, Layer, Schema } from "effect"
 import * as fs from "node:fs"
 import * as os from "node:os"
 import * as path from "node:path"
@@ -19,6 +19,7 @@ import {
   EMPTY_SESSION_STATE,
   type SessionStateRecord,
 } from "../../src/services/session-state.ts"
+import { RuntimeConfigTest, type RuntimeConfig } from "../../src/services/runtime-config.ts"
 
 const decode = (raw: unknown) => Schema.decodeUnknownSync(HookPayload)(raw)
 
@@ -42,6 +43,7 @@ const runPretool = async (
   toolName: string,
   toolInput: unknown,
   state: Partial<SessionStateRecord>,
+  runtimeConfig: Partial<RuntimeConfig> = {},
 ): Promise<{ hookSpecificOutput?: { permissionDecision?: string; permissionDecisionReason?: string } }> => {
   const sid = "eng-1"
   const seed = new Map([[sid, { ...EMPTY_SESSION_STATE, ...state }]])
@@ -53,8 +55,9 @@ const runPretool = async (
     tool_name: toolName,
     tool_input: toolInput,
   })
+  const layer = Layer.mergeAll(SessionStateTest(seed), RuntimeConfigTest(runtimeConfig))
   const out = await Effect.runPromise(
-    handlePreToolUse(payload).pipe(Effect.provide(SessionStateTest(seed))),
+    handlePreToolUse(payload).pipe(Effect.provide(layer)),
   )
   return out as { hookSpecificOutput?: { permissionDecision?: string; permissionDecisionReason?: string } }
 }
@@ -362,19 +365,8 @@ describe("PreToolUse engagement gate — path normalization & traversal", () => 
   })
 })
 
-describe("PreToolUse engagement gate — escape hatch", () => {
-  const ENV_KEY = "CLAUDE_HOOKS_DISABLE_ISA_PRETOOL_GATE"
-  let prior: string | undefined
-  beforeEach(() => {
-    prior = process.env[ENV_KEY]
-  })
-  afterEach(() => {
-    if (prior === undefined) delete process.env[ENV_KEY]
-    else process.env[ENV_KEY] = prior
-  })
-
-  test(`${ENV_KEY}=1 bypasses the gate even when engagement_required && no ISA`, async () => {
-    process.env[ENV_KEY] = "1"
+describe("PreToolUse engagement gate — RuntimeConfig escape hatch", () => {
+  test("isaPretoolGateDisabled bypasses the gate even when engagement_required && no ISA", async () => {
     const { root, cleanup } = stage()
     try {
       const out = await runPretool(
@@ -382,6 +374,7 @@ describe("PreToolUse engagement gate — escape hatch", () => {
         "Write",
         { file_path: path.join(root, "src", "foo.ts"), content: "x" },
         ENGAGED_STATE,
+        { isaPretoolGateDisabled: true },
       )
       // Bypassed — the engagement gate doesn't fire. Default policy is
       // permissive for this path.
@@ -391,8 +384,7 @@ describe("PreToolUse engagement gate — escape hatch", () => {
     }
   })
 
-  test(`${ENV_KEY}=0 (or unset) leaves the gate enforcing`, async () => {
-    process.env[ENV_KEY] = "0"
+  test("default config leaves the gate enforcing", async () => {
     const { root, cleanup } = stage()
     try {
       const out = await runPretool(

@@ -11,12 +11,14 @@ import * as path from "node:path"
 import { handlePreToolUse } from "../../src/events/pretool-policy.ts"
 import { handleSubagentStart } from "../../src/events/subagent-scope-gate.ts"
 import { HookPayload } from "../../src/schema/payloads.ts"
+import { NormalizedHookEvent } from "../../src/schema/normalized.ts"
 import { SessionStateTest } from "../../src/services/session-state.ts"
 
 const REPO_ROOT = path.resolve(__dirname, "..", "..")
 const DISPATCHER = path.join(REPO_ROOT, "src", "dispatcher.ts")
 
 const decode = (raw: unknown) => Schema.decodeUnknownSync(HookPayload)(raw)
+const decodeNormalized = (raw: unknown) => Schema.decodeUnknownSync(NormalizedHookEvent)(raw)
 
 const dispatch = async (
   event: string,
@@ -188,7 +190,7 @@ describe("Red-team scenarios (10/10)", () => {
   test("#8 SubagentStart explore → read-only scope context", async () => {
     const d = await Effect.runPromise(
       handleSubagentStart(
-        decode({
+        decodeNormalized({
           _tag: "SubagentStart",
           hook_event_name: "SubagentStart",
           session_id: "rt8",

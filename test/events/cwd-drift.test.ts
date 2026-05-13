@@ -287,12 +287,24 @@ describe("TaskCompleted ISA evidence — cwd drift", () => {
         "---\neffort: advanced\nphase: complete\n---\n\n## Goal\nx\n\n## Criteria\n- [x] ISC-1\n\n## Verification\n- ISC-1: done\n",
         "utf-8",
       )
+      // Plant an UNCHECKED ISA at session_root so the ISA gate has
+      // something to fire on if it correctly resolves to session_root.
+      // Without this, the new "opt-in via signal" policy would pass
+      // (no AC/evidence intent, no session_root ISA), and the test
+      // couldn't distinguish "drift ISA invisible" from "gate disabled".
+      const rootIsaDir = path.join(root, ".claude-hooks", "work", SID)
+      fs.mkdirSync(rootIsaDir, { recursive: true })
+      fs.writeFileSync(
+        path.join(rootIsaDir, "ISA.md"),
+        "---\neffort: advanced\nphase: observe\n---\n\n## Goal\nx\n\n## Criteria\n- [ ] ISC-1: still pending\n",
+        "utf-8",
+      )
       const out = await runTaskCompleted(drift, ENGAGED(root))
-      // The drift ISA is invisible (we look at session_root, which has no
-      // ISA), so checkIsaEvidence returns null. The downstream AC/evidence
-      // check then fires (no acceptance_criteria field on the payload).
+      // If the gate erroneously followed drift, it'd see the
+      // all-checked-with-verification ISA and SAFE_DEFAULT. Using
+      // session_root correctly, it sees the unchecked ISA and blocks.
       expect(out.decision).toBe("block")
-      expect(out.reason ?? "").toContain("acceptance_criteria")
+      expect(out.reason ?? "").toContain("unchecked")
     } finally {
       cleanup()
     }

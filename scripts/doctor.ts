@@ -15,6 +15,13 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import * as os from "node:os";
+import { Option, Redacted } from "effect";
+import { currentProcessEnv, type EnvMap } from "../src/bootstrap/env.ts";
+import {
+  runtimeConfigFromEnv,
+  summarizeRuntimeConfig,
+  type RuntimeConfig,
+} from "../src/services/runtime-config.ts";
 import { loadProbes, parseTestStrategy } from "../src/algorithm/isa/probes.ts";
 import { parseSections } from "../src/algorithm/isa/sections.ts";
 import { splitShellWords } from "../src/services/shell-words.ts";
@@ -385,9 +392,11 @@ const checkLedgerEntries = (cwd: string): CheckResult => {
   };
 };
 
-const checkOtelEndpoint = async (): Promise<CheckResult | null> => {
-  const ep = process.env["OTEL_EXPORTER_OTLP_ENDPOINT"];
-  if (!ep || ep.length === 0) return null;
+const checkOtelEndpoint = async (
+  config: RuntimeConfig,
+): Promise<CheckResult | null> => {
+  if (Option.isNone(config.otelEndpoint)) return null;
+  const ep = Redacted.value(config.otelEndpoint.value);
   try {
     const ctrl = new AbortController();
     const timer = setTimeout(() => ctrl.abort(), 1000);
@@ -434,11 +443,9 @@ const formatHuman = (results: CheckResult[]): string => {
  * runs in fail-safe (everything → ALGORITHM E3) without ever invoking
  * Sonnet. That's safe but undermines the design.
  */
-const checkClassifierEnv = (): CheckResult => {
+const checkClassifierEnv = (config: RuntimeConfig): CheckResult => {
   const claudeBin = Bun.which("claude");
-  const bypass =
-    process.env["CLAUDE_HOOKS_DISABLE_CLASSIFIER"] === "1" ||
-    process.env["CLAUDE_HOOKS_DISABLE_CLASSIFIER"] === "true";
+  const bypass = config.classifierDisabled;
   // Bypass is reported FIRST — it's the most actionable signal regardless
   // of whether `claude` is installed: even with a working `claude` on PATH,
   // the bypass env var would prevent the subprocess from being invoked. So
@@ -478,10 +485,10 @@ const checkClassifierEnv = (): CheckResult => {
  * Loud warning when API keys are present in env (their work won't be billed
  * as expected even though we scrub — they may be mis-configuring elsewhere).
  */
-const checkClassifierAuth = (): CheckResult => {
-  const hasApiKey = typeof process.env["ANTHROPIC_API_KEY"] === "string";
-  const hasAuthToken = typeof process.env["ANTHROPIC_AUTH_TOKEN"] === "string";
-  const hasOauthToken = typeof process.env["CLAUDE_CODE_OAUTH_TOKEN"] === "string";
+const checkClassifierAuth = (env: EnvMap): CheckResult => {
+  const hasApiKey = typeof env["ANTHROPIC_API_KEY"] === "string";
+  const hasAuthToken = typeof env["ANTHROPIC_AUTH_TOKEN"] === "string";
+  const hasOauthToken = typeof env["CLAUDE_CODE_OAUTH_TOKEN"] === "string";
   if (hasApiKey || hasAuthToken) {
     return {
       name: "classifier billing path",
@@ -828,7 +835,14 @@ export const runDoctor = async (
   out: NodeJS.WritableStream = process.stdout,
 ): Promise<number> => {
   const args = parseArgs(argv);
+  const env = currentProcessEnv();
+  const runtimeConfig = runtimeConfigFromEnv(env);
   const results: CheckResult[] = [];
+  results.push({
+    name: "effective runtime config",
+    status: "INFO",
+    detail: JSON.stringify(summarizeRuntimeConfig(runtimeConfig)),
+  });
 
   results.push(await checkBun());
 
@@ -862,8 +876,8 @@ export const runDoctor = async (
   results.push(checkLedgerEntries(args.cwd));
 
   // Algorithm-aware checks (Phase 5).
-  results.push(checkClassifierEnv());
-  results.push(checkClassifierAuth());
+  results.push(checkClassifierEnv(runtimeConfig));
+  results.push(checkClassifierAuth(env));
   results.push(checkSkillBundle());
   results.push(checkActiveIsa(args.cwd));
 
@@ -876,7 +890,7 @@ export const runDoctor = async (
   const verifyMapCheck = checkVerifyMap(args.cwd);
   if (verifyMapCheck !== null) results.push(verifyMapCheck);
 
-  const otel = await checkOtelEndpoint();
+  const otel = await checkOtelEndpoint(runtimeConfig);
   if (otel !== null) results.push(otel);
 
   if (args.json) {

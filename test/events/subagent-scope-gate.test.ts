@@ -4,13 +4,18 @@ import {
   handleSubagentStart,
   handleSubagentStop,
 } from "../../src/events/subagent-scope-gate.ts"
-import { HookPayload } from "../../src/schema/payloads.ts"
+import {
+  NormalizedHookEvent,
+  type NormalizedSubagentStart,
+} from "../../src/schema/normalized.ts"
 import { SessionStateTest } from "../../src/services/session-state.ts"
 
-const decode = (raw: unknown) => Schema.decodeUnknownSync(HookPayload)(raw)
+const decode = (raw: unknown) => Schema.decodeUnknownSync(NormalizedHookEvent)(raw)
+const decodeStart = (raw: unknown): NormalizedSubagentStart =>
+  decode(raw) as NormalizedSubagentStart
 
 const startPayload = (agent_type: string) =>
-  decode({
+  decodeStart({
     _tag: "SubagentStart",
     session_id: "s",
     hook_event_name: "SubagentStart",
@@ -131,11 +136,33 @@ describe("VAL-M4-003 subagent-scope-gate", () => {
       expect(r.second.reason).toContain("Output contract")
     }
   })
+
+  test("planner stop with judgment-only output (no file:line) passes", async () => {
+    const d = await Effect.runPromise(
+      handleSubagentStop(
+        stopPayload(
+          "planner",
+          "Recommendation: split auth module. Risk: session migration. Next steps: draft RFC.",
+        ),
+      ).pipe(Effect.provide(SessionStateTest())),
+    )
+    expect(d).toEqual({})
+  })
+
+  test("planner stop with empty output still blocks", async () => {
+    const d = await Effect.runPromise(
+      handleSubagentStop(stopPayload("architect", "ok")).pipe(
+        Effect.provide(SessionStateTest()),
+      ),
+    )
+    expect("decision" in d).toBe(true)
+    if ("decision" in d) expect(d.decision).toBe("block")
+  })
 })
 
 describe("M11 invocation key — agent_id is canonical", () => {
   test("agent_id is used verbatim as the identity", async () => {
-    const p = decode({
+    const p = decodeStart({
       _tag: "SubagentStart",
       session_id: "s1",
       hook_event_name: "SubagentStart",
@@ -146,17 +173,12 @@ describe("M11 invocation key — agent_id is canonical", () => {
     const { invocationKey } = await import(
       "../../src/events/subagent-scope-gate.ts"
     )
-    const k = invocationKey(
-      p as unknown as Record<string, unknown> & {
-        _tag: string
-        session_id: string
-      },
-    )
+    const k = invocationKey(p)
     expect(k).toBe("s1:Explore:agent-42")
   })
 
   test("legacy task_id is honoured when agent_id is absent", async () => {
-    const p = decode({
+    const p = decodeStart({
       _tag: "SubagentStart",
       session_id: "s1",
       hook_event_name: "SubagentStart",
@@ -167,24 +189,19 @@ describe("M11 invocation key — agent_id is canonical", () => {
     const { invocationKey } = await import(
       "../../src/events/subagent-scope-gate.ts"
     )
-    const k = invocationKey(
-      p as unknown as Record<string, unknown> & {
-        _tag: string
-        session_id: string
-      },
-    )
+    const k = invocationKey(p)
     expect(k).toBe("s1:Explore:task-42")
   })
 
   test("two parallel SubagentStarts without agent_id/task_id produce distinct keys", async () => {
-    const p1 = decode({
+    const p1 = decodeStart({
       _tag: "SubagentStart",
       session_id: "s1",
       hook_event_name: "SubagentStart",
       agent_type: "Explore",
       cwd: "/repo/a",
     })
-    const p2 = decode({
+    const p2 = decodeStart({
       _tag: "SubagentStart",
       session_id: "s1",
       hook_event_name: "SubagentStart",
@@ -194,18 +211,8 @@ describe("M11 invocation key — agent_id is canonical", () => {
     const { invocationKey } = await import(
       "../../src/events/subagent-scope-gate.ts"
     )
-    const k1 = invocationKey(
-      p1 as unknown as Record<string, unknown> & {
-        _tag: string
-        session_id: string
-      },
-    )
-    const k2 = invocationKey(
-      p2 as unknown as Record<string, unknown> & {
-        _tag: string
-        session_id: string
-      },
-    )
+    const k1 = invocationKey(p1)
+    const k2 = invocationKey(p2)
     expect(k1).not.toBe(k2)
     expect(k1.startsWith("s1:Explore:")).toBe(true)
     expect(k2.startsWith("s1:Explore:")).toBe(true)
@@ -213,7 +220,7 @@ describe("M11 invocation key — agent_id is canonical", () => {
 
   test("identical payloads collapse to the same key (idempotent)", async () => {
     const make = () =>
-      decode({
+      decodeStart({
         _tag: "SubagentStart",
         session_id: "s1",
         hook_event_name: "SubagentStart",
@@ -223,18 +230,8 @@ describe("M11 invocation key — agent_id is canonical", () => {
     const { invocationKey } = await import(
       "../../src/events/subagent-scope-gate.ts"
     )
-    const a = invocationKey(
-      make() as unknown as Record<string, unknown> & {
-        _tag: string
-        session_id: string
-      },
-    )
-    const b = invocationKey(
-      make() as unknown as Record<string, unknown> & {
-        _tag: string
-        session_id: string
-      },
-    )
+    const a = invocationKey(make())
+    const b = invocationKey(make())
     expect(a).toBe(b)
   })
 })

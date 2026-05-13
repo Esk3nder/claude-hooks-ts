@@ -12,8 +12,12 @@ import { ElicitationsTest } from "../services/elicitations.ts"
 import { ClaudeSubprocessTest } from "../services/claude-subprocess.ts"
 import { InferenceTest } from "../services/inference.ts"
 import { ClassifierTelemetryTest } from "../services/classifier-telemetry.ts"
+import { RuntimeConfigTest } from "../services/runtime-config.ts"
+import { HookFailureLive } from "../services/hook-failure.ts"
 
 export const AppTest = Layer.mergeAll(
+  RuntimeConfigTest(),
+  HookFailureLive,
   FileSystemTest(),
   ShellTest(),
   GitTest(),

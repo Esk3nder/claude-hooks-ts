@@ -1,5 +1,6 @@
 import { Context, Effect, Layer } from "effect"
 import { ShellError } from "../schema/errors.ts"
+import { currentProcessEnv } from "../bootstrap/env.ts"
 import type { ShellCommand } from "../schema/branded.ts"
 
 export interface ShellResult {
@@ -29,7 +30,7 @@ export const ShellLive = Layer.succeed(
           }
           if (opts?.cwd !== undefined) spawnOpts.cwd = opts.cwd
           if (opts?.env !== undefined)
-            spawnOpts.env = { ...process.env, ...opts.env } as Record<string, string>
+            spawnOpts.env = { ...currentProcessEnv(), ...opts.env } as Record<string, string>
           const proc = Bun.spawn(
             ["sh", "-c", cmd as unknown as string],
             spawnOpts,

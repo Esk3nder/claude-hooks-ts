@@ -11,6 +11,7 @@ import {
   type Classification,
 } from "../../src/services/inference.ts"
 import { ClaudeSubprocessTest } from "../../src/services/claude-subprocess.ts"
+import { RuntimeConfigTest } from "../../src/services/runtime-config.ts"
 
 const runClassify = (
   prompt: string,
@@ -169,45 +170,37 @@ describe("classify (fast-path → Inference)", () => {
   })
 })
 
-describe("CLAUDE_HOOKS_DISABLE_CLASSIFIER env-var bypass", () => {
+describe("RuntimeConfig classifierDisabled bypass", () => {
   test("when set, ambiguous prompt → fail-safe tier 3 without invoking Inference", async () => {
     let inferenceCalls = 0
     const layer = InferenceTest(() => {
       inferenceCalls++
       return algorithmT4
     })
-    process.env["CLAUDE_HOOKS_DISABLE_CLASSIFIER"] = "1"
-    try {
-      const c = await Effect.runPromise(
-        classify("implement OAuth refresh flow").pipe(
-          Effect.provide(layer),
-          Effect.provide(ClaudeSubprocessTest()),
-        ),
-      )
-      expect(c.mode).toBe("ALGORITHM")
-      expect(c.tier).toBe(3)
-      expect(c.source).toBe("fail-safe")
-      expect(inferenceCalls).toBe(0)
-    } finally {
-      delete process.env["CLAUDE_HOOKS_DISABLE_CLASSIFIER"]
-    }
+    const c = await Effect.runPromise(
+      classify("implement OAuth refresh flow").pipe(
+        Effect.provide(layer),
+        Effect.provide(ClaudeSubprocessTest()),
+        Effect.provide(RuntimeConfigTest({ classifierDisabled: true })),
+      ),
+    )
+    expect(c.mode).toBe("ALGORITHM")
+    expect(c.tier).toBe(3)
+    expect(c.source).toBe("fail-safe")
+    expect(inferenceCalls).toBe(0)
   })
 
   test("fast-path still wins over the bypass", async () => {
-    process.env["CLAUDE_HOOKS_DISABLE_CLASSIFIER"] = "1"
-    try {
-      const c = await Effect.runPromise(
-        classify("excellent").pipe(
-          Effect.provide(InferenceTest(() => algorithmT4)),
-          Effect.provide(ClaudeSubprocessTest()),
-        ),
-      )
-      expect(c.mode).toBe("MINIMAL")
-      // Fast-path runs before the env-var check, so source remains "fast-path".
-      expect(c.source).toBe("fast-path")
-    } finally {
-      delete process.env["CLAUDE_HOOKS_DISABLE_CLASSIFIER"]
-    }
+    const c = await Effect.runPromise(
+      classify("excellent").pipe(
+        Effect.provide(InferenceTest(() => algorithmT4)),
+        Effect.provide(ClaudeSubprocessTest()),
+        Effect.provide(RuntimeConfigTest({ classifierDisabled: true })),
+      ),
+    )
+    expect(c.mode).toBe("MINIMAL")
+    // Fast-path runs before the runtime-config check, so source remains "fast-path".
+    expect(c.source).toBe("fast-path")
   })
 })
 

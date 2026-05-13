@@ -12,6 +12,7 @@ import {
   ClaudeSubprocessTest,
   type ClaudeSpawnResult,
 } from "../../src/services/claude-subprocess.ts"
+import { HookFailureTest } from "../../src/services/hook-failure.ts"
 
 const provideSubprocess = (result: ClaudeSpawnResult) =>
   ClaudeSubprocessTest(() => result)
@@ -30,6 +31,24 @@ const runClassify = async (
       Effect.provide(provideSubprocess(result)),
     ),
   )
+}
+
+const runClassifyWithFailures = async (
+  result: ClaudeSpawnResult,
+): Promise<{ readonly classification: Classification; readonly failures: ReturnType<typeof HookFailureTest> }> => {
+  const failures = HookFailureTest()
+  const program = Effect.gen(function* () {
+    const inf = yield* Inference
+    return yield* inf.classify("implement OAuth refresh flow")
+  })
+  const classification = await Effect.runPromise(
+    program.pipe(
+      Effect.provide(InferenceLive),
+      Effect.provide(provideSubprocess(result)),
+      Effect.provide(failures.layer),
+    ),
+  )
+  return { classification, failures }
 }
 
 describe("parseClassifierResponse (this package JSON protocol)", () => {
@@ -169,6 +188,28 @@ describe("Inference.classify (with ClaudeSubprocessTest layer)", () => {
     expect(c.tier).toBe(3)
     expect(c.source).toBe("fail-safe")
     expect(c.reason).toContain("timeout")
+  })
+
+
+  test("timed-out subprocess records typed subprocess_failed fallback", async () => {
+    const { classification, failures } = await runClassifyWithFailures({
+      stdout: "",
+      stderr: "",
+      exitCode: -1,
+      latencyMs: 14_000,
+      timedOut: true,
+    })
+
+    expect(classification.source).toBe("fail-safe")
+    const records = failures.records()
+    expect(records).toHaveLength(1)
+    const record = records[0]
+    if (record === undefined) throw new Error("missing hook failure record")
+    expect(record.kind).toBe("subprocess_failed")
+    expect(record.event).toBe("UserPromptSubmit")
+    expect(record.hookSafe).toBe(true)
+    expect(record.context["op"]).toBe("classifier.spawn")
+    expect(record.context["timeout_ms"]).toBe(25_000)
   })
 
   test("non-zero exit → fail-safe tier 3 with stderr in reason", async () => {

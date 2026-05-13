@@ -1,4 +1,5 @@
 import { Schema } from "effect"
+import { RawWorkerLaunchInput as AgentInput } from "./worker.ts"
 
 export const BashInput = Schema.Struct({
   command: Schema.String,
@@ -63,12 +64,7 @@ export const WebSearchInput = Schema.Struct({
   blocked_domains: Schema.optional(Schema.Array(Schema.String)),
 })
 
-export const AgentInput = Schema.Struct({
-  description: Schema.String,
-  prompt: Schema.String,
-  agent_type: Schema.optional(Schema.String),
-  subagent_type: Schema.optional(Schema.String),
-})
+export { AgentInput }
 
 export const MCPToolInput = Schema.Record({
   key: Schema.String,

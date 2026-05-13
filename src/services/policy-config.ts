@@ -1,4 +1,7 @@
-import { Context, Effect, Layer } from "effect"
+import * as fs from "node:fs"
+import * as path from "node:path"
+import { Context, Effect, Layer, Schema } from "effect"
+import { parse as parseYaml } from "yaml"
 
 export interface PolicyConfigData {
   readonly destructiveCommandPatterns: ReadonlyArray<RegExp>
@@ -71,20 +74,92 @@ export const DEFAULT_POLICY: PolicyConfigData = {
   elicitationDenylist: [],
 }
 
+const ProjectPolicyConfigSchema = Schema.Struct({
+  destructiveCommandPatterns: Schema.optional(Schema.Array(Schema.String)),
+  secretPathGlobs: Schema.optional(Schema.Array(Schema.String)),
+  generatedFilePatterns: Schema.optional(Schema.Array(Schema.String)),
+  secretValuePatterns: Schema.optional(Schema.Array(Schema.String)),
+  elicitationDenylist: Schema.optional(Schema.Array(Schema.String)),
+})
+
+type ProjectPolicyConfig = Schema.Schema.Type<typeof ProjectPolicyConfigSchema>
+
+const PROJECT_CONFIG_BASENAMES = ["policy.json", "policy.yaml", "policy.yml"] as const
+
+const compilePatterns = (patterns: ReadonlyArray<string>): ReadonlyArray<RegExp> =>
+  patterns.flatMap((pattern) => {
+    try {
+      return [new RegExp(pattern)]
+    } catch {
+      process.stderr.write(`policy-config: ignored invalid regexp ${JSON.stringify(pattern)}\n`)
+      return []
+    }
+  })
+
+const mergeProjectPolicy = (
+  base: PolicyConfigData,
+  project: ProjectPolicyConfig,
+): PolicyConfigData => ({
+  destructiveCommandPatterns: [
+    ...base.destructiveCommandPatterns,
+    ...compilePatterns(project.destructiveCommandPatterns ?? []),
+  ],
+  secretPathGlobs: [
+    ...base.secretPathGlobs,
+    ...(project.secretPathGlobs ?? []),
+  ],
+  generatedFilePatterns: [
+    ...base.generatedFilePatterns,
+    ...compilePatterns(project.generatedFilePatterns ?? []),
+  ],
+  secretValuePatterns: [
+    ...base.secretValuePatterns,
+    ...compilePatterns(project.secretValuePatterns ?? []),
+  ],
+  elicitationDenylist: [
+    ...base.elicitationDenylist,
+    ...(project.elicitationDenylist ?? []),
+  ],
+})
+
+const parseProjectConfig = (file: string, raw: string): unknown =>
+  file.endsWith(".json") ? JSON.parse(raw) : parseYaml(raw)
+
+const readProjectPolicy = (root: string): ProjectPolicyConfig | null => {
+  for (const basename of PROJECT_CONFIG_BASENAMES) {
+    const file = path.join(root, ".claude-hooks", basename)
+    if (!fs.existsSync(file)) continue
+    const parsed = parseProjectConfig(file, fs.readFileSync(file, "utf8"))
+    return Schema.decodeUnknownSync(ProjectPolicyConfigSchema)(parsed)
+  }
+  return null
+}
+
+export const loadPolicyConfig = (root: string): PolicyConfigData => {
+  const project = readProjectPolicy(root)
+  return project === null ? DEFAULT_POLICY : mergeProjectPolicy(DEFAULT_POLICY, project)
+}
+
 /**
  * `Effect.cached` memoises the underlying read for the lifetime of the Live
  * Layer (i.e. the dispatcher process). Subsequent `load()` calls return the
- * already-resolved value without re-running the (eventually) YAML+disk reads.
+ * already-resolved value without re-running YAML/JSON disk reads.
  */
-const makeLive = Effect.gen(function* () {
-  const rawLoad: Effect.Effect<PolicyConfigData> = Effect.sync(() => DEFAULT_POLICY)
-  const cachedLoad = yield* Effect.cached(rawLoad)
-  return PolicyConfig.of({
-    load: () => cachedLoad,
+const makeLive = (root: string): Effect.Effect<PolicyConfigApi> =>
+  Effect.gen(function* () {
+    const rawLoad: Effect.Effect<PolicyConfigData> = Effect.sync(() =>
+      loadPolicyConfig(root),
+    )
+    const cachedLoad = yield* Effect.cached(rawLoad)
+    return PolicyConfig.of({
+      load: () => cachedLoad,
+    })
   })
-})
 
-export const PolicyConfigLive = Layer.effect(PolicyConfig, makeLive)
+export const PolicyConfigLiveFor = (root: string = process.cwd()): Layer.Layer<PolicyConfig> =>
+  Layer.effect(PolicyConfig, makeLive(root))
+
+export const PolicyConfigLive = PolicyConfigLiveFor()
 
 export const PolicyConfigTest = (
   override: Partial<PolicyConfigData> = {},

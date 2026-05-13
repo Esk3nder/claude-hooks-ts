@@ -25,6 +25,7 @@ import {
 } from "../algorithm/isa/lifecycle.ts"
 import { detectSessionRoot } from "../services/project-root.ts"
 import { safeResolvePath } from "../services/path-resolution.ts"
+import { reportHookFailure } from "../services/hook-failure.ts"
 
 /**
  * UserPromptSubmit handler — TWO classifiers, layered (B4) — with the full
@@ -94,12 +95,16 @@ export const handleUserPromptSubmit = (
         requires_web_sources: requiresWebSrc,
       })
       .pipe(
-        Effect.catchAll((cause) => {
-          process.stderr.write(
-            `[UserPromptSubmit] session-state op=workflow-update failed: sid=${sessionId} cause=${String(cause).slice(0, 160)}\n`,
-          )
-          return Effect.succeed(undefined)
-        }),
+        Effect.catchAll((cause) =>
+          reportHookFailure({
+            kind: "state_write_failed",
+            event: "UserPromptSubmit",
+            sessionId,
+            cause,
+            hookSafe: true,
+            context: { op: "workflow-update", cwd: payload.cwd },
+          }),
+        ),
       )
 
     // Step 3 — transcript context. Effectful because it
@@ -132,12 +137,16 @@ export const handleUserPromptSubmit = (
     const existing = yield* state
       .get(sessionId)
       .pipe(
-        Effect.catchAll((cause) => {
-          process.stderr.write(
-            `[UserPromptSubmit] session-state op=existing-read failed: sid=${sessionId} cause=${String(cause).slice(0, 160)}\n`,
-          )
-          return Effect.succeed(null)
-        }),
+        Effect.catchAll((cause) =>
+          reportHookFailure({
+            kind: "state_read_failed",
+            event: "UserPromptSubmit",
+            sessionId,
+            cause,
+            hookSafe: true,
+            context: { op: "existing-read", cwd: payload.cwd },
+          }).pipe(Effect.as(null)),
+        ),
       )
     const initialCwd =
       typeof payload.cwd === "string" && payload.cwd.length > 0
@@ -161,12 +170,16 @@ export const handleUserPromptSubmit = (
         expected_isa_path_absolute: expectedIsaPathAbsolute,
       })
       .pipe(
-        Effect.catchAll((cause) => {
-          process.stderr.write(
-            `[UserPromptSubmit] session-state op=engagement-update failed: sid=${sessionId} cause=${String(cause).slice(0, 160)}\n`,
-          )
-          return Effect.succeed(undefined)
-        }),
+        Effect.catchAll((cause) =>
+          reportHookFailure({
+            kind: "state_write_failed",
+            event: "UserPromptSubmit",
+            sessionId,
+            cause,
+            hookSafe: true,
+            context: { op: "engagement-update", cwd: payload.cwd },
+          }),
+        ),
       )
 
     // Step 5 — telemetry (best-effort, never blocks).

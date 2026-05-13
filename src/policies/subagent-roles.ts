@@ -9,6 +9,10 @@ export interface RoleSpec {
   readonly investigative: boolean
   readonly scopeRule: string
   readonly outputContract: string
+  // Planning-style roles produce recommendations and risk language but
+  // rarely cite a file:line. They still must return substance, so we
+  // require judgment language only, not an anchor.
+  readonly judgmentOnly?: boolean
 }
 
 const READ_ONLY_RULE =
@@ -19,6 +23,9 @@ const WRITE_RULE =
 
 const READ_ONLY_OUTPUT =
   "Output contract: return summary, concrete evidence anchors (file:line or command run), confidence, risks/blockers, and next recommended action."
+
+const PLANNER_OUTPUT =
+  "Output contract: return summary, concrete recommendations, risks/blockers, next steps, and confidence. file:line anchors are encouraged but not required."
 
 const WRITE_OUTPUT =
   "Output contract: return summary, exact paths edited (or state no edits), commands run, verification result, risks, and any orchestrator handoff needed."
@@ -43,19 +50,22 @@ const ROLES: Record<string, RoleSpec> = {
     mode: "read-only",
     investigative: true,
     scopeRule: READ_ONLY_RULE,
-    outputContract: READ_ONLY_OUTPUT,
+    outputContract: PLANNER_OUTPUT,
+    judgmentOnly: true,
   },
   planner: {
     mode: "read-only",
     investigative: true,
     scopeRule: READ_ONLY_RULE,
-    outputContract: READ_ONLY_OUTPUT,
+    outputContract: PLANNER_OUTPUT,
+    judgmentOnly: true,
   },
   architect: {
     mode: "read-only",
     investigative: true,
     scopeRule: READ_ONLY_RULE,
-    outputContract: READ_ONLY_OUTPUT,
+    outputContract: PLANNER_OUTPUT,
+    judgmentOnly: true,
   },
   "docs-researcher": {
     mode: "read-only",
@@ -126,13 +136,23 @@ const EVIDENCE_PATTERNS: ReadonlyArray<RegExp> = [
   /\b(?:ran|executed|command)\b/i,
 ]
 
-const CONFIDENCE_PATTERN = /\bconfidence\s*[:=]\s*(?:low|medium|high|[0-9]+%?|\S+)/i
-const NEXT_ACTION_PATTERN = /\b(?:next|recommend(?:ed|ation)?|risk|blocker|handoff)\b/i
+const CONFIDENCE_PATTERN =
+  /\bconfidence\s*[:=]\s*(?:low|medium|high|none|unknown|tbd|[0-9]+(?:\.[0-9]+)?%?)\b/i
+const NEXT_ACTION_PATTERN =
+  /\b(?:next\s*(?:step|steps|action|actions)\b|next\s*[:=]|recommend(?:ed|ation|s)?\b|risk\b|risks\b|blocker\b|blockers\b|handoff\b)/i
 
-export const hasEvidence = (text: string | undefined): boolean => {
+export interface EvidenceOptions {
+  readonly judgmentOnly?: boolean
+}
+
+export const hasEvidence = (
+  text: string | undefined,
+  options: EvidenceOptions = {},
+): boolean => {
   if (!text || text.trim().length === 0) return false
   const hasAnchor = EVIDENCE_PATTERNS.some((p) => p.test(text))
   const hasJudgment =
     CONFIDENCE_PATTERN.test(text) || NEXT_ACTION_PATTERN.test(text)
+  if (options.judgmentOnly) return hasJudgment
   return hasAnchor && hasJudgment
 }

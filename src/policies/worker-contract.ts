@@ -1,5 +1,5 @@
 import { Schema } from "effect"
-import { AgentInput } from "../schema/tool-inputs.ts"
+import { WorkerLaunchInput } from "../schema/worker.ts"
 import { lookupRole } from "./subagent-roles.ts"
 
 export const WORKER_CONTRACT_MARKER = "<claude-hooks-worker-contract>"
@@ -51,7 +51,7 @@ export const evaluateWorkerTaskPrompt = (
     return { kind: "passthrough" }
   }
 
-  const decoded = Schema.decodeUnknownEither(AgentInput)(toolInput)
+  const decoded = Schema.decodeUnknownEither(WorkerLaunchInput)(toolInput)
   if (decoded._tag === "Left") {
     return {
       kind: "ask",
@@ -66,7 +66,7 @@ export const evaluateWorkerTaskPrompt = (
       : {}
   const nextPrompt = appendWorkerContract(
     decoded.right.prompt,
-    decoded.right.subagent_type ?? decoded.right.agent_type,
+    decoded.right.agent_type,
   )
   if (nextPrompt === decoded.right.prompt) return { kind: "passthrough" }
 

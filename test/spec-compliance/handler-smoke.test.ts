@@ -168,12 +168,15 @@ describe("Mintlify handler smoke — documented payloads run cleanly", () => {
     const d = await Effect.runPromise(handleTaskCreated(decode(p.taskCreated()) as never))
     expect(isWellFormedDecision(d)).toBe(true)
   })
-  test("TaskCompleted [POLICY_EXTENSION] — documented-only payload BLOCKS", async () => {
+  test("TaskCompleted [POLICY_EXTENSION] — documented-only payload (no AC/evidence/ISA) APPROVES as lightweight bookkeeping", async () => {
+    // Claude Code's TaskUpdate drops user-provided metadata, so the
+    // documented-only shape carries no AC/evidence signal. The native
+    // gate is opt-in via either AC/evidence intent or active ISA;
+    // without both, this is bookkeeping and passes.
     const d = await Effect.runPromise(
       handleTaskCompleted(decode(p.taskCompletedDocumentedOnly()) as never),
     )
-    expect("decision" in d).toBe(true)
-    if ("decision" in d) expect(d.decision).toBe("block")
+    expect(d).toEqual({})
   })
   test("TaskCompleted [POLICY_EXTENSION post-patch] — metadata.AC+evidence APPROVES", async () => {
     const d = await Effect.runPromise(

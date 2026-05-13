@@ -1,10 +1,13 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
+import { currentProcessEnv } from "../bootstrap/env.ts";
+import { durationMillis, runtimeConfigFromEnv } from "./runtime-config.ts";
 
 const STALE_LOCK_MS = 30_000;
 const RETRY_INITIAL_MS = 50;
 const RETRY_MAX_MS = 1000;
-const RETRY_TIMEOUT_MS = 5_000;
+const defaultRetryTimeoutMs = (): number =>
+  durationMillis(runtimeConfigFromEnv(currentProcessEnv()).lockRetryTimeoutMs);
 
 export interface LockOptions {
   readonly staleMs?: number;
@@ -35,7 +38,7 @@ export const withFileLock = async <T>(
 ): Promise<T> => {
   const lockPath = `${targetPath}.lock`;
   const stale = opts.staleMs ?? STALE_LOCK_MS;
-  const timeout = opts.timeoutMs ?? RETRY_TIMEOUT_MS;
+  const timeout = opts.timeoutMs ?? defaultRetryTimeoutMs();
   const deadline = Date.now() + timeout;
 
   try {

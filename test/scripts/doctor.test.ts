@@ -170,6 +170,7 @@ describe("doctor CLI", () => {
     }>;
     expect(Array.isArray(parsed)).toBe(true);
     const names = parsed.map((r) => r.name);
+    expect(names).toContain("effective runtime config");
     expect(names).toContain("bun on PATH");
     expect(names).toContain("settings.json parses");
     expect(names).toContain("dispatcher round-trip");

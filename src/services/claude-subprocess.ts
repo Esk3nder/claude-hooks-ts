@@ -25,6 +25,7 @@
 import { Context, Effect, Layer } from "effect"
 import { spawn } from "node:child_process"
 import { ShellError } from "../schema/errors.ts"
+import { currentProcessEnv } from "../bootstrap/env.ts"
 
 export interface ClaudeSpawnOptions {
   /** Stdin payload (typically the user prompt). */
@@ -93,7 +94,7 @@ const liveImpl: ClaudeSubprocessApi = {
       try: async () =>
         new Promise<ClaudeSpawnResult>((resolve) => {
           const startedAt = Date.now()
-          const env = scrubClaudeEnv(process.env)
+          const env = scrubClaudeEnv(currentProcessEnv())
           const proc = spawn("claude", [...args], {
             env,
             stdio: ["pipe", "pipe", "pipe"],

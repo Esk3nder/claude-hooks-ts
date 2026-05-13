@@ -126,7 +126,7 @@ describe("VAL-M4-004 task-integrity", () => {
     expect(d).toEqual({})
   })
 
-  test("TaskCompleted missing acceptance_criteria → block", async () => {
+  test("TaskCompleted missing acceptance_criteria without active ISA → SAFE_DEFAULT (lightweight bookkeeping)", async () => {
     const p = decode({
       _tag: "TaskCompleted",
       session_id: "s",
@@ -135,14 +135,13 @@ describe("VAL-M4-004 task-integrity", () => {
       status: "ok",
     })
     const d = await Effect.runPromise(handleTaskCompleted(p))
-    expect("decision" in d).toBe(true)
-    if ("decision" in d) {
-      expect(d.decision).toBe("block")
-      expect(d.reason).toContain("acceptance_criteria")
-    }
+    expect(d).toEqual({})
   })
 
-  test("TaskCompleted missing evidence → block", async () => {
+  test("TaskCompleted with partial AC/evidence (intent signal) without ISA → still block", async () => {
+    // When the payload shows AC/evidence intent (one provided, one
+    // missing), the strict gate stays in effect — half-completed inputs
+    // are a likely harness-bridge bug, not lightweight bookkeeping.
     const p = decode({
       _tag: "TaskCompleted",
       session_id: "s",
@@ -168,6 +167,135 @@ describe("VAL-M4-004 task-integrity", () => {
     })
     const d = await Effect.runPromise(handleTaskCompleted(p))
     expect(d).toEqual({})
+  })
+
+  test("TaskCompleted missing AC/evidence WITH active fully-verified ISA → SAFE_DEFAULT (ISA is the evidence)", async () => {
+    const { root, cleanup } = stage()
+    try {
+      writeProjectIsa(root, ISA_ALL_CHECKED_WITH_VERIFICATION)
+      const p = decode({
+        _tag: "TaskCompleted",
+        session_id: "s-strict",
+        hook_event_name: "TaskCompleted",
+        task_id: "t1",
+        status: "ok",
+        cwd: root,
+      })
+      const d = await Effect.runPromise(handleTaskCompleted(p))
+      expect(d).toEqual({})
+    } finally {
+      cleanup()
+    }
+  })
+
+  test("TaskCompleted missing AC/evidence WITH active ISA that has UNCHECKED ISCs → block on ISA reason", async () => {
+    const { root, cleanup } = stage()
+    try {
+      writeProjectIsa(root, ISA_UNCHECKED)
+      const p = decode({
+        _tag: "TaskCompleted",
+        session_id: "s-strict-unchecked",
+        hook_event_name: "TaskCompleted",
+        task_id: "t1",
+        status: "ok",
+        cwd: root,
+      })
+      const d = await Effect.runPromise(handleTaskCompleted(p))
+      expect("decision" in d).toBe(true)
+      if ("decision" in d) {
+        expect(d.decision).toBe("block")
+        expect(d.reason).toContain("unchecked")
+      }
+    } finally {
+      cleanup()
+    }
+  })
+
+  // Security: an ISA stub with no checkbox-style ISCs must not be treated
+  // as sufficient evidence. Otherwise an agent that can write any ISA.md
+  // (e.g. a prose-only stub) would bypass the gate.
+  test("TaskCompleted missing AC/evidence WITH ISA that has zero checkbox ISCs → block (stub is not evidence)", async () => {
+    const { root, cleanup } = stage()
+    try {
+      writeProjectIsa(
+        root,
+        "---\nphase: build\n---\n\n## Goal\nx\n\n## Criteria\n- ISC-1: prose-only, no checkbox\n",
+      )
+      const p = decode({
+        _tag: "TaskCompleted",
+        session_id: "s-stub-isa",
+        hook_event_name: "TaskCompleted",
+        task_id: "t1",
+        status: "ok",
+        cwd: root,
+      })
+      const d = await Effect.runPromise(handleTaskCompleted(p))
+      expect("decision" in d).toBe(true)
+      if ("decision" in d) {
+        expect(d.decision).toBe("block")
+        expect(d.reason).toContain("acceptance_criteria")
+      }
+    } finally {
+      cleanup()
+    }
+  })
+
+  test("TaskCompleted with AC/evidence WITH ISA that has zero checkbox ISCs → no-op (caller met the strict requirement)", async () => {
+    const { root, cleanup } = stage()
+    try {
+      writeProjectIsa(
+        root,
+        "---\nphase: build\n---\n\n## Goal\nx\n\n## Criteria\n- ISC-1: prose-only, no checkbox\n",
+      )
+      const p = decode({
+        _tag: "TaskCompleted",
+        session_id: "s-stub-isa-with-fields",
+        hook_event_name: "TaskCompleted",
+        task_id: "t1",
+        acceptance_criteria: "Tests pass",
+        evidence: ["bun test exit 0"],
+        cwd: root,
+      })
+      const d = await Effect.runPromise(handleTaskCompleted(p))
+      expect(d).toEqual({})
+    } finally {
+      cleanup()
+    }
+  })
+
+  // Hostile-input hygiene: AC/evidence under metadata must be narrowed
+  // before counting as "provided". A non-string AC value is still a
+  // signal of intent, but missingAc remains true → block.
+  test("Hostile AC type under metadata (object instead of string) → block", async () => {
+    const p = decode({
+      _tag: "TaskCompleted",
+      session_id: "s-hostile-ac",
+      hook_event_name: "TaskCompleted",
+      task_id: "t1",
+      metadata: {
+        acceptance_criteria: { malicious: "object" },
+        evidence: ["ok"],
+      },
+    })
+    const d = await Effect.runPromise(handleTaskCompleted(p))
+    expect("decision" in d).toBe(true)
+    if ("decision" in d) expect(d.decision).toBe("block")
+  })
+
+  test("Hostile evidence type under metadata (string instead of array) → block", async () => {
+    const p = decode({
+      _tag: "TaskCompleted",
+      session_id: "s-hostile-ev",
+      hook_event_name: "TaskCompleted",
+      task_id: "t1",
+      metadata: {
+        acceptance_criteria: "done",
+        evidence: "not-an-array",
+      },
+    })
+    const d = await Effect.runPromise(handleTaskCompleted(p))
+    expect("decision" in d).toBe(true)
+    if ("decision" in d) expect(d.decision).toBe("block")
   })
 })
 

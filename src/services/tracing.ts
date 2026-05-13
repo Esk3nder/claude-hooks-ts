@@ -1,39 +1,39 @@
-import { Effect, Layer } from "effect"
+import { Effect, Layer, Option, Redacted } from "effect"
+import { loadRuntimeConfig } from "./runtime-config.ts"
 
-const enabled = (): boolean => {
-  const endpoint = process.env["OTEL_EXPORTER_OTLP_ENDPOINT"]
-  return endpoint !== undefined && endpoint.length > 0
-}
+const buildOtelLayer = (endpoint: string): Effect.Effect<Layer.Layer<never>> =>
+  Effect.gen(function* () {
+    const { NodeSdk } = yield* Effect.promise(() => import("@effect/opentelemetry"))
+    const { BatchSpanProcessor } = yield* Effect.promise(
+      () => import("@opentelemetry/sdk-trace-base"),
+    )
+    const { OTLPTraceExporter } = yield* Effect.promise(
+      () => import("@opentelemetry/exporter-trace-otlp-http"),
+    )
+    return NodeSdk.layer(() => ({
+      resource: { serviceName: "claude-hooks-ts" },
+      spanProcessor: new BatchSpanProcessor(
+        new OTLPTraceExporter({ url: endpoint }),
+      ),
+    })) as unknown as Layer.Layer<never>
+  })
 
-const buildOtelLayer = Effect.gen(function* () {
-  const { NodeSdk } = yield* Effect.promise(() => import("@effect/opentelemetry"))
-  const { BatchSpanProcessor } = yield* Effect.promise(
-    () => import("@opentelemetry/sdk-trace-base"),
+const buildOtelLayerSafe = (endpoint: string): Effect.Effect<Layer.Layer<never>> =>
+  buildOtelLayer(endpoint).pipe(
+    Effect.catchAll((err) =>
+      Effect.logWarning("tracing_failed_to_load_otel_deps", {
+        cause: String(err),
+      }).pipe(Effect.as(Layer.empty as Layer.Layer<never>)),
+    ),
   )
-  const { OTLPTraceExporter } = yield* Effect.promise(
-    () => import("@opentelemetry/exporter-trace-otlp-http"),
-  )
-  const endpoint = process.env["OTEL_EXPORTER_OTLP_ENDPOINT"]!
-  return NodeSdk.layer(() => ({
-    resource: { serviceName: "claude-hooks-ts" },
-    spanProcessor: new BatchSpanProcessor(new OTLPTraceExporter({ url: endpoint })),
-  })) as unknown as Layer.Layer<never>
-})
 
-const buildOtelLayerSafe = buildOtelLayer.pipe(
-  Effect.catchAll((err) =>
-    Effect.sync(() => {
-      process.stderr.write(
-        `tracing: failed to load OTel deps: ${String(err)}\n`,
-      )
-      return Layer.empty as Layer.Layer<never>
-    }),
-  ),
+export const TracingLive: Layer.Layer<never> = Layer.unwrapEffect(
+  Effect.gen(function* () {
+    const config = yield* loadRuntimeConfig
+    if (Option.isNone(config.otelEndpoint)) return Layer.empty as Layer.Layer<never>
+    return yield* buildOtelLayerSafe(Redacted.value(config.otelEndpoint.value))
+  }),
 )
-
-export const TracingLive: Layer.Layer<never> = enabled()
-  ? Layer.unwrapEffect(buildOtelLayerSafe)
-  : Layer.empty
 
 export const tracingLayerWith = (processor: unknown): Layer.Layer<never> =>
   Layer.unwrapEffect(
