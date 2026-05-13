@@ -116,6 +116,69 @@ describe("WorkerRunsLive", () => {
     }
   })
 
+  test("rejects invalid integration transitions", async () => {
+    const root = mkdtempSync(join(tmpdir(), "chts-worker-runs-"))
+    try {
+      const result = await Effect.runPromise(
+        Effect.gen(function* () {
+          const runs = yield* WorkerRuns
+          yield* runs.createQueued({
+            worker_id: "worker-queued",
+            session_id: "session-1",
+            agent_type: "executor",
+            mode: "write-allowed",
+            prompt_hash: "prompt-hash-queued",
+            scope: "src/**",
+          })
+          const queued = yield* runs.markIntegrated("worker-queued").pipe(Effect.either)
+
+          yield* runs.createQueued({
+            worker_id: "worker-readonly",
+            session_id: "session-1",
+            agent_type: "Explore",
+            mode: "read-only",
+            prompt_hash: "prompt-hash-readonly",
+            scope: "src/**",
+          })
+          yield* runs.complete("worker-readonly", {
+            ...validResult("read-only"),
+            changes_made: [],
+          })
+          const readOnly = yield* runs.markIntegrated("worker-readonly").pipe(Effect.either)
+
+          yield* runs.createQueued({
+            worker_id: "worker-patchless",
+            session_id: "session-1",
+            agent_type: "executor",
+            mode: "write-allowed",
+            prompt_hash: "prompt-hash-patchless",
+            scope: "src/**",
+          })
+          yield* runs.complete("worker-patchless", validResult("patchless"))
+          const patchless = yield* runs.markIntegrated("worker-patchless").pipe(Effect.either)
+
+          return {
+            queued,
+            readOnly,
+            patchless,
+            latestQueued: yield* runs.get("worker-queued"),
+            latestReadOnly: yield* runs.get("worker-readonly"),
+            latestPatchless: yield* runs.get("worker-patchless"),
+          }
+        }).pipe(Effect.provide(WorkerRunsLive(root)), Effect.provide(EventStoreLive)),
+      )
+
+      expect(result.queued._tag).toBe("Left")
+      expect(result.readOnly._tag).toBe("Left")
+      expect(result.patchless._tag).toBe("Left")
+      expect(result.latestQueued?.integration_status).toBeUndefined()
+      expect(result.latestReadOnly?.integration_status).toBeUndefined()
+      expect(result.latestPatchless?.integration_status).toBeUndefined()
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
   test("rejects malformed worker results without advancing the run", async () => {
     const root = mkdtempSync(join(tmpdir(), "chts-worker-runs-"))
     try {
@@ -150,6 +213,78 @@ describe("WorkerRunsLive", () => {
     }
   })
 
+  test("rejects blank patch metadata without advancing the run", async () => {
+    const root = mkdtempSync(join(tmpdir(), "chts-worker-runs-"))
+    try {
+      const result = await Effect.runPromise(
+        Effect.gen(function* () {
+          const runs = yield* WorkerRuns
+          yield* runs.createQueued({
+            worker_id: "worker-1",
+            session_id: "session-1",
+            agent_type: "executor",
+            mode: "write-allowed",
+            prompt_hash: "prompt-hash-1",
+            scope: "src/**",
+          })
+          yield* runs.markRunning("worker-1")
+          const exit = yield* runs.complete("worker-1", validResult(), undefined, {
+            isolation: "worktree",
+            patch_path: "   ",
+          }).pipe(Effect.either)
+          return {
+            exit,
+            latest: yield* runs.get("worker-1"),
+          }
+        }).pipe(Effect.provide(WorkerRunsLive(root)), Effect.provide(EventStoreLive)),
+      )
+
+      expect(result.exit._tag).toBe("Left")
+      expect(result.latest?.status).toBe("running")
+      expect(result.latest?.patch_path).toBeUndefined()
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  test("new completions clear stale patch and integration metadata unless supplied", async () => {
+    const root = mkdtempSync(join(tmpdir(), "chts-worker-runs-"))
+    try {
+      const latest = await Effect.runPromise(
+        Effect.gen(function* () {
+          const runs = yield* WorkerRuns
+          yield* runs.createQueued({
+            worker_id: "worker-1",
+            session_id: "session-1",
+            agent_type: "executor",
+            mode: "write-allowed",
+            prompt_hash: "prompt-hash-1",
+            scope: "src/**",
+          })
+          yield* runs.markRunning("worker-1")
+          yield* runs.complete("worker-1", validResult("first"), undefined, {
+            isolation: "worktree",
+            patch_path: "/tmp/worker-1.patch",
+          })
+          yield* runs.markIntegrated("worker-1")
+          yield* runs.complete("worker-1", {
+            ...validResult("second"),
+            changes_made: [],
+          })
+          return yield* runs.get("worker-1")
+        }).pipe(Effect.provide(WorkerRunsLive(root)), Effect.provide(EventStoreLive)),
+      )
+
+      expect(latest?.status).toBe("completed")
+      expect(latest?.result?.summary).toBe("second")
+      expect(latest?.patch_path).toBeUndefined()
+      expect(latest?.integration_status).toBeUndefined()
+      expect(latest?.integrated_at).toBeUndefined()
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
   test("requires a prompt hash or prompt when creating queued runs", async () => {
     const root = mkdtempSync(join(tmpdir(), "chts-worker-runs-"))
     try {
@@ -167,6 +302,45 @@ describe("WorkerRunsLive", () => {
       )
 
       expect(exit._tag).toBe("Failure")
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  test("rejects duplicate worker ids without rewinding the latest run", async () => {
+    const root = mkdtempSync(join(tmpdir(), "chts-worker-runs-"))
+    try {
+      const result = await Effect.runPromise(
+        Effect.gen(function* () {
+          const runs = yield* WorkerRuns
+          yield* runs.createQueued({
+            worker_id: "worker-1",
+            session_id: "session-1",
+            agent_type: "Explore",
+            mode: "read-only",
+            prompt_hash: "prompt-hash-1",
+            scope: "src/**",
+          })
+          yield* runs.markRunning("worker-1")
+          const duplicate = yield* runs.createQueued({
+            worker_id: "worker-1",
+            session_id: "session-1",
+            agent_type: "Explore",
+            mode: "read-only",
+            prompt_hash: "prompt-hash-2",
+            scope: "other/**",
+          }).pipe(Effect.either)
+          return {
+            duplicate,
+            latest: yield* runs.get("worker-1"),
+          }
+        }).pipe(Effect.provide(WorkerRunsLive(root)), Effect.provide(EventStoreLive)),
+      )
+
+      expect(result.duplicate._tag).toBe("Left")
+      expect(result.latest?.status).toBe("running")
+      expect(result.latest?.prompt_hash).toBe("prompt-hash-1")
+      expect(result.latest?.scope).toBe("src/**")
     } finally {
       rmSync(root, { recursive: true, force: true })
     }

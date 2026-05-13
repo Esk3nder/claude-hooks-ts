@@ -10,7 +10,11 @@ import { lookupRole, hasEvidence } from "../policies/subagent-roles.ts";
 import { stableHookPayloadHash } from "../schema/normalized.ts";
 import { reportHookFailure } from "../services/hook-failure.ts";
 import { loadRuntimeConfig } from "../services/runtime-config.ts";
-import { WorkerRuns, hashWorkerPrompt } from "../services/worker-runs.ts";
+import {
+  WorkerRuns,
+  hashWorkerPrompt,
+  type WorkerRunCompletionMetadata,
+} from "../services/worker-runs.ts";
 import { parseWorkerResultText } from "../services/worker-supervisor.ts";
 
 export const invocationKey = (payload: {
@@ -110,6 +114,7 @@ const recordWorkerStop = (
       );
       return reason;
     }
+    let completionMetadata: WorkerRunCompletionMetadata = {};
     if (mode === "write-allowed" && parsed.right.changes_made.length > 0) {
       if (parsed.right.blockers.length > 0) {
         const reason = `write worker reported blockers: ${parsed.right.blockers.slice(0, 3).join("; ")}`;
@@ -130,8 +135,13 @@ const recordWorkerStop = (
         yield* runs.value.markBlocked(payload.agent_id, reason);
         return reason;
       }
+      completionMetadata = {
+        ...(run.isolation === undefined ? {} : { isolation: run.isolation }),
+        ...(run.workspace_path === undefined ? {} : { workspace_path: run.workspace_path }),
+        patch_path: run.patch_path,
+      };
     }
-    yield* runs.value.complete(payload.agent_id, parsed.right);
+    yield* runs.value.complete(payload.agent_id, parsed.right, undefined, completionMetadata);
     return null;
   }).pipe(
     Effect.catchAll((cause) =>

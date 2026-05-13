@@ -243,6 +243,37 @@ describe("worker runtime hook integration", () => {
     }
   })
 
+  test("SubagentStop preserves captured patch metadata for isolated write workers", async () => {
+    const result = await Effect.runPromise(
+      Effect.gen(function* () {
+        yield* handleSubagentStart(startPayload("executor", "agent-isolated"))
+        const runs = yield* WorkerRuns
+        yield* runs.complete("agent-isolated", workerResult("captured patch"), undefined, {
+          isolation: "worktree",
+          workspace_path: "/tmp/worker-worktree",
+          patch_path: "/repo/.claude-hooks/state/workers/patches/agent-isolated.patch",
+        })
+        const decision = yield* handleSubagentStop(
+          stopPayload("executor", "agent-isolated", JSON.stringify(workerResult("final output"))),
+        )
+        return {
+          decision,
+          latest: yield* runs.get("agent-isolated"),
+        }
+      }).pipe(Effect.provide(AppTest)),
+    )
+
+    expect(result.decision).toEqual({})
+    expect(result.latest?.status).toBe("completed")
+    expect(result.latest?.result?.summary).toBe("final output")
+    expect(result.latest?.isolation).toBe("worktree")
+    expect(result.latest?.workspace_path).toBe("/tmp/worker-worktree")
+    expect(result.latest?.patch_path).toBe(
+      "/repo/.claude-hooks/state/workers/patches/agent-isolated.patch",
+    )
+    expect(result.latest?.integration_status).toBe("pending")
+  })
+
   test("read-only worker write attempts are denied by correlated agent_id", async () => {
     const decision = await Effect.runPromise(
       Effect.gen(function* () {

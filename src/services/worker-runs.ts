@@ -99,6 +99,16 @@ const decodeWorkerResult = (workerId: string, result: unknown): Effect.Effect<Wo
     ),
   )
 
+const validateCompletionMetadata = (
+  workerId: string,
+  metadata: WorkerRunCompletionMetadata,
+): Effect.Effect<WorkerRunCompletionMetadata, WorkerRunError> => {
+  if (metadata.patch_path !== undefined && metadata.patch_path.trim().length === 0) {
+    return Effect.fail(workerError("worker-runs.complete", "patch_path cannot be blank", workerId))
+  }
+  return Effect.succeed(metadata)
+}
+
 const latestByWorker = (records: ReadonlyArray<WorkerRunType>): ReadonlyArray<WorkerRunType> => {
   const byId = new Map<string, WorkerRunType>()
   for (const record of records) {
@@ -129,6 +139,22 @@ const clearRunTerminalFields = (run: WorkerRunType): WorkerRunType => {
 
 const clearRunFailureFields = (run: WorkerRunType): WorkerRunType => {
   const { failure_reason: _failure, blocked_reason: _blocked, ...base } = run
+  return base
+}
+
+const clearRunCompletionFields = (run: WorkerRunType): WorkerRunType => {
+  const {
+    failure_reason: _failure,
+    blocked_reason: _blocked,
+    output: _output,
+    result: _result,
+    isolation: _isolation,
+    workspace_path: _workspacePath,
+    patch_path: _patchPath,
+    integration_status: _integrationStatus,
+    integrated_at: _integratedAt,
+    ...base
+  } = run
   return base
 }
 
@@ -170,23 +196,32 @@ export const WorkerRunsLive = (root: string = process.cwd()): Layer.Layer<Worker
 
       return WorkerRuns.of({
         createQueued: (input) => {
-          const promptHash =
-            input.prompt_hash ?? (input.prompt === undefined ? undefined : hashWorkerPrompt(input.prompt))
-          if (promptHash === undefined) {
-            return Effect.fail(workerError("worker-runs.createQueued", "prompt or prompt_hash is required"))
-          }
-          return appendRun({
-            worker_id: input.worker_id ?? generatedWorkerId(),
-            session_id: input.session_id,
-            ...(input.parent_task_id === undefined ? {} : { parent_task_id: input.parent_task_id }),
-            ...(input.agent_id === undefined ? {} : { agent_id: input.agent_id }),
-            agent_type: input.agent_type,
-            mode: input.mode,
-            status: "queued",
-            prompt_hash: promptHash,
-            scope: input.scope,
-            created_at: input.created_at ?? nowIso(),
-            attempts: 0,
+          const workerId = input.worker_id ?? generatedWorkerId()
+          return Effect.gen(function* () {
+            const existing = yield* readLatest(workerId)
+            if (existing !== null) {
+              return yield* Effect.fail(
+                workerError("worker-runs.createQueued", "worker run already exists", workerId),
+              )
+            }
+            const promptHash =
+              input.prompt_hash ?? (input.prompt === undefined ? undefined : hashWorkerPrompt(input.prompt))
+            if (promptHash === undefined) {
+              return yield* Effect.fail(workerError("worker-runs.createQueued", "prompt or prompt_hash is required"))
+            }
+            return yield* appendRun({
+              worker_id: workerId,
+              session_id: input.session_id,
+              ...(input.parent_task_id === undefined ? {} : { parent_task_id: input.parent_task_id }),
+              ...(input.agent_id === undefined ? {} : { agent_id: input.agent_id }),
+              agent_type: input.agent_type,
+              mode: input.mode,
+              status: "queued",
+              prompt_hash: promptHash,
+              scope: input.scope,
+              created_at: input.created_at ?? nowIso(),
+              attempts: 0,
+            })
           })
         },
         markRunning: (workerId, at = nowIso()) =>
@@ -205,10 +240,11 @@ export const WorkerRunsLive = (root: string = process.cwd()): Layer.Layer<Worker
             blocked_reason: reason,
           })),
         complete: (workerId, result, at = nowIso(), metadata = {}) =>
-          decodeWorkerResult(workerId, result).pipe(
+          validateCompletionMetadata(workerId, metadata).pipe(
+            Effect.zipRight(decodeWorkerResult(workerId, result)),
             Effect.flatMap((output) =>
               transition(workerId, "worker-runs.complete", (run) => ({
-                ...clearRunFailureFields(run),
+                ...clearRunCompletionFields(run),
                 status: "completed",
                 stopped_at: at,
                 ...(metadata.isolation === undefined ? {} : { isolation: metadata.isolation }),
@@ -223,11 +259,29 @@ export const WorkerRunsLive = (root: string = process.cwd()): Layer.Layer<Worker
             ),
           ),
         markIntegrated: (workerId, at = nowIso()) =>
-          transition(workerId, "worker-runs.markIntegrated", (run) => ({
-            ...run,
-            integration_status: "applied",
-            integrated_at: at,
-          })),
+          Effect.gen(function* () {
+            const run = yield* requireLatest(workerId, "worker-runs.markIntegrated")
+            if (run.status !== "completed") {
+              return yield* Effect.fail(
+                workerError("worker-runs.markIntegrated", `worker run is ${run.status}, not completed`, workerId),
+              )
+            }
+            if (run.mode !== "write-allowed") {
+              return yield* Effect.fail(
+                workerError("worker-runs.markIntegrated", "read-only worker has no patch to integrate", workerId),
+              )
+            }
+            if (run.patch_path === undefined || run.patch_path.trim().length === 0) {
+              return yield* Effect.fail(
+                workerError("worker-runs.markIntegrated", "worker completed without a captured patch", workerId),
+              )
+            }
+            return yield* appendRun({
+              ...run,
+              integration_status: "applied",
+              integrated_at: at,
+            })
+          }),
         fail: (workerId, reason, at = nowIso()) =>
           transition(workerId, "worker-runs.fail", (run) => ({
             ...clearRunTerminalFields(run),

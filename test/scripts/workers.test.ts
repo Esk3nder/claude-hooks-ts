@@ -117,12 +117,16 @@ describe("scripts/workers.ts", () => {
       const prompt = "SECRET RAW PROMPT SHOULD NOT PERSIST"
       const output = capture()
       expect(await runWorkersDetailed(["retry", "worker-2", "--cwd", root, "--prompt", prompt], output.out)).toBe(0)
-      expect(output.stdout()).toContain("worker-2 queued")
+      expect(output.stdout()).toContain("worker-2-retry-")
+      expect(output.stdout()).toContain("queued")
 
       const persisted = readFileSync(join(root, ".claude-hooks", "state", "workers", "default.jsonl"), "utf8")
-      expect(persisted).toContain("worker-2")
+      expect(persisted).toContain("worker-2-retry-")
       expect(persisted).toContain("redacted")
       expect(persisted).not.toContain(prompt)
+
+      const runsFile = readFileSync(join(root, ".claude-hooks", "state", "workers", "runs.jsonl"), "utf8")
+      expect(runsFile).toContain("worker-2-retry-")
     } finally {
       rmSync(root, { recursive: true, force: true })
     }

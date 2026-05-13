@@ -86,6 +86,41 @@ describe("WorkerSupervisorLive", () => {
     expect(completed?.output?.summary).toBe("supervisor result")
   })
 
+  test("duplicate enqueue returns the existing run without rewinding completion", async () => {
+    const result = await Effect.runPromise(
+      Effect.gen(function* () {
+        const supervisor = yield* WorkerSupervisor
+        const runs = yield* WorkerRuns
+        yield* supervisor.enqueue({
+          worker_id: "worker-1",
+          session_id: "session-1",
+          agent_type: "executor",
+          mode: "write-allowed",
+          prompt: "first",
+          scope: "src/**",
+        })
+        yield* supervisor.runOne
+        const duplicate = yield* supervisor.enqueue({
+          worker_id: "worker-1",
+          session_id: "session-1",
+          agent_type: "executor",
+          mode: "write-allowed",
+          prompt: "second",
+          scope: "other/**",
+        })
+        return {
+          duplicate,
+          latest: yield* runs.get("worker-1"),
+        }
+      }).pipe(Effect.provide(layerFor())),
+    )
+
+    expect(result.duplicate.status).toBe("completed")
+    expect(result.latest?.status).toBe("completed")
+    expect(result.latest?.scope).toBe("src/**")
+    expect(result.latest?.output?.summary).toBe("supervisor result")
+  })
+
   test("malformed worker result marks the run failed", async () => {
     const latest = await Effect.runPromise(
       Effect.gen(function* () {

@@ -42,8 +42,18 @@ const workerError = (
 }
 
 const repoRootForPatch = (workerId: string, patchPath: string): Effect.Effect<string, WorkerRunError> => {
+  if (!path.isAbsolute(patchPath)) {
+    return Effect.fail(
+      workerError(
+        "worker-integration.patchPath",
+        "worker patch path must be absolute",
+        workerId,
+      ),
+    )
+  }
+  const resolvedPatchPath = path.resolve(patchPath)
   const marker = `${path.sep}.claude-hooks${path.sep}state${path.sep}workers${path.sep}patches${path.sep}`
-  const index = patchPath.indexOf(marker)
+  const index = resolvedPatchPath.lastIndexOf(marker)
   if (index <= 0) {
     return Effect.fail(
       workerError(
@@ -53,7 +63,19 @@ const repoRootForPatch = (workerId: string, patchPath: string): Effect.Effect<st
       ),
     )
   }
-  return Effect.succeed(patchPath.slice(0, index))
+  const repoRoot = resolvedPatchPath.slice(0, index)
+  const patchRoot = path.join(repoRoot, ".claude-hooks", "state", "workers", "patches")
+  const relative = path.relative(patchRoot, resolvedPatchPath)
+  if (relative.length === 0 || relative.startsWith("..") || path.isAbsolute(relative)) {
+    return Effect.fail(
+      workerError(
+        "worker-integration.patchPath",
+        "worker patch path escapes .claude-hooks/state/workers/patches",
+        workerId,
+      ),
+    )
+  }
+  return Effect.succeed(repoRoot)
 }
 
 const validateRunForApply = (workerId: string, run: WorkerRun | null): Effect.Effect<WorkerRun, WorkerRunError> => {

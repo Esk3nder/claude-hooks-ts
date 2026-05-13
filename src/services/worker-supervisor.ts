@@ -531,41 +531,45 @@ export const WorkerSupervisorLive: Layer.Layer<
         enqueue: (input) => {
           const workerId = input.worker_id ?? generatedWorkerId()
           const payload = { ...input, worker_id: workerId }
-          const createRun = runs.createQueued({
-            worker_id: workerId,
-            session_id: input.session_id,
-            ...(input.parent_task_id === undefined ? {} : { parent_task_id: input.parent_task_id }),
-            ...(input.agent_id === undefined ? {} : { agent_id: input.agent_id }),
-            agent_type: input.agent_type,
-            mode: input.mode,
-            prompt_hash: hashWorkerPrompt(input.prompt),
-            scope: input.scope,
-          })
-          return createRun.pipe(
-            Effect.flatMap((queued) =>
-              queue.offer(jobForPayload(payload, workerId)).pipe(
-                Effect.as(queued),
-                Effect.catchAll((cause) =>
-                  runs
-                    .cancel(workerId, `enqueue failed: ${summarizeWorkerFailure(cause)}`)
-                    .pipe(
-                      Effect.catchAll(() => Effect.void),
-                      Effect.zipRight(
-                        Effect.fail(
-                          cause instanceof WorkerRunError
-                            ? cause
-                            : workerError("worker-supervisor.enqueue", cause.message, workerId, cause),
+          return runs.get(workerId).pipe(
+            Effect.flatMap((existing) => {
+              if (existing !== null) return Effect.succeed(existing)
+              return runs.createQueued({
+                worker_id: workerId,
+                session_id: input.session_id,
+                ...(input.parent_task_id === undefined ? {} : { parent_task_id: input.parent_task_id }),
+                ...(input.agent_id === undefined ? {} : { agent_id: input.agent_id }),
+                agent_type: input.agent_type,
+                mode: input.mode,
+                prompt_hash: hashWorkerPrompt(input.prompt),
+                scope: input.scope,
+              }).pipe(
+                Effect.flatMap((queued) =>
+                  queue.offer(jobForPayload(payload, workerId)).pipe(
+                    Effect.as(queued),
+                    Effect.catchAll((cause) =>
+                      runs
+                        .cancel(workerId, `enqueue failed: ${summarizeWorkerFailure(cause)}`)
+                        .pipe(
+                          Effect.catchAll(() => Effect.void),
+                          Effect.zipRight(
+                            Effect.fail(
+                              cause instanceof WorkerRunError
+                                ? cause
+                                : workerError("worker-supervisor.enqueue", cause.message, workerId, cause),
+                            ),
+                          ),
                         ),
-                      ),
                     ),
+                  ),
                 ),
-              ),
-            ),
+              )
+            }),
             Effect.mapError((cause) =>
               cause instanceof WorkerRunError
                 ? cause
                 : workerError("worker-supervisor.enqueue", cause.message, workerId, cause),
-            )
+            ),
           )
         },
         runOne,

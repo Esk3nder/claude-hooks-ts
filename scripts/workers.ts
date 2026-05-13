@@ -13,6 +13,7 @@
  */
 
 import { Effect, Layer } from "effect"
+import * as crypto from "node:crypto"
 import * as path from "node:path"
 import { EventStoreLive } from "../src/services/event-store.ts"
 import { loadRuntimeConfig, RuntimeConfigLive } from "../src/services/runtime-config.ts"
@@ -188,7 +189,10 @@ const print = (out: Output, json: boolean, value: unknown, text: string): void =
   out.stdout(json ? `${JSON.stringify(value, null, 2)}\n` : text)
 }
 
-const jobForRetry = (run: WorkerRun, prompt: string): WorkerJob => {
+const retryWorkerId = (workerId: string): string =>
+  `${workerId}-retry-${Date.now().toString(36)}-${crypto.randomBytes(4).toString("hex")}`
+
+const jobForRetry = (run: WorkerRun, workerId: string, prompt: string): WorkerJob => {
   const payload: WorkerJobPayload = {
     session_id: run.session_id,
     agent_type: run.agent_type,
@@ -197,10 +201,10 @@ const jobForRetry = (run: WorkerRun, prompt: string): WorkerJob => {
     scope: run.scope,
     ...(run.parent_task_id === undefined ? {} : { parent_task_id: run.parent_task_id }),
     ...(run.agent_id === undefined ? {} : { agent_id: run.agent_id }),
-    worker_id: run.worker_id,
+    worker_id: workerId,
   }
   return {
-    id: run.worker_id,
+    id: workerId,
     queue: "default",
     payload,
     enqueuedAt: Date.now(),
@@ -258,8 +262,9 @@ export const runWorkersDetailed = async (
               new Error(`worker queue capacity reached (${config.workerQueueCapacity})`),
             )
           }
+          const workerId = retryWorkerId(run.worker_id)
           const queued = yield* runs.createQueued({
-            worker_id: run.worker_id,
+            worker_id: workerId,
             session_id: run.session_id,
             ...(run.parent_task_id === undefined ? {} : { parent_task_id: run.parent_task_id }),
             ...(run.agent_id === undefined ? {} : { agent_id: run.agent_id }),
@@ -268,7 +273,7 @@ export const runWorkersDetailed = async (
             prompt_hash: hashWorkerPrompt(args.prompt!),
             scope: run.scope,
           })
-          yield* queue.offer(jobForRetry(queued, args.prompt!)).pipe(
+          yield* queue.offer(jobForRetry(run, queued.worker_id, args.prompt!)).pipe(
             Effect.catchAll((cause) =>
               runs.cancel(queued.worker_id, `retry enqueue failed: ${String(cause)}`).pipe(
                 Effect.catchAll(() => Effect.void),
