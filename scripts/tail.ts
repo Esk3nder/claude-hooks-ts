@@ -154,6 +154,9 @@ const tailIterator = async function* (
     for (const t of tails) {
       if (!fs.existsSync(t.file)) continue
       const stat = await fsP.stat(t.file)
+      if (stat.size < t.offset) {
+        t.offset = 0
+      }
       if (stat.size <= t.offset) continue
       const fd = await fsP.open(t.file, "r")
       try {

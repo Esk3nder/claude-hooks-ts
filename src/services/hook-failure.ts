@@ -1,6 +1,7 @@
 import { Context, Effect, Layer, Metric, Option, Ref } from "effect"
 import type { HookDecision } from "../schema/decisions.ts"
 import { Ledger, type LedgerEntry } from "./ledger.ts"
+import { DEFAULT_POLICY } from "./policy-config.ts"
 
 export type HookFailureKind =
   | "stdin_empty"
@@ -52,18 +53,46 @@ const hookFailureCounter = Metric.counter("hook_failures_total", {
 })
 
 const secretKeyRe = /(secret|token|key|password|credential|authorization|auth)/i
+const secretValuePatterns = DEFAULT_POLICY.secretValuePatterns.map(
+  (pattern) =>
+    new RegExp(
+      pattern.source,
+      pattern.flags.includes("g") ? pattern.flags : `${pattern.flags}g`,
+    ),
+)
+
+const redactCauseText = (value: string): string => {
+  let out = value
+  for (const pattern of secretValuePatterns) {
+    pattern.lastIndex = 0
+    out = out.replace(pattern, "[REDACTED]")
+  }
+  return out
+}
+
+const stringField = (cause: Record<string, unknown>, key: string): string | null => {
+  const value = cause[key]
+  return typeof value === "string" && value.length > 0 ? value : null
+}
 
 const summarizeCause = (cause: unknown): string => {
   if (cause instanceof Error) {
     const message = cause.message.length > 0 ? cause.message : cause.name
-    return `${cause.name}: ${message}`.slice(0, 300)
+    return redactCauseText(`${cause.name}: ${message}`).slice(0, 300)
   }
-  if (typeof cause === "string") return cause.slice(0, 300)
-  try {
-    return JSON.stringify(cause).slice(0, 300)
-  } catch {
-    return String(cause).slice(0, 300)
+  if (typeof cause === "string") return redactCauseText(cause).slice(0, 300)
+  if (typeof cause === "object" && cause !== null) {
+    const record = cause as Record<string, unknown>
+    const tag = stringField(record, "_tag") ?? stringField(record, "name")
+    const message = stringField(record, "message") ?? stringField(record, "reason")
+    if (tag !== null && message !== null) {
+      return redactCauseText(`${tag}: ${message}`).slice(0, 300)
+    }
+    if (message !== null) return redactCauseText(message).slice(0, 300)
+    if (tag !== null) return redactCauseText(tag).slice(0, 300)
+    return "non-error object cause"
   }
+  return String(cause).slice(0, 300)
 }
 
 const redactValue = (key: string, value: unknown): unknown => {

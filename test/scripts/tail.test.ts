@@ -120,4 +120,38 @@ describe("scripts/tail.ts", () => {
 
     await fsP.rm(tmp, { recursive: true, force: true })
   }, 15_000)
+
+  test("continues after a followed ledger is truncated", async () => {
+    const tmp = await fsP.mkdtemp(path.join(os.tmpdir(), "tail-"))
+    const dir = path.join(tmp, ".claude-hooks", "state", "sess-rotate")
+    await fsP.mkdir(dir, { recursive: true })
+    const ledger = path.join(dir, "ledger.jsonl")
+    const now = Date.now()
+    await writeLine(ledger, { timestamp: now, event: "old", sessionId: "sess-rotate", summary: "before truncate" })
+
+    const proc = Bun.spawn({
+      cmd: ["bun", "run", SCRIPT, "--cwd", tmp, "--session", "sess-rotate"],
+      stdout: "pipe",
+      stderr: "pipe",
+      env: { ...process.env, NO_COLOR: "1" },
+    })
+    await new Promise((r) => setTimeout(r, 800))
+    await fsP.writeFile(ledger, "", "utf8")
+    await new Promise((r) => setTimeout(r, 400))
+    await writeLine(ledger, {
+      timestamp: now + 1,
+      event: "new",
+      sessionId: "sess-rotate",
+      summary: "after truncate",
+    })
+    await new Promise((r) => setTimeout(r, 800))
+    proc.kill("SIGINT")
+    const stdout = stripAnsi(await new Response(proc.stdout).text())
+    try { await proc.exited } catch { /* ignore */ }
+
+    expect(stdout).toContain("before truncate")
+    expect(stdout).toContain("after truncate")
+
+    await fsP.rm(tmp, { recursive: true, force: true })
+  }, 15_000)
 })

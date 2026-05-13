@@ -49,4 +49,46 @@ describe("HookFailure reporting", () => {
       redactFailureContext({ token: "t", password: "p", cwd: "/safe" }),
     ).toEqual({ token: "[REDACTED]", password: "[REDACTED]", cwd: "/safe" })
   })
+
+  test("does not serialize arbitrary object causes into diagnostics", async () => {
+    const hookFailures = HookFailureTest()
+
+    await Effect.runPromise(
+      reportHookFailure({
+        kind: "payload_decode_failed",
+        event: "PreToolUse",
+        sessionId: "sess-object-cause",
+        cause: {
+          prompt: "TOP_SECRET_PROMPT",
+          tool_input: { command: "cat .env" },
+        },
+        hookSafe: true,
+      }).pipe(Effect.provide(hookFailures.layer)),
+    )
+
+    const record = hookFailures.records()[0]
+    if (record === undefined) throw new Error("missing hook failure record")
+    expect(record.cause).toBe("non-error object cause")
+    expect(record.cause).not.toContain("TOP_SECRET_PROMPT")
+    expect(record.cause).not.toContain("tool_input")
+  })
+
+  test("redacts known secret values from string causes", async () => {
+    const hookFailures = HookFailureTest()
+
+    await Effect.runPromise(
+      reportHookFailure({
+        kind: "handler_failed",
+        event: "Stop",
+        sessionId: "sess-string-cause",
+        cause: "failed with sk-123456789012345678901234567890",
+        hookSafe: true,
+      }).pipe(Effect.provide(hookFailures.layer)),
+    )
+
+    const record = hookFailures.records()[0]
+    if (record === undefined) throw new Error("missing hook failure record")
+    expect(record.cause).toContain("[REDACTED]")
+    expect(record.cause).not.toContain("sk-123456789012345678901234567890")
+  })
 })

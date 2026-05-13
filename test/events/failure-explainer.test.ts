@@ -58,4 +58,28 @@ FAILED test/test_foo.py::test_add - AssertionError: assert 2 == 3
       expect(ac).toContain("tsc")
     }
   })
+
+  test("redacts known secret values from failure summaries", async () => {
+    const d = await Effect.runPromise(
+      handlePostToolUseFailure(
+        failurePayload(
+          "error TS2322: failed with sk-123456789012345678901234567890 at src/secret.ts:1:1",
+        ),
+      ),
+    )
+    if ("hookSpecificOutput" in d) {
+      const ac = (d.hookSpecificOutput as { additionalContext: string }).additionalContext
+      expect(ac).toContain("[REDACTED]")
+      expect(ac).not.toContain("sk-123456789012345678901234567890")
+    }
+  })
+
+  test("does not stringify arbitrary error objects", async () => {
+    const d = await Effect.runPromise(
+      handlePostToolUseFailure(
+        failurePayload({ prompt: "TOP_SECRET_PROMPT", tool_input: { command: "cat .env" } }),
+      ),
+    )
+    expect(d).toEqual({})
+  })
 })
