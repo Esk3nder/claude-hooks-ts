@@ -67,4 +67,18 @@ describe("CommandRunner", () => {
     expect(result.exitCode).toBe(0)
     expect(result.stdout).toBe(":::oauth-token")
   })
+
+  test("drops scrubbed env keys instead of forwarding undefined values", async () => {
+    const result = await runCommandLive(
+      "bun",
+      ["-e", "process.stdout.write(process.env.RUNNER_DELETE_ME ?? 'missing')"],
+      {
+        env: { RUNNER_DELETE_ME: "secret" },
+        scrubEnv: (env) => ({ ...env, RUNNER_DELETE_ME: undefined }),
+      },
+    )
+
+    expect(result.exitCode).toBe(0)
+    expect(result.stdout).toBe("missing")
+  })
 })

@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test"
 import { Chunk, Effect, Schema, Stream } from "effect"
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
+import { mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { EventStoreError } from "../../src/schema/errors.ts"
@@ -148,6 +148,25 @@ describe("EventStoreLive", () => {
     }
   })
 
+  test("tail rejects a malformed final JSONL line without a trailing newline", async () => {
+    const root = mkdtempSync(join(tmpdir(), "chts-events-"))
+    try {
+      const file = join(root, "bad-no-newline.jsonl")
+      writeFileSync(file, `${JSON.stringify({ id: 1 })}\n{"id":`)
+      const stream = eventStream("bad-no-newline", file, Schema.Struct({ id: Schema.Number }))
+      const result = await Effect.runPromiseExit(
+        Effect.gen(function* () {
+          const store = yield* EventStore
+          return yield* Stream.runCollect(store.tail(stream, 10)).pipe(Effect.map(Chunk.toReadonlyArray))
+        }).pipe(Effect.provide(EventStoreLive)),
+      )
+
+      expect(result._tag).toBe("Failure")
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
   test("tail with zero requested records returns an empty stream", async () => {
     const root = mkdtempSync(join(tmpdir(), "chts-events-"))
     try {
@@ -195,6 +214,7 @@ describe("EventStoreLive", () => {
       expect(persisted).not.toContain("TOP_SECRET_TOOL")
       expect(persisted).not.toContain("TOP_SECRET_PROMPT")
       expect(persisted).not.toContain("TOP_SECRET_CONTENT")
+      expect(readdirSync(root).some((name) => name.includes(".compact.tmp"))).toBe(false)
     } finally {
       rmSync(root, { recursive: true, force: true })
     }

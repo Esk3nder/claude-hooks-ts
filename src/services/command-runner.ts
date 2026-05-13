@@ -52,9 +52,12 @@ const timeoutMessage = (timeoutMs: number): string =>
 const previewOf = (command: string, args: ReadonlyArray<string>): string =>
   [command, ...args].join(" ")
 
-const mergeEnv = (opts?: CommandRunOptions): Record<string, string | undefined> => {
+const mergeEnv = (opts?: CommandRunOptions): Record<string, string> => {
   const merged = { ...currentProcessEnv(), ...(opts?.env ?? {}) }
-  return opts?.scrubEnv?.(merged) ?? merged
+  const scrubbed = opts?.scrubEnv?.(merged) ?? merged
+  return Object.fromEntries(
+    Object.entries(scrubbed).filter((entry): entry is [string, string] => typeof entry[1] === "string"),
+  )
 }
 
 const collectTextCapped = (

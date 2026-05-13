@@ -255,8 +255,6 @@ const parseTail = <A>(
       try {
         parsed = JSON.parse(line)
       } catch (cause) {
-        const trailingPartial = tail.raw.length > 0 && !tail.raw.endsWith("\n") && i === rawLines.length - 1
-        if (trailingPartial) continue
         return yield* Effect.fail(makeError("tail", stream as EventStream<unknown>, "jsonl parse failed", cause))
       }
       out.push(yield* decodeEvent(stream, parsed, "tail"))
@@ -273,9 +271,20 @@ const readTail = <A>(stream: EventStream<A>, n: number): Effect.Effect<ReadonlyA
 const writeAll = <A>(stream: EventStream<A>, records: ReadonlyArray<A>): Effect.Effect<void, EventStoreError> =>
   Effect.tryPromise({
     try: async () => {
-      await fs.mkdir(path.dirname(stream.path), { recursive: true })
+      const dir = path.dirname(stream.path)
+      const tmp = path.join(
+        dir,
+        `.${path.basename(stream.path)}.${process.pid}.${Date.now()}.${crypto.randomBytes(4).toString("hex")}.compact.tmp`,
+      )
+      await fs.mkdir(dir, { recursive: true })
       const lines = await Effect.runPromise(Effect.all(records.map((record) => encodeLine(stream, record))))
-      await fs.writeFile(stream.path, lines.join(""), "utf8")
+      try {
+        await fs.writeFile(tmp, lines.join(""), "utf8")
+        await fs.rename(tmp, stream.path)
+      } catch (cause) {
+        await fs.rm(tmp, { force: true }).catch(() => undefined)
+        throw cause
+      }
     },
     catch: (cause) => makeError("compact", stream as EventStream<unknown>, "compact write failed", cause),
   })

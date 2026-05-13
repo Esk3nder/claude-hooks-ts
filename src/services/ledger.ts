@@ -3,7 +3,7 @@ import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import { LedgerError } from "../schema/errors.ts";
 import { eventStream, LedgerEntrySchema } from "../schema/events.ts";
-import { collectStream, EventStore, EventStoreLive } from "./event-store.ts";
+import { collectStream, EventStore, EventStoreLive, summarizeEventStoreError } from "./event-store.ts";
 
 export interface LedgerEntry {
   readonly timestamp: number;
@@ -48,6 +48,11 @@ const isDirectory = (filePath: string): Effect.Effect<boolean, LedgerError> =>
     Effect.catchIf((err) => isNodeErrorCode(err.cause, "ENOENT"), () => Effect.succeed(false)),
   );
 
+const eventStoreLedgerError = (op: string, cause: unknown): LedgerError => {
+  const summary = summarizeEventStoreError(cause);
+  return new LedgerError({ op, message: summary, cause: summary });
+};
+
 export const LedgerLiveBase = (root: string = process.cwd()): Layer.Layer<Ledger, never, EventStore> =>
   Layer.effect(
     Ledger,
@@ -57,15 +62,13 @@ export const LedgerLiveBase = (root: string = process.cwd()): Layer.Layer<Ledger
       return Ledger.of({
         append: (entry) =>
           store.append(ledgerStream(root, entry.sessionId), entry).pipe(
-            Effect.mapError((cause) =>
-              new LedgerError({ op: "append", message: String(cause), cause }),
-            ),
+            Effect.mapError((cause) => eventStoreLedgerError("append", cause)),
           ),
         read: (sessionId) =>
           Effect.gen(function* () {
             if (sessionId !== undefined) {
               return yield* readSession(sessionId).pipe(
-                Effect.mapError((cause) => new LedgerError({ op: "read", message: String(cause), cause })),
+                Effect.mapError((cause) => eventStoreLedgerError("read", cause)),
               );
             }
             // Aggregate across every session directory under state/.
@@ -78,7 +81,7 @@ export const LedgerLiveBase = (root: string = process.cwd()): Layer.Layer<Ledger
               const maybeSessionDir = yield* isDirectory(path.join(stateRoot(root), d));
               if (!maybeSessionDir) continue;
               all.push(...(yield* readSession(d).pipe(
-                Effect.mapError((cause) => new LedgerError({ op: "read", message: String(cause), cause })),
+                Effect.mapError((cause) => eventStoreLedgerError("read", cause)),
               )));
             }
             return all;

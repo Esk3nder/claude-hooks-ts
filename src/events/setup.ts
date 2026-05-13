@@ -16,17 +16,39 @@ interface SetupLedgerEntry {
 }
 
 const ROTATE_THRESHOLD_BYTES = 10 * 1024 * 1024 // 10 MB
+const APPROVAL_COUNT_MAX_BYTES = 1024 * 1024
 
 /**
- * Count newline-terminated JSON records in the approvals ledger. Used to
- * estimate "<N> pruned" since `Approvals.gc` returns void. Best-effort: any
- * read failure yields 0.
+ * Count a bounded suffix of newline-terminated JSON records in the approvals
+ * ledger. Used only to estimate "<N> pruned" since `Approvals.gc` returns
+ * void. Best-effort: any read failure yields 0.
  */
 const countApprovalLines = (cwd: string): number => {
   const file = path.join(cwd, ".claude-hooks", "state", "approvals.jsonl")
   try {
     if (!fsSync.existsSync(file)) return 0
-    const raw = fsSync.readFileSync(file, "utf8")
+    const stat = fsSync.statSync(file)
+    if (!stat.isFile() || stat.size <= 0) return 0
+    const length = Math.min(stat.size, APPROVAL_COUNT_MAX_BYTES)
+    const start = Math.max(0, stat.size - length)
+    const fd = fsSync.openSync(file, "r")
+    let raw = ""
+    try {
+      const buffer = Buffer.alloc(length)
+      const bytesRead = fsSync.readSync(fd, buffer, 0, length, start)
+      raw = buffer.subarray(0, bytesRead).toString("utf8")
+      if (start > 0) {
+        const previous = Buffer.alloc(1)
+        const previousBytes = fsSync.readSync(fd, previous, 0, 1, start - 1)
+        const startsOnLineBoundary = previousBytes === 1 && (previous[0] === 0x0a || previous[0] === 0x0d)
+        if (!startsOnLineBoundary) {
+          const firstLineEnd = raw.indexOf("\n")
+          raw = firstLineEnd >= 0 ? raw.slice(firstLineEnd + 1) : ""
+        }
+      }
+    } finally {
+      fsSync.closeSync(fd)
+    }
     let n = 0
     for (const line of raw.split(/\r?\n/)) {
       if (line.trim().length > 0) n++
