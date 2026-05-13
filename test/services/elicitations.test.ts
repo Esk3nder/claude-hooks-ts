@@ -1,10 +1,22 @@
 import { describe, expect, test, beforeEach, afterEach } from "bun:test"
-import { Effect } from "effect"
+import { Effect, Layer, Stream } from "effect"
 import * as fs from "node:fs/promises"
 import * as fsSync from "node:fs"
 import * as os from "node:os"
 import * as path from "node:path"
-import { Elicitations, ElicitationsLive, ElicitationsTest, elicitationSignature, type ElicitationRecord } from "../../src/services/elicitations.ts"
+import { EventStoreError } from "../../src/schema/errors.ts"
+import { Elicitations, ElicitationsLive, ElicitationsLiveBase, ElicitationsTest, elicitationSignature, type ElicitationRecord } from "../../src/services/elicitations.ts"
+import { EventStore } from "../../src/services/event-store.ts"
+
+const failingEventStore = (failure: EventStoreError): Layer.Layer<EventStore> =>
+  Layer.succeed(
+    EventStore,
+    EventStore.of({
+      append: () => Effect.fail(failure),
+      tail: () => Stream.fail(failure),
+      compact: () => Effect.fail(failure),
+    }),
+  )
 
 describe("Elicitations (test layer)", () => {
   test("lookup empty -> null", async () => {
@@ -34,6 +46,30 @@ describe("Elicitations (test layer)", () => {
       return yield* e.findLatestPending("s1", "/repo", "mcp.foo", "ask")
     }).pipe(Effect.provide(ElicitationsTest())))
     expect(r?.requestSignature).toBe(sig)
+  })
+
+  test("event-store failures are summarized without serializing raw causes", async () => {
+    const failure = new EventStoreError({
+      op: "tail",
+      stream: "elicitations:/repo",
+      path: "/repo/.claude-hooks/state/elicitations.jsonl",
+      message: "event schema decode failed",
+      cause: { content: "TOP_SECRET_ELICITATION_CAUSE" },
+    })
+
+    const result = await Effect.runPromise(
+      Effect.gen(function* () {
+        const e = yield* Elicitations
+        return yield* Effect.either(e.lookup("/repo", "mcp.foo", "ask", "sig"))
+      }).pipe(Effect.provide(Layer.provide(ElicitationsLiveBase, failingEventStore(failure)))),
+    )
+
+    expect(result._tag).toBe("Left")
+    if (result._tag === "Left") {
+      expect(result.left.message).toBe("tail failed for elicitations:/repo: event schema decode failed")
+      expect(JSON.stringify(result.left)).not.toContain("TOP_SECRET_ELICITATION_CAUSE")
+      expect(JSON.stringify(result.left)).not.toContain("content")
+    }
   })
 })
 

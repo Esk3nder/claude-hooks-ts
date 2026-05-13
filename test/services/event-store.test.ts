@@ -200,6 +200,31 @@ describe("EventStoreLive", () => {
     }
   })
 
+  test("compact fails closed when one stream name maps to multiple paths", async () => {
+    const root = mkdtempSync(join(tmpdir(), "chts-events-"))
+    try {
+      const fileA = join(root, "a.jsonl")
+      const fileB = join(root, "b.jsonl")
+      const streamA = eventStream("shared", fileA, Schema.Struct({ id: Schema.Number }), { maxRecords: 1 })
+      const streamB = eventStream("shared", fileB, Schema.Struct({ id: Schema.Number }), { maxRecords: 1 })
+
+      const result = await Effect.runPromiseExit(
+        Effect.gen(function* () {
+          const store = yield* EventStore
+          yield* store.append(streamA, { id: 1 })
+          yield* store.append(streamB, { id: 2 })
+          yield* store.compact("shared")
+        }).pipe(Effect.provide(EventStoreLive)),
+      )
+
+      expect(result._tag).toBe("Failure")
+      expect(readFileSync(fileA, "utf8")).toContain('"id":1')
+      expect(readFileSync(fileB, "utf8")).toContain('"id":2')
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
   test("rejects records that fail the stream schema", async () => {
     const root = mkdtempSync(join(tmpdir(), "chts-events-"))
     try {
@@ -266,5 +291,30 @@ describe("EventStoreTest", () => {
     )
 
     expect(result._tag).toBe("Failure")
+  })
+
+  test("keeps duplicate stream names isolated by path and rejects ambiguous compact", async () => {
+    const streamA = eventStream("shared-test", "/tmp/shared-a.jsonl", Schema.Struct({ id: Schema.Number }), {
+      maxRecords: 1,
+    })
+    const streamB = eventStream("shared-test", "/tmp/shared-b.jsonl", Schema.Struct({ id: Schema.Number }), {
+      maxRecords: 1,
+    })
+
+    const { recordsA, recordsB, compactResult } = await Effect.runPromise(
+      Effect.gen(function* () {
+        const store = yield* EventStore
+        yield* store.append(streamA, { id: 1 })
+        yield* store.append(streamB, { id: 2 })
+        const recordsA = yield* Stream.runCollect(store.tail(streamA, 10)).pipe(Effect.map(Chunk.toReadonlyArray))
+        const recordsB = yield* Stream.runCollect(store.tail(streamB, 10)).pipe(Effect.map(Chunk.toReadonlyArray))
+        const compactResult = yield* Effect.exit(store.compact("shared-test"))
+        return { recordsA, recordsB, compactResult }
+      }).pipe(Effect.provide(EventStoreTest())),
+    )
+
+    expect(recordsA.map((record) => record.id)).toEqual([1])
+    expect(recordsB.map((record) => record.id)).toEqual([2])
+    expect(compactResult._tag).toBe("Failure")
   })
 })

@@ -108,6 +108,59 @@ const makeError = (
     cause,
   })
 
+interface RegisteredStream {
+  readonly stream: EventStream<unknown>
+  readonly ambiguous: boolean
+}
+
+const streamPathKey = (stream: EventStream<unknown>): string => path.resolve(stream.path)
+
+const streamRecordKey = (stream: EventStream<unknown>): string => `${stream.name}\0${streamPathKey(stream)}`
+
+const sameStreamTarget = (a: EventStream<unknown>, b: EventStream<unknown>): boolean =>
+  streamPathKey(a) === streamPathKey(b)
+
+const registerStream = <A>(
+  registry: ReadonlyMap<EventStreamName, RegisteredStream>,
+  stream: EventStream<A>,
+): Map<EventStreamName, RegisteredStream> => {
+  const next = new Map(registry)
+  const existing = next.get(stream.name)
+  const candidate = stream as EventStream<unknown>
+  if (existing === undefined) {
+    next.set(stream.name, { stream: candidate, ambiguous: false })
+    return next
+  }
+  next.set(stream.name, {
+    stream: existing.stream,
+    ambiguous: existing.ambiguous || !sameStreamTarget(existing.stream, candidate),
+  })
+  return next
+}
+
+const compactTarget = (
+  name: EventStreamName,
+  registry: ReadonlyMap<EventStreamName, RegisteredStream>,
+): Effect.Effect<EventStream<unknown>, EventStoreError> => {
+  const registered = registry.get(name)
+  if (registered === undefined) {
+    return Effect.fail(
+      new EventStoreError({ op: "compact", stream: name, path: "", message: "unknown stream" }),
+    )
+  }
+  if (registered.ambiguous) {
+    return Effect.fail(
+      new EventStoreError({
+        op: "compact",
+        stream: name,
+        path: registered.stream.path,
+        message: "ambiguous stream name; multiple paths registered",
+      }),
+    )
+  }
+  return Effect.succeed(registered.stream)
+}
+
 const decodeEvent = <A>(stream: EventStream<A>, value: unknown, op: string): Effect.Effect<A, EventStoreError> =>
   Schema.decodeUnknown(stream.schema)(value).pipe(
     Effect.mapError((cause) => makeError(op, stream as EventStream<unknown>, "event schema decode failed", cause)),
@@ -237,9 +290,9 @@ export const summarizeEventStoreError = (cause: unknown): string => {
 export const EventStoreLive: Layer.Layer<EventStore> = Layer.effect(
   EventStore,
   Effect.gen(function* () {
-    const streams = yield* Ref.make<Map<EventStreamName, EventStream<unknown>>>(new Map())
+    const streams = yield* Ref.make<Map<EventStreamName, RegisteredStream>>(new Map())
     const remember = <A>(stream: EventStream<A>): Effect.Effect<void> =>
-      Ref.update(streams, (map) => new Map(map).set(stream.name, stream as EventStream<unknown>))
+      Ref.update(streams, (map) => registerStream(map, stream))
     return EventStore.of({
       append: <A>(stream: EventStream<A>, event: A) =>
         Effect.gen(function* () {
@@ -265,12 +318,7 @@ export const EventStoreLive: Layer.Layer<EventStore> = Layer.effect(
       compact: (name) =>
         Effect.gen(function* () {
           const map = yield* Ref.get(streams)
-          const stream = map.get(name)
-          if (stream === undefined) {
-            return yield* Effect.fail(
-              new EventStoreError({ op: "compact", stream: name, path: "", message: "unknown stream" }),
-            )
-          }
+          const stream = yield* compactTarget(name, map)
           yield* Effect.tryPromise({
             try: () =>
               withFileLock(stream.path, async () => {
@@ -291,10 +339,10 @@ export const EventStoreTest = (): Layer.Layer<EventStore> =>
   Layer.effect(
     EventStore,
     Effect.gen(function* () {
-      const records = yield* Ref.make<Map<EventStreamName, ReadonlyArray<unknown>>>(new Map())
-      const streams = yield* Ref.make<Map<EventStreamName, EventStream<unknown>>>(new Map())
+      const records = yield* Ref.make<Map<string, ReadonlyArray<unknown>>>(new Map())
+      const streams = yield* Ref.make<Map<EventStreamName, RegisteredStream>>(new Map())
       const remember = <A>(stream: EventStream<A>): Effect.Effect<void> =>
-        Ref.update(streams, (map) => new Map(map).set(stream.name, stream as EventStream<unknown>))
+        Ref.update(streams, (map) => registerStream(map, stream))
       return EventStore.of({
         append: <A>(stream: EventStream<A>, event: A) =>
           Effect.gen(function* () {
@@ -303,7 +351,8 @@ export const EventStoreTest = (): Layer.Layer<EventStore> =>
             yield* ensureLineWithinCap(stream, JSON.stringify(decoded), "append")
             yield* Ref.update(records, (map) => {
               const next = new Map(map)
-              next.set(stream.name, [...(next.get(stream.name) ?? []), decoded])
+              const key = streamRecordKey(stream as EventStream<unknown>)
+              next.set(key, [...(next.get(key) ?? []), decoded])
               return next
             })
           }),
@@ -315,7 +364,8 @@ export const EventStoreTest = (): Layer.Layer<EventStore> =>
                 Stream.fromIterable((() => {
                   const limit = Math.max(0, Math.min(n, stream.maxRecords ?? DEFAULT_MAX_RECORDS))
                   if (limit === 0) return [] as A[]
-                  return (map.get(stream.name) ?? []).slice(-limit) as A[]
+                  const key = streamRecordKey(stream as EventStream<unknown>)
+                  return (map.get(key) ?? []).slice(-limit) as A[]
                 })()),
               ),
             ),
@@ -323,16 +373,12 @@ export const EventStoreTest = (): Layer.Layer<EventStore> =>
         compact: (name) =>
           Effect.gen(function* () {
             const map = yield* Ref.get(streams)
-            const stream = map.get(name)
-            if (stream === undefined) {
-              return yield* Effect.fail(
-                new EventStoreError({ op: "compact", stream: name, path: "", message: "unknown stream" }),
-              )
-            }
+            const stream = yield* compactTarget(name, map)
+            const key = streamRecordKey(stream)
             yield* Ref.update(records, (recordMap) => {
               const next = new Map(recordMap)
-              const current = next.get(name) ?? []
-              next.set(name, current.slice(-(stream.maxRecords ?? DEFAULT_MAX_RECORDS)))
+              const current = next.get(key) ?? []
+              next.set(key, current.slice(-(stream.maxRecords ?? DEFAULT_MAX_RECORDS)))
               return next
             })
           }),

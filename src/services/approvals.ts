@@ -5,7 +5,7 @@ import * as path from "node:path";
 import { createInterface } from "node:readline";
 import { FsError } from "../schema/errors.ts";
 import { ApprovalRecordSchema, eventStream } from "../schema/events.ts";
-import { collectStream, EventStore, EventStoreLive } from "./event-store.ts";
+import { collectStream, EventStore, EventStoreLive, summarizeEventStoreError } from "./event-store.ts";
 import { withFileLock } from "./file-lock.ts";
 
 export type ApprovalStatus = "approved" | "denied" | "pending";
@@ -87,6 +87,16 @@ const writeMeta = async (file: string, lastGc: number): Promise<void> => {
   await fs.writeFile(file, JSON.stringify({ last_gc: lastGc }) + "\n", "utf8");
 };
 
+const eventStoreFsError = (op: string, file: string, cause: unknown): FsError => {
+  const summary = summarizeEventStoreError(cause);
+  return new FsError({
+    op,
+    path: file,
+    message: summary,
+    cause: summary,
+  });
+};
+
 const rewriteApprovalLedger = async (
   file: string,
   keep: (record: ApprovalRecord) => boolean,
@@ -145,14 +155,7 @@ export const ApprovalsLiveBase: Layer.Layer<Approvals, never, EventStore> = Laye
             if (resolved !== null) return resolved;
             return latestMatching(all, cwd, pattern);
           }),
-          Effect.mapError((cause) =>
-            new FsError({
-              op: "approvals.lookup",
-              path: ledgerPath(cwd),
-              message: String(cause),
-              cause,
-            }),
-          ),
+          Effect.mapError((cause) => eventStoreFsError("approvals.lookup", ledgerPath(cwd), cause)),
         ),
       findPending: (cwd, pattern) =>
         readRecent(cwd).pipe(
@@ -164,25 +167,11 @@ export const ApprovalsLiveBase: Layer.Layer<Approvals, never, EventStore> = Laye
               (r) => r.status === "pending",
             )
           ),
-          Effect.mapError((cause) =>
-            new FsError({
-              op: "approvals.findPending",
-              path: ledgerPath(cwd),
-              message: String(cause),
-              cause,
-            }),
-          ),
+          Effect.mapError((cause) => eventStoreFsError("approvals.findPending", ledgerPath(cwd), cause)),
         ),
       record: (record) =>
         store.append(approvalsStream(record.cwd), record).pipe(
-          Effect.mapError((cause) =>
-            new FsError({
-              op: "approvals.record",
-              path: ledgerPath(record.cwd),
-              message: String(cause),
-              cause,
-            }),
-          ),
+          Effect.mapError((cause) => eventStoreFsError("approvals.record", ledgerPath(record.cwd), cause)),
         ),
       gc: (cwd, now, maxAgeMs = DEFAULT_GC_MAX_AGE_MS) =>
         Effect.tryPromise({

@@ -10,7 +10,13 @@ import {
   eventStream,
   PendingElicitationRecordSchema,
 } from "../schema/events.ts"
-import { collectStream, EventStore, EventStoreLive, redactForPersistence } from "./event-store.ts"
+import {
+  collectStream,
+  EventStore,
+  EventStoreLive,
+  redactForPersistence,
+  summarizeEventStoreError,
+} from "./event-store.ts"
 import { withFileLock } from "./file-lock.ts"
 
 export type ElicitationAction = "accept" | "decline" | "cancel"
@@ -98,6 +104,16 @@ const latestPending = (
   return latest
 }
 
+const eventStoreFsError = (op: string, file: string, cause: unknown): FsError => {
+  const summary = summarizeEventStoreError(cause)
+  return new FsError({
+    op,
+    path: file,
+    message: summary,
+    cause: summary,
+  })
+}
+
 const rewriteJsonlLedger = async <A>(
   file: string,
   schema: Schema.Schema<A>,
@@ -152,24 +168,24 @@ export const ElicitationsLiveBase: Layer.Layer<Elicitations, never, EventStore> 
       lookup: (cwd, server, tool, signature) =>
         readRecent(cwd).pipe(
           Effect.map((records) => latestMatching(records, cwd, server, tool, signature)),
-          Effect.mapError((cause) => new FsError({ op: "elicitations.lookup", path: ledgerPath(cwd), message: String(cause), cause })),
+          Effect.mapError((cause) => eventStoreFsError("elicitations.lookup", ledgerPath(cwd), cause)),
         ),
       record: (cwd, server, tool, signature, action, content) => {
         const rec: ElicitationRecord = { ts: Date.now(), server, tool, signature, action, content, cwd }
         return store.append(elicitationsStream(cwd), rec).pipe(
-          Effect.mapError((cause) => new FsError({ op: "elicitations.record", path: ledgerPath(cwd), message: String(cause), cause })),
+          Effect.mapError((cause) => eventStoreFsError("elicitations.record", ledgerPath(cwd), cause)),
         )
       },
       recordPending: (sessionId, cwd, server, tool, requestSignature) => {
         const rec: PendingElicitationRecord = { ts: Date.now(), sessionId, cwd, server, tool, requestSignature }
         return store.append(pendingElicitationsStream(cwd), rec).pipe(
-          Effect.mapError((cause) => new FsError({ op: "elicitations.recordPending", path: pendingLedgerPath(cwd), message: String(cause), cause })),
+          Effect.mapError((cause) => eventStoreFsError("elicitations.recordPending", pendingLedgerPath(cwd), cause)),
         )
       },
       findLatestPending: (sessionId, cwd, server, tool) =>
         readRecentPending(cwd).pipe(
           Effect.map((records) => latestPending(records, sessionId, cwd, server, tool)),
-          Effect.mapError((cause) => new FsError({ op: "elicitations.findLatestPending", path: pendingLedgerPath(cwd), message: String(cause), cause })),
+          Effect.mapError((cause) => eventStoreFsError("elicitations.findLatestPending", pendingLedgerPath(cwd), cause)),
         ),
       gc: (cwd, now, maxAgeMs = DEFAULT_GC_MAX_AGE_MS) => Effect.tryPromise({
         try: async () => {
