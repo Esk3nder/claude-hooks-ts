@@ -29,7 +29,8 @@ export const renderWorkerContract = (
     "- Own only the delegated subtask; do not silently expand to the user's whole objective.",
     `- Scope: ${role.scopeRule}`,
     `- ${role.outputContract}`,
-    "- Use a concise structured result: summary, files_relevant, changes_made, commands_run, verification, risks, blockers.",
+    "- Return only strict JSON matching WorkerResult: summary, files_relevant, changes_made, commands_run, verification, risks, blockers, confidence, next_action?.",
+    "- For changes_made entries, include path, summary, and diff_ref when an isolated diff/patch exists.",
     "- If blocked or scope needs to widen, report that explicitly for orchestrator integration.",
     "</claude-hooks-worker-contract>",
   ].join("\n")

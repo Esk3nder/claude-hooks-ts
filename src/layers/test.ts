@@ -17,11 +17,26 @@ import { RuntimeConfigTest } from "../services/runtime-config.ts"
 import { HookFailureLive } from "../services/hook-failure.ts"
 import { EventStoreTest } from "../services/event-store.ts"
 import { CommandRunnerTest } from "../services/command-runner.ts"
+import { WorkerQueueLive } from "../services/worker-queue.ts"
+import { WorkerRunsLive } from "../services/worker-runs.ts"
+import { WorkerAggregationLive } from "../services/worker-aggregation.ts"
+import { WorkerIntegrationLive } from "../services/worker-integration.ts"
+import { WorkerExecutorTest, WorkerSupervisorLive } from "../services/worker-supervisor.ts"
+
+const WorkerDataTest = Layer.provideMerge(
+  Layer.mergeAll(WorkerQueueLive(), WorkerRunsLive()),
+  Layer.mergeAll(EventStoreTest(), RuntimeConfigTest()),
+)
+
+const WorkerRuntimeTest = Layer.provideMerge(
+  Layer.mergeAll(WorkerAggregationLive, WorkerIntegrationLive, WorkerSupervisorLive),
+  Layer.mergeAll(WorkerDataTest, WorkerExecutorTest(), CommandRunnerTest()),
+)
 
 export const AppTest = Layer.mergeAll(
   RuntimeConfigTest(),
   HookFailureLive,
-  EventStoreTest(),
+  WorkerRuntimeTest,
   CommandRunnerTest(),
   FileSystemTest(),
   ShellTest(),

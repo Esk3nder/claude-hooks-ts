@@ -13,6 +13,8 @@ describe("worker task contract", () => {
     expect(contract).toContain("read-only investigator")
     expect(contract).toContain("Output contract")
     expect(contract).toContain("files_relevant")
+    expect(contract).toContain("strict JSON")
+    expect(contract).toContain("diff_ref")
     expect(contract).toContain("orchestrator integration")
   })
 

@@ -3,6 +3,7 @@ import * as path from "node:path"
 import { EventStoreError } from "../schema/errors.ts"
 import { eventStream, WorkerJobSchema, type WorkerJob } from "../schema/events.ts"
 import { EventStore, redactForPersistence } from "./event-store.ts"
+import { RuntimeConfigService } from "./runtime-config.ts"
 
 export interface WorkerQueueApi {
   readonly offer: (job: WorkerJob) => Effect.Effect<void, EventStoreError>
@@ -31,12 +32,18 @@ export const workerJobsStream = (root: string, queueName: string = "default") =>
 export const WorkerQueueLive = (
   root: string = process.cwd(),
   queueName: string = "default",
-  capacity = 256,
-): Layer.Layer<WorkerQueue, never, EventStore> =>
+  capacity?: number,
+): Layer.Layer<WorkerQueue, never, EventStore | RuntimeConfigService> =>
   Layer.effect(
     WorkerQueue,
     Effect.gen(function* () {
-      const queue = yield* Queue.bounded<WorkerJob>(capacity)
+      const resolvedCapacity = capacity === undefined
+        ? yield* RuntimeConfigService.pipe(
+            Effect.flatMap((config) => config.load()),
+            Effect.map((config) => config.workerQueueCapacity),
+          )
+        : capacity
+      const queue = yield* Queue.bounded<WorkerJob>(Math.max(1, Math.floor(resolvedCapacity)))
       const gate = yield* Effect.makeSemaphore(1)
       const store = yield* EventStore
       const stream = workerJobsStream(root, queueName)

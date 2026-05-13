@@ -13,6 +13,14 @@ export interface RuntimeConfig {
   readonly lockRetryTimeoutMs: Duration.Duration
   readonly approvalGcInterval: Duration.Duration
   readonly testHangEvent: Option.Option<string>
+  readonly workersEnabled: boolean
+  readonly workerMaxConcurrent: number
+  readonly workerQueueCapacity: number
+  readonly workerDefaultTimeoutMs: Duration.Duration
+  readonly workerRetryLimit: number
+  readonly workerRequireStructuredResult: boolean
+  readonly workerEnforceReadOnlyRoles: boolean
+  readonly workerWriteIsolation: WorkerWriteIsolation
 }
 
 export interface RuntimeConfigApi {
@@ -23,6 +31,8 @@ export class RuntimeConfigService extends Context.Tag("RuntimeConfigService")<
   RuntimeConfigService,
   RuntimeConfigApi
 >() {}
+
+export type WorkerWriteIsolation = "none" | "serial" | "worktree" | "patch"
 
 const millis = (n: number): Duration.Duration => Duration.millis(n)
 
@@ -37,10 +47,48 @@ export const DEFAULT_RUNTIME_CONFIG: RuntimeConfig = {
   lockRetryTimeoutMs: millis(5_000),
   approvalGcInterval: millis(24 * 60 * 60 * 1000),
   testHangEvent: Option.none(),
+  workersEnabled: true,
+  workerMaxConcurrent: 3,
+  workerQueueCapacity: 256,
+  workerDefaultTimeoutMs: millis(120_000),
+  workerRetryLimit: 1,
+  workerRequireStructuredResult: true,
+  workerEnforceReadOnlyRoles: true,
+  workerWriteIsolation: "serial",
 }
 
 const envFlag = (value: string | undefined): boolean =>
   value === "1" || value?.toLowerCase() === "true"
+
+const envFlagOr = (value: string | undefined, fallback: boolean): boolean =>
+  value === undefined ? fallback : envFlag(value)
+
+const envPositiveInt = (value: string | undefined, fallback: number): number => {
+  if (value === undefined) return fallback
+  const parsed = Number(value)
+  return Number.isInteger(parsed) && parsed > 0 ? parsed : fallback
+}
+
+const envNonNegativeInt = (value: string | undefined, fallback: number): number => {
+  if (value === undefined) return fallback
+  const parsed = Number(value)
+  return Number.isInteger(parsed) && parsed >= 0 ? parsed : fallback
+}
+
+const envWorkerWriteIsolation = (
+  value: string | undefined,
+  fallback: WorkerWriteIsolation,
+): WorkerWriteIsolation => {
+  switch (value) {
+    case "none":
+    case "serial":
+    case "worktree":
+    case "patch":
+      return value
+    default:
+      return fallback
+  }
+}
 
 const nonEmpty = (value: string | undefined): Option.Option<string> =>
   typeof value === "string" && value.length > 0
@@ -58,6 +106,37 @@ export const runtimeConfigFromEnv = (
     Redacted.make(v),
   ),
   testHangEvent: nonEmpty(env["CLAUDE_HOOKS_TEST_HANG_EVENT"]),
+  workersEnabled: envFlagOr(env["CLAUDE_HOOKS_WORKERS_ENABLED"], base.workersEnabled),
+  workerMaxConcurrent: envPositiveInt(
+    env["CLAUDE_HOOKS_WORKER_MAX_CONCURRENT"],
+    base.workerMaxConcurrent,
+  ),
+  workerQueueCapacity: envPositiveInt(
+    env["CLAUDE_HOOKS_WORKER_QUEUE_CAPACITY"],
+    base.workerQueueCapacity,
+  ),
+  workerDefaultTimeoutMs: millis(
+    envPositiveInt(
+      env["CLAUDE_HOOKS_WORKER_DEFAULT_TIMEOUT_MS"],
+      durationMillis(base.workerDefaultTimeoutMs),
+    ),
+  ),
+  workerRetryLimit: envNonNegativeInt(
+    env["CLAUDE_HOOKS_WORKER_RETRY_LIMIT"],
+    base.workerRetryLimit,
+  ),
+  workerRequireStructuredResult: envFlagOr(
+    env["CLAUDE_HOOKS_WORKER_REQUIRE_STRUCTURED_RESULT"],
+    base.workerRequireStructuredResult,
+  ),
+  workerEnforceReadOnlyRoles: envFlagOr(
+    env["CLAUDE_HOOKS_WORKER_ENFORCE_READ_ONLY_ROLES"],
+    base.workerEnforceReadOnlyRoles,
+  ),
+  workerWriteIsolation: envWorkerWriteIsolation(
+    env["CLAUDE_HOOKS_WORKER_WRITE_ISOLATION"],
+    base.workerWriteIsolation,
+  ),
 })
 
 export const loadRuntimeConfig: Effect.Effect<RuntimeConfig> = Effect.gen(function* () {
@@ -80,6 +159,14 @@ export interface RuntimeConfigSummary {
   readonly lockRetryTimeoutMs: number
   readonly approvalGcIntervalMs: number
   readonly testHangEvent: string | null
+  readonly workersEnabled: boolean
+  readonly workerMaxConcurrent: number
+  readonly workerQueueCapacity: number
+  readonly workerDefaultTimeoutMs: number
+  readonly workerRetryLimit: number
+  readonly workerRequireStructuredResult: boolean
+  readonly workerEnforceReadOnlyRoles: boolean
+  readonly workerWriteIsolation: WorkerWriteIsolation
 }
 
 export const summarizeRuntimeConfig = (
@@ -95,6 +182,14 @@ export const summarizeRuntimeConfig = (
   lockRetryTimeoutMs: durationMillis(cfg.lockRetryTimeoutMs),
   approvalGcIntervalMs: durationMillis(cfg.approvalGcInterval),
   testHangEvent: Option.getOrNull(cfg.testHangEvent),
+  workersEnabled: cfg.workersEnabled,
+  workerMaxConcurrent: cfg.workerMaxConcurrent,
+  workerQueueCapacity: cfg.workerQueueCapacity,
+  workerDefaultTimeoutMs: durationMillis(cfg.workerDefaultTimeoutMs),
+  workerRetryLimit: cfg.workerRetryLimit,
+  workerRequireStructuredResult: cfg.workerRequireStructuredResult,
+  workerEnforceReadOnlyRoles: cfg.workerEnforceReadOnlyRoles,
+  workerWriteIsolation: cfg.workerWriteIsolation,
 })
 
 const makeLive = Effect.sync(() => {

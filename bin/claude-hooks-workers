@@ -1,0 +1,22 @@
+#!/usr/bin/env bash
+# Robust bin shim for claude-hooks-ts worker observability.
+set -e
+SOURCE="$0"
+while [ -L "$SOURCE" ]; do
+  TARGET="$(readlink "$SOURCE")"
+  case "$TARGET" in /*) SOURCE="$TARGET" ;; *) SOURCE="$(dirname "$SOURCE")/$TARGET" ;; esac
+done
+HERE="$(cd "$(dirname "$SOURCE")" && pwd)"
+BUN="${BUN:-}"
+if [ -z "$BUN" ] || [ ! -x "$BUN" ]; then
+  for c in "$HOME/.bun/bin/bun" "/opt/homebrew/bin/bun" "/usr/local/bin/bun" "$(command -v bun 2>/dev/null || true)"; do
+    if [ -n "$c" ] && [ -x "$c" ]; then BUN="$c"; break; fi
+  done
+fi
+if [ ! -x "$BUN" ]; then
+  echo "claude-hooks-workers: bun not found." >&2
+  echo "  Set \$BUN to an absolute path, or install bun:" >&2
+  echo "    curl -fsSL https://bun.sh/install | bash" >&2
+  exit 1
+fi
+exec "$BUN" run "$HERE/../scripts/workers.ts" "$@"

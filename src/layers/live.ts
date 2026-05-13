@@ -17,25 +17,39 @@ import { RuntimeConfigLive } from "../services/runtime-config.ts"
 import { HookFailureLive } from "../services/hook-failure.ts"
 import { CommandRunnerPlatformLive } from "../services/command-runner.ts"
 import { EventStoreLive } from "../services/event-store.ts"
+import { WorkerQueueLive } from "../services/worker-queue.ts"
+import { WorkerRunsLive } from "../services/worker-runs.ts"
+import { WorkerAggregationLive } from "../services/worker-aggregation.ts"
+import { WorkerIntegrationLive } from "../services/worker-integration.ts"
+import { WorkerExecutorLive, WorkerSupervisorLive } from "../services/worker-supervisor.ts"
 
-export const makeAppLive = (root: string = process.cwd()) =>
-  Layer.mergeAll(
-    RuntimeConfigLive,
+export const makeAppLive = (root: string = process.cwd()) => {
+  const runtime = RuntimeConfigLive
+  const eventBacked = Layer.provideMerge(
+    Layer.mergeAll(
+      LedgerLiveBase(root),
+      ApprovalsLiveBase,
+      ElicitationsLiveBase,
+      ClassifierTelemetryLiveBase(root),
+      WorkerQueueLive(root),
+      WorkerRunsLive(root),
+    ),
+    Layer.mergeAll(EventStoreLive, runtime),
+  )
+  const commandBase = Layer.provideMerge(
+    Layer.mergeAll(ShellLive, GitLive, ClaudeSubprocessLive),
+    CommandRunnerPlatformLive,
+  )
+  const commandBacked = Layer.provideMerge(WorkerExecutorLive, commandBase)
+  const workerRuntime = Layer.provideMerge(
+    Layer.mergeAll(WorkerAggregationLive, WorkerIntegrationLive, WorkerSupervisorLive),
+    Layer.mergeAll(eventBacked, commandBacked),
+  )
+  return Layer.mergeAll(
+    runtime,
     HookFailureLive,
     FileSystemLive,
-    Layer.provideMerge(
-      Layer.mergeAll(
-        LedgerLiveBase(root),
-        ApprovalsLiveBase,
-        ElicitationsLiveBase,
-        ClassifierTelemetryLiveBase(root),
-      ),
-      EventStoreLive,
-    ),
-    Layer.provideMerge(
-      Layer.mergeAll(ShellLive, GitLive, ClaudeSubprocessLive),
-      CommandRunnerPlatformLive,
-    ),
+    workerRuntime,
     ProjectLiveFor(root),
     PolicyConfigLiveFor(root),
     RedactLive,
@@ -43,5 +57,6 @@ export const makeAppLive = (root: string = process.cwd()) =>
     SessionStateLive(root),
     InferenceLive,
   )
+}
 
 export const AppLive = makeAppLive()

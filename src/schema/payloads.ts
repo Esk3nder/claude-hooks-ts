@@ -18,6 +18,9 @@ const Common = {
 const ToolCommon = {
   permission_mode: Schema.optional(Schema.String),
   tool_use_id: Schema.optional(Schema.String),
+  agent_id: Schema.optional(Schema.String),
+  task_id: Schema.optional(Schema.String),
+  worker_id: Schema.optional(Schema.String),
 }
 
 /**

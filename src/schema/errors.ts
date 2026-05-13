@@ -44,6 +44,13 @@ export class EventStoreError extends Data.TaggedError("EventStoreError")<{
   readonly cause?: unknown
 }> {}
 
+export class WorkerRunError extends Data.TaggedError("WorkerRunError")<{
+  readonly op: string
+  readonly workerId?: string
+  readonly message: string
+  readonly cause?: unknown
+}> {}
+
 export class HandlerError extends Data.TaggedError("HandlerError")<{
   readonly handler: string
   readonly message: string

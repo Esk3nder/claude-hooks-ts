@@ -4,6 +4,7 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { EventStoreLive } from "../../src/services/event-store.ts"
+import { RuntimeConfigTest } from "../../src/services/runtime-config.ts"
 import { WorkerQueue, WorkerQueueLive } from "../../src/services/worker-queue.ts"
 
 describe("WorkerQueueLive", () => {
@@ -23,7 +24,11 @@ describe("WorkerQueueLive", () => {
           const queue = yield* WorkerQueue
           yield* queue.offer(job)
           return yield* Stream.runHead(queue.stream)
-        }).pipe(Effect.provide(WorkerQueueLive(root)), Effect.provide(EventStoreLive)),
+        }).pipe(
+          Effect.provide(WorkerQueueLive(root)),
+          Effect.provide(EventStoreLive),
+          Effect.provide(RuntimeConfigTest()),
+        ),
       )
 
       expect(consumed._tag).toBe("Some")
@@ -54,7 +59,11 @@ describe("WorkerQueueLive", () => {
         Effect.gen(function* () {
           const queue = yield* WorkerQueue
           yield* queue.offer(job)
-        }).pipe(Effect.provide(WorkerQueueLive(root)), Effect.provide(EventStoreLive)),
+        }).pipe(
+          Effect.provide(WorkerQueueLive(root)),
+          Effect.provide(EventStoreLive),
+          Effect.provide(RuntimeConfigTest()),
+        ),
       )
 
       const file = join(root, ".claude-hooks", "state", "workers", "default.jsonl")
@@ -84,7 +93,11 @@ describe("WorkerQueueLive", () => {
         Effect.gen(function* () {
           const queue = yield* WorkerQueue
           yield* queue.offer(job)
-        }).pipe(Effect.provide(WorkerQueueLive(root)), Effect.provide(EventStoreLive)),
+        }).pipe(
+          Effect.provide(WorkerQueueLive(root)),
+          Effect.provide(EventStoreLive),
+          Effect.provide(RuntimeConfigTest()),
+        ),
       )
 
       expect(result._tag).toBe("Failure")
@@ -115,7 +128,11 @@ describe("WorkerQueueLive", () => {
           const queue = yield* WorkerQueue
           yield* queue.offer(first)
           yield* queue.offer(second)
-        }).pipe(Effect.provide(WorkerQueueLive(root, "default", 1)), Effect.provide(EventStoreLive)),
+        }).pipe(
+          Effect.provide(WorkerQueueLive(root, "default", 1)),
+          Effect.provide(EventStoreLive),
+          Effect.provide(RuntimeConfigTest()),
+        ),
       )
 
       expect(result._tag).toBe("Failure")
@@ -123,6 +140,44 @@ describe("WorkerQueueLive", () => {
       const persisted = readFileSync(file, "utf8")
       expect(persisted).toContain("job-1")
       expect(persisted).not.toContain("job-2")
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  test("capacity defaults to RuntimeConfigService", async () => {
+    const root = mkdtempSync(join(tmpdir(), "chts-workers-"))
+    try {
+      const first = {
+        id: "job-config-1",
+        queue: "default",
+        payload: {},
+        enqueuedAt: Date.now(),
+        attempts: 0,
+      }
+      const second = {
+        ...first,
+        id: "job-config-2",
+        enqueuedAt: first.enqueuedAt + 1,
+      }
+
+      const result = await Effect.runPromiseExit(
+        Effect.gen(function* () {
+          const queue = yield* WorkerQueue
+          yield* queue.offer(first)
+          yield* queue.offer(second)
+        }).pipe(
+          Effect.provide(WorkerQueueLive(root)),
+          Effect.provide(EventStoreLive),
+          Effect.provide(RuntimeConfigTest({ workerQueueCapacity: 1 })),
+        ),
+      )
+
+      expect(result._tag).toBe("Failure")
+      const file = join(root, ".claude-hooks", "state", "workers", "default.jsonl")
+      const persisted = readFileSync(file, "utf8")
+      expect(persisted).toContain("job-config-1")
+      expect(persisted).not.toContain("job-config-2")
     } finally {
       rmSync(root, { recursive: true, force: true })
     }

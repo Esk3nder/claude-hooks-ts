@@ -1,4 +1,4 @@
-import { Effect } from "effect"
+import { Effect, Option } from "effect"
 import * as path from "node:path"
 import type { HookPayload } from "../schema/payloads.ts"
 import type { HookDecision } from "../schema/decisions.ts"
@@ -8,6 +8,9 @@ import { EventStore, summarizeEventStoreError } from "../services/event-store.ts
 import { Project } from "../services/project.ts"
 import { SessionState } from "../services/session-state.ts"
 import { logWarning } from "../services/diagnostics.ts"
+import { loadRuntimeConfig } from "../services/runtime-config.ts"
+import { WorkerAggregation } from "../services/worker-aggregation.ts"
+import type { WorkerIntegrationSummary } from "../schema/worker-run.ts"
 
 interface TeammateIdleLedgerEntry {
   readonly session_id: string
@@ -18,10 +21,60 @@ interface TeammateIdleLedgerEntry {
 
 /**
  * TeammateIdle — block going idle if the session has unverified pending work
- * (`files_changed.length > 0 && verification_status !== "passed"`). Always
- * appends a best-effort ledger entry; ledger failures are swallowed so they
- * never affect the decision.
+ * or unresolved worker integration. Always appends a best-effort ledger entry;
+ * ledger failures are swallowed so they never affect the decision.
  */
+const workerIdleBlockReason = (
+  summary: WorkerIntegrationSummary,
+  finalVerificationPassed: boolean,
+): string | null => {
+  if (summary.workers_total === 0) return null
+  if (summary.queued > 0 || summary.running > 0 || summary.blocked > 0) {
+    return [
+      "Worker runs are still unresolved; finish, block, or cancel them before going idle.",
+      `queued=${summary.queued}`,
+      `running=${summary.running}`,
+      `blocked=${summary.blocked}`,
+    ].join(" ")
+  }
+  if (summary.failed > 0) {
+    return `Worker runs failed (${summary.failed}); resolve or cancel failed workers before going idle.`
+  }
+  if (summary.conflicts.length > 0) {
+    return `Worker outputs have integration conflicts: ${summary.conflicts.map((conflict) => conflict.path).join(", ")}.`
+  }
+  if (summary.blockers.length > 0) {
+    return `Worker outputs still report blockers: ${summary.blockers.slice(0, 3).join("; ")}`
+  }
+  if (summary.final_verification_required && !finalVerificationPassed) {
+    return "Integrated worker changes still need final parent-workspace verification before going idle."
+  }
+  return null
+}
+
+const evaluateWorkerIdle = (
+  sessionId: string,
+  finalVerificationPassed: boolean,
+): Effect.Effect<string | null> =>
+  Effect.gen(function* () {
+    const config = yield* loadRuntimeConfig
+    if (!config.workersEnabled) return null
+    const aggregation = yield* Effect.serviceOption(WorkerAggregation)
+    if (Option.isNone(aggregation)) return null
+    const summary = yield* aggregation.value
+      .summarizeSession(sessionId)
+      .pipe(
+        Effect.catchAll((cause) =>
+          logWarning(
+            `[TeammateIdle] worker aggregation failed: sid=${sessionId} cause=${String(cause).slice(0, 160)}`,
+          ).pipe(Effect.as(null)),
+        ),
+      )
+    return summary === null
+      ? null
+      : workerIdleBlockReason(summary, finalVerificationPassed)
+  })
+
 export const handleTeammateIdle = (
   payload: HookPayload,
 ): Effect.Effect<
@@ -68,6 +121,16 @@ export const handleTeammateIdle = (
     )
     if (stateE._tag === "Right") {
       const rec = stateE.right
+      const workerBlockReason = yield* evaluateWorkerIdle(
+        payload.session_id,
+        rec.verification_status === "passed",
+      )
+      if (workerBlockReason !== null) {
+        return {
+          decision: "block",
+          reason: workerBlockReason,
+        }
+      }
       if (
         rec.files_changed.length > 0 &&
         rec.verification_status !== "passed"

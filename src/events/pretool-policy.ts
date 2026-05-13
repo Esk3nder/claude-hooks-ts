@@ -20,6 +20,7 @@ import { evaluateLockfile } from "../policies/lockfile-paths.ts"
 import { shouldRewrite, rewriteTestCommand } from "../policies/test-output-rewrite.ts"
 import { evaluateEngagementGate } from "../policies/engagement-gate.ts"
 import { evaluateWorkerTaskPrompt } from "../policies/worker-contract.ts"
+import { evaluateWorkerToolPermission } from "../policies/worker-permissions.ts"
 import { SessionState } from "../services/session-state.ts"
 import { loadRuntimeConfig } from "../services/runtime-config.ts"
 import { reportHookFailure } from "../services/hook-failure.ts"
@@ -235,6 +236,11 @@ export const handlePreToolUse = (
           return toHookDecision(engagementVerdict)
         }
       }
+    }
+
+    const workerToolDecision = yield* evaluateWorkerToolPermission(payload)
+    if (workerToolDecision.kind !== "passthrough") {
+      return toHookDecision(workerToolDecision)
     }
 
     const toolEvaluationResult = evaluateForToolWithFailure(

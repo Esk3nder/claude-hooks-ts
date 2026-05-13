@@ -134,10 +134,12 @@ const EVIDENCE_PATTERNS: ReadonlyArray<RegExp> = [
   /[\/\w.-]+\.[a-zA-Z]+:\d+/, // path:line
   /\$\s+\S+/, // shell command marker
   /\b(?:ran|executed|command)\b/i,
+  /"verification"\s*:/i,
+  /"files_relevant"\s*:/i,
 ]
 
 const CONFIDENCE_PATTERN =
-  /\bconfidence\s*[:=]\s*(?:low|medium|high|none|unknown|tbd|[0-9]+(?:\.[0-9]+)?%?)\b/i
+  /(?:\bconfidence\s*[:=]\s*|"confidence"\s*:\s*")(?:low|medium|high|none|unknown|tbd|[0-9]+(?:\.[0-9]+)?%?)\b/i
 const NEXT_ACTION_PATTERN =
   /\b(?:next\s*(?:step|steps|action|actions)\b|next\s*[:=]|recommend(?:ed|ation|s)?\b|risk\b|risks\b|blocker\b|blockers\b|handoff\b)/i
 

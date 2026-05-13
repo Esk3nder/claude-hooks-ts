@@ -1,4 +1,4 @@
-import { Effect } from "effect"
+import { Effect, Option } from "effect"
 import { readFileSync } from "node:fs"
 import type { HookPayload } from "../schema/payloads.ts"
 import type { HookDecision } from "../schema/decisions.ts"
@@ -12,6 +12,9 @@ import {
 } from "../algorithm/isa/lifecycle.ts"
 import { SessionState } from "../services/session-state.ts"
 import { logWarning } from "../services/diagnostics.ts"
+import { WorkerAggregation } from "../services/worker-aggregation.ts"
+import { loadRuntimeConfig } from "../services/runtime-config.ts"
+import type { WorkerIntegrationSummary } from "../schema/worker-run.ts"
 
 export const handleTaskCreated = (
   payload: HookPayload,
@@ -24,6 +27,91 @@ export const handleTaskCreated = (
 
 const hasEvidenceItem = (value: unknown): value is string =>
   typeof value === "string" && value.trim().length > 0
+
+const workerCompletionBlockReason = (
+  summary: WorkerIntegrationSummary,
+  finalVerificationPassed: boolean,
+): string | null => {
+  if (summary.workers_total === 0) return null
+  if (summary.queued > 0 || summary.running > 0 || summary.blocked > 0) {
+    return [
+      "Task marked complete but worker runs are still unresolved.",
+      `queued=${summary.queued}`,
+      `running=${summary.running}`,
+      `blocked=${summary.blocked}`,
+      summary.active_worker_ids.length > 0
+        ? `active=${summary.active_worker_ids.join(",")}`
+        : "",
+      "Complete or cancel those workers before marking the parent task complete.",
+    ].filter((part) => part.length > 0).join(" ")
+  }
+  if (summary.failed > 0) {
+    return [
+      "Task marked complete but worker runs failed.",
+      `failed=${summary.failed}`,
+      summary.failed_worker_ids.length > 0
+        ? `workers=${summary.failed_worker_ids.join(",")}`
+        : "",
+      "Resolve or explicitly cancel failed workers before marking complete.",
+    ].filter((part) => part.length > 0).join(" ")
+  }
+  if (summary.conflicts.length > 0) {
+    return [
+      "Task marked complete but worker outputs have integration conflicts.",
+      `paths=${summary.conflicts.map((conflict) => conflict.path).join(",")}`,
+      "Resolve conflicts and rerun final verification before marking complete.",
+    ].join(" ")
+  }
+  if (summary.blockers.length > 0) {
+    return [
+      "Task marked complete but worker outputs still report blockers.",
+      summary.blockers.slice(0, 3).join("; "),
+    ].join(" ")
+  }
+  if (summary.final_verification_required && !finalVerificationPassed) {
+    return [
+      "Task marked complete but integrated worker changes still need final verification.",
+      `files=${summary.files_changed.join(",")}`,
+      "Run the parent-workspace verification and record it before marking complete.",
+    ].join(" ")
+  }
+  return null
+}
+
+const evaluateWorkerCompletion = (
+  sessionId: string,
+  taskId: string,
+  finalVerificationPassed: boolean,
+): Effect.Effect<string | null> =>
+  Effect.gen(function* () {
+    const cfg = yield* loadRuntimeConfig
+    if (!cfg.workersEnabled) return null
+    const aggregation = yield* Effect.serviceOption(WorkerAggregation)
+    if (Option.isNone(aggregation)) return null
+
+    const parentSummary = yield* aggregation.value
+      .summarizeParent(taskId)
+      .pipe(
+        Effect.catchAll((cause) =>
+          logWarning(
+            `[TaskCompleted] worker aggregation parent lookup failed: task=${taskId} cause=${String(cause).slice(0, 160)}`,
+          ).pipe(Effect.as(null)),
+        ),
+      )
+    const summary =
+      parentSummary !== null && parentSummary.workers_total > 0
+        ? parentSummary
+        : yield* aggregation.value
+            .summarizeSession(sessionId)
+            .pipe(
+              Effect.catchAll((cause) =>
+                logWarning(
+                  `[TaskCompleted] worker aggregation session lookup failed: sid=${sessionId} cause=${String(cause).slice(0, 160)}`,
+                ).pipe(Effect.as(null)),
+              ),
+            )
+    return summary === null ? null : workerCompletionBlockReason(summary, finalVerificationPassed)
+  })
 
 /**
  * Tagged result of evaluating the active ISA at `cwd` against a
@@ -145,6 +233,15 @@ export const handleTaskCompleted = (
         ? payload.cwd
         : process.cwd()
     const sessionRoot = record?.session_root ?? currentCwd
+    const workerBlockReason = yield* evaluateWorkerCompletion(
+      sid,
+      payload.task_id,
+      record?.verification_status === "passed",
+    )
+    if (workerBlockReason !== null) {
+      return { decision: "block", reason: workerBlockReason } satisfies HookDecision
+    }
+
     const isa = evaluateIsa(sessionRoot, record)
     if (isa.kind === "block") {
       return { decision: "block", reason: isa.reason } satisfies HookDecision

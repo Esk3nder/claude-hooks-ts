@@ -1,0 +1,190 @@
+import { Context, Effect, Layer } from "effect"
+import { EventStoreError } from "../schema/errors.ts"
+import type {
+  WorkerConflict,
+  WorkerIntegrationSummary,
+  WorkerRun,
+} from "../schema/worker-run.ts"
+import { WorkerRuns } from "./worker-runs.ts"
+
+export interface WorkerAggregationApi {
+  readonly summarizeSession: (
+    sessionId: string,
+  ) => Effect.Effect<WorkerIntegrationSummary, EventStoreError>
+  readonly summarizeParent: (
+    parentTaskId: string,
+  ) => Effect.Effect<WorkerIntegrationSummary, EventStoreError>
+}
+
+export class WorkerAggregation extends Context.Tag("WorkerAggregation")<
+  WorkerAggregation,
+  WorkerAggregationApi
+>() {}
+
+const countStatus = (
+  runs: ReadonlyArray<WorkerRun>,
+  status: WorkerRun["status"],
+): number => runs.filter((run) => run.status === status).length
+
+const workerResult = (run: WorkerRun) => run.result ?? run.output
+
+const detectConflicts = (runs: ReadonlyArray<WorkerRun>): ReadonlyArray<WorkerConflict> => {
+  const byPath = new Map<string, Set<string>>()
+  for (const run of runs) {
+    if (run.status !== "completed" || run.mode !== "write-allowed") continue
+    for (const change of workerResult(run)?.changes_made ?? []) {
+      const workers = byPath.get(change.path) ?? new Set<string>()
+      workers.add(run.worker_id)
+      byPath.set(change.path, workers)
+    }
+  }
+  return [...byPath.entries()]
+    .filter(([, workerIds]) => workerIds.size > 1)
+    .map(([path, workerIds]) => ({
+      path,
+      worker_ids: [...workerIds].sort(),
+    }))
+}
+
+const uniqueSorted = (values: Iterable<string>): ReadonlyArray<string> =>
+  [...new Set(values)].sort()
+
+const verificationBlockers = (runs: ReadonlyArray<WorkerRun>): ReadonlyArray<string> =>
+  runs.flatMap((run) => {
+    if (run.status !== "completed" || run.mode !== "write-allowed") return []
+    const result = workerResult(run)
+    if ((result?.changes_made.length ?? 0) === 0) return []
+    const verification = result?.verification ?? []
+    if (verification.length === 0) {
+      return [`worker ${run.worker_id} changed files without verification evidence`]
+    }
+    const failed = verification.filter((check) => check.status !== "passed")
+    return failed.map((check) =>
+      `worker ${run.worker_id} verification not passed: ${check.check}=${check.status}`,
+    )
+  })
+
+const integrationBlockers = (runs: ReadonlyArray<WorkerRun>): ReadonlyArray<string> =>
+  runs.flatMap((run) => {
+    if (run.status !== "completed" || run.mode !== "write-allowed") return []
+    const result = workerResult(run)
+    if ((result?.changes_made.length ?? 0) === 0) return []
+    if (run.patch_path === undefined) {
+      return [`worker ${run.worker_id} changed files without a captured isolated patch`]
+    }
+    if (run.integration_status === "applied") return []
+    return [`worker ${run.worker_id} has pending integration`]
+  })
+
+export const summarizeWorkerRuns = (
+  sessionId: string,
+  runs: ReadonlyArray<WorkerRun>,
+  parentTaskId?: string,
+): WorkerIntegrationSummary => {
+  const conflicts = detectConflicts(runs)
+  const queued = countStatus(runs, "queued")
+  const running = countStatus(runs, "running")
+  const blocked = countStatus(runs, "blocked")
+  const failed = countStatus(runs, "failed")
+  const activeWorkerIds = uniqueSorted(
+    runs
+      .filter((run) => run.status === "queued" || run.status === "running" || run.status === "blocked")
+      .map((run) => run.worker_id),
+  )
+  const completedWorkerIds = uniqueSorted(
+    runs.filter((run) => run.status === "completed").map((run) => run.worker_id),
+  )
+  const failedWorkerIds = uniqueSorted(
+    runs.filter((run) => run.status === "failed").map((run) => run.worker_id),
+  )
+  const blockedWorkerIds = uniqueSorted(
+    runs.filter((run) => run.status === "blocked").map((run) => run.worker_id),
+  )
+  const filesChanged = uniqueSorted(
+    runs.flatMap((run) => workerResult(run)?.changes_made.map((change) => change.path) ?? []),
+  )
+  const risks = uniqueSorted(runs.flatMap((run) => workerResult(run)?.risks ?? []))
+  const blockers = uniqueSorted([
+    ...runs.flatMap((run) => workerResult(run)?.blockers ?? []),
+    ...verificationBlockers(runs),
+    ...integrationBlockers(runs),
+    ...runs
+      .filter((run) => run.status === "failed" || run.status === "blocked")
+      .flatMap((run) => run.blocked_reason ?? run.failure_reason ?? []),
+    ...conflicts.map((conflict) =>
+      `conflict:${conflict.path}:${conflict.worker_ids.join(",")}`,
+    ),
+  ])
+  const readyForIntegration =
+    runs.length > 0 &&
+    queued === 0 &&
+    running === 0 &&
+    blocked === 0 &&
+    failed === 0 &&
+    conflicts.length === 0 &&
+    blockers.length === 0
+  const integrationPlan = readyForIntegration
+    ? [
+        filesChanged.length > 0
+          ? `review ${filesChanged.length} changed file(s): ${filesChanged.join(", ")}`
+          : "review worker outputs; no file changes reported",
+        "rerun final verification in the parent workspace before final handoff",
+      ]
+    : [
+        activeWorkerIds.length > 0
+          ? `resolve active workers: ${activeWorkerIds.join(", ")}`
+          : "resolve worker blockers before integration",
+        failedWorkerIds.length > 0
+          ? `inspect failed workers: ${failedWorkerIds.join(", ")}`
+          : "",
+        conflicts.length > 0
+          ? `resolve conflicting paths: ${conflicts.map((conflict) => conflict.path).join(", ")}`
+          : "",
+      ].filter((line) => line.length > 0)
+
+  return {
+    session_id: sessionId,
+    ...(parentTaskId === undefined ? {} : { parent_task_id: parentTaskId }),
+    workers_total: runs.length,
+    queued,
+    running,
+    blocked,
+    completed: countStatus(runs, "completed"),
+    failed,
+    cancelled: countStatus(runs, "cancelled"),
+    active_worker_ids: activeWorkerIds,
+    completed_worker_ids: completedWorkerIds,
+    failed_worker_ids: failedWorkerIds,
+    blocked_worker_ids: blockedWorkerIds,
+    files_changed: filesChanged,
+    risks,
+    blockers,
+    conflicts,
+    integration_plan: integrationPlan,
+    final_verification_required: readyForIntegration && filesChanged.length > 0,
+    ready_for_integration: readyForIntegration,
+  }
+}
+
+export const WorkerAggregationLive: Layer.Layer<
+  WorkerAggregation,
+  never,
+  WorkerRuns
+> =
+  Layer.effect(
+    WorkerAggregation,
+    Effect.map(WorkerRuns, (runs) =>
+      WorkerAggregation.of({
+        summarizeSession: (sessionId) =>
+          runs.forSession(sessionId).pipe(
+            Effect.map((sessionRuns) => summarizeWorkerRuns(sessionId, sessionRuns)),
+          ),
+        summarizeParent: (parentTaskId) =>
+          runs.forParent(parentTaskId).pipe(
+            Effect.map((parentRuns) =>
+              summarizeWorkerRuns(parentRuns[0]?.session_id ?? "", parentRuns, parentTaskId),
+            ),
+          ),
+      }),
+    ),
+  )
