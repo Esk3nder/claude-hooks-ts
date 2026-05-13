@@ -27,7 +27,7 @@ export const renderWorkerContract = (
     WORKER_CONTRACT_MARKER,
     `Worker ${workerType} (${role.mode}) contract:`,
     "- Own only the delegated subtask; do not silently expand to the user's whole objective.",
-    `- Scope: ${role.scopeRule}`,
+    `- Role boundary: ${role.scopeRule}`,
     `- ${role.outputContract}`,
     "- Return only strict JSON matching WorkerResult: summary, files_relevant, changes_made, commands_run, verification, risks, blockers, confidence, next_action?.",
     "- For changes_made entries, include path, summary, and diff_ref when an isolated diff/patch exists.",

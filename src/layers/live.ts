@@ -1,5 +1,7 @@
+import * as BunFileSystem from "@effect/platform-bun/BunFileSystem"
+import * as BunPath from "@effect/platform-bun/BunPath"
 import { Layer } from "effect"
-import { FileSystemLive } from "../services/filesystem.ts"
+import { FileSystemLiveBase } from "../services/filesystem.ts"
 import { ShellLive } from "../services/shell.ts"
 import { GitLive } from "../services/git.ts"
 import { ProjectLiveFor } from "../services/project.ts"
@@ -7,7 +9,7 @@ import { PolicyConfigLiveFor } from "../services/policy-config.ts"
 import { LedgerLiveBase } from "../services/ledger.ts"
 import { RedactLive } from "../services/redact.ts"
 import { BudgetLive } from "../services/budget.ts"
-import { SessionStateLive } from "../services/session-state.ts"
+import { SessionStateLiveBase } from "../services/session-state.ts"
 import { ApprovalsLiveBase } from "../services/approvals.ts"
 import { ElicitationsLiveBase } from "../services/elicitations.ts"
 import { ClaudeSubprocessLive } from "../services/claude-subprocess.ts"
@@ -16,7 +18,8 @@ import { ClassifierTelemetryLiveBase } from "../services/classifier-telemetry.ts
 import { RuntimeConfigLive } from "../services/runtime-config.ts"
 import { HookFailureLive } from "../services/hook-failure.ts"
 import { CommandRunnerPlatformLive } from "../services/command-runner.ts"
-import { EventStoreLive } from "../services/event-store.ts"
+import { EventStoreLiveBase } from "../services/event-store.ts"
+import { FileLockLive } from "../services/file-lock.ts"
 import { WorkerQueueLive } from "../services/worker-queue.ts"
 import { WorkerRunsLive } from "../services/worker-runs.ts"
 import { WorkerAggregationLive } from "../services/worker-aggregation.ts"
@@ -25,6 +28,11 @@ import { WorkerExecutorLive, WorkerSupervisorLive } from "../services/worker-sup
 
 export const makeAppLive = (root: string = process.cwd()) => {
   const runtime = RuntimeConfigLive
+  const fileLock = Layer.provide(
+    FileLockLive,
+    Layer.mergeAll(BunFileSystem.layer, BunPath.layer, runtime),
+  )
+  const eventStore = Layer.provide(EventStoreLiveBase, fileLock)
   const eventBacked = Layer.provideMerge(
     Layer.mergeAll(
       LedgerLiveBase(root),
@@ -34,7 +42,7 @@ export const makeAppLive = (root: string = process.cwd()) => {
       WorkerQueueLive(root),
       WorkerRunsLive(root),
     ),
-    Layer.mergeAll(EventStoreLive, runtime),
+    Layer.mergeAll(eventStore, runtime, fileLock),
   )
   const commandBase = Layer.provideMerge(
     Layer.mergeAll(ShellLive, GitLive, ClaudeSubprocessLive),
@@ -48,13 +56,13 @@ export const makeAppLive = (root: string = process.cwd()) => {
   return Layer.mergeAll(
     runtime,
     HookFailureLive,
-    FileSystemLive,
+    Layer.provide(FileSystemLiveBase, fileLock),
     workerRuntime,
     ProjectLiveFor(root),
     PolicyConfigLiveFor(root),
     RedactLive,
     BudgetLive,
-    SessionStateLive(root),
+    Layer.provide(SessionStateLiveBase(root), fileLock),
     InferenceLive,
   )
 }

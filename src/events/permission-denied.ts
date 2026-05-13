@@ -28,7 +28,7 @@ const permissionDeniedStream = (root: string) =>
     "permission-denials",
     path.join(root, ".claude-hooks", "state", "permission-denials.jsonl"),
     PermissionDeniedRecordSchema,
-    { maxRecords: TAIL_LINES },
+    { maxRecords: TAIL_LINES, strictTail: true },
   );
 
 /**

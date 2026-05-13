@@ -78,13 +78,15 @@ The package wires these services into the app layer:
 - `WorkerSupervisorLive` enqueues, consumes, times out, retries, and completes
   worker jobs. Retry policy is a `Schedule`; write workers are serially
   isolated by default. Serial mode prevents parallel write workers, but
-  changed-file outputs are not integration-ready unless a patch/worktree mode
-  captured an isolated patch.
-- `workerWriteIsolation=worktree` / `patch` runs write workers in a temporary
-  git worktree, captures the resulting binary diff under
+  changed-file outputs are not integration-ready unless worktree mode captured
+  an isolated patch.
+- `workerWriteIsolation=worktree` runs write workers in a temporary git
+  worktree, captures the resulting binary diff under
   `.claude-hooks/state/workers/patches/<worker_id>.patch`, and removes the
-  worktree after execution. These modes require the source worktree to be
-  clean so workers cannot silently miss uncommitted parent edits.
+  worktree after execution. This mode requires the source worktree to be clean
+  so workers cannot silently miss uncommitted parent edits. The legacy `patch`
+  setting is accepted as a compatibility alias for `worktree`; it is not a
+  separate isolation mode.
 - `WorkerAggregationLive` summarizes session results and detects same-file
   write conflicts before integration. Its summary includes active/completed/
   failed worker ids, changed files, risks, blockers, an integration plan, and
@@ -110,9 +112,14 @@ state files:
 - `cancel <worker_id> [--reason <text>] [--json]`
 - `retry <worker_id> --prompt <text> [--json]`
 
-`retry` requires a fresh prompt because raw prompts are intentionally not
-persisted. The queue still persists only redacted job payloads and the run
-ledger stores only prompt hashes.
+`retry` requires a fresh prompt because run records intentionally store only
+prompt hashes. The queue persists replay-safe job offers plus a separate claim
+ledger, uses lease-based claims so stale claimed jobs can replay after a crash,
+and acknowledges jobs only after supervisor execution finishes. Worker payload
+prompts are persisted only as a bounded redaction descriptor containing prompt
+hash and size metadata; raw prompt text is never written to the queue ledger.
+Legacy prompt-only payloads that only contain an opaque redaction marker are
+completed as unreplayable during recovery.
 
 ## Minimal-lift rationale
 

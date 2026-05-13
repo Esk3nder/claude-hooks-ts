@@ -7,6 +7,7 @@ import * as path from "node:path"
 import { EventStoreError } from "../../src/schema/errors.ts"
 import { Elicitations, ElicitationsLive, ElicitationsLiveBase, ElicitationsTest, elicitationSignature, type ElicitationRecord } from "../../src/services/elicitations.ts"
 import { EventStore } from "../../src/services/event-store.ts"
+import { FileLockPlatformLive } from "../../src/services/file-lock.ts"
 
 const failingEventStore = (failure: EventStoreError): Layer.Layer<EventStore> =>
   Layer.succeed(
@@ -61,7 +62,14 @@ describe("Elicitations (test layer)", () => {
       Effect.gen(function* () {
         const e = yield* Elicitations
         return yield* Effect.either(e.lookup("/repo", "mcp.foo", "ask", "sig"))
-      }).pipe(Effect.provide(Layer.provide(ElicitationsLiveBase, failingEventStore(failure)))),
+      }).pipe(
+        Effect.provide(
+          Layer.provide(
+            ElicitationsLiveBase,
+            Layer.merge(failingEventStore(failure), FileLockPlatformLive),
+          ),
+        ),
+      ),
     )
 
     expect(result._tag).toBe("Left")

@@ -14,6 +14,7 @@ import {
 import type { WorkerResult } from "../../src/schema/worker-run.ts"
 import { AppTest } from "../../src/layers/test.ts"
 import { SessionState } from "../../src/services/session-state.ts"
+import { RuntimeConfigTest } from "../../src/services/runtime-config.ts"
 import { WorkerAggregation } from "../../src/services/worker-aggregation.ts"
 import { WorkerRuns } from "../../src/services/worker-runs.ts"
 
@@ -143,7 +144,7 @@ describe("worker runtime hook integration", () => {
         const runs = yield* WorkerRuns
         return {
           decision,
-          latest: yield* runs.get("agent-1"),
+          latest: yield* runs.get("session-1:agent-1"),
         }
       }).pipe(Effect.provide(AppTest)),
     )
@@ -165,7 +166,7 @@ describe("worker runtime hook integration", () => {
         const runs = yield* WorkerRuns
         return {
           decision,
-          latest: yield* runs.get("agent-bad"),
+          latest: yield* runs.get("session-1:agent-bad"),
         }
       }).pipe(Effect.provide(AppTest)),
     )
@@ -177,6 +178,30 @@ describe("worker runtime hook integration", () => {
     }
     expect(result.latest?.status).toBe("blocked")
     expect(result.latest?.blocked_reason).toContain("WorkerResult")
+  })
+
+  test("SubagentStop records unstructured read-only output when structured results are optional", async () => {
+    const result = await Effect.runPromise(
+      Effect.gen(function* () {
+        yield* handleSubagentStart(startPayload("helper", "agent-unstructured"))
+        const decision = yield* handleSubagentStop(
+          stopPayload("helper", "agent-unstructured", "plain text inspection result"),
+        )
+        const runs = yield* WorkerRuns
+        return {
+          decision,
+          latest: yield* runs.get("session-1:agent-unstructured"),
+        }
+      }).pipe(
+        Effect.provide(RuntimeConfigTest({ workerRequireStructuredResult: false })),
+        Effect.provide(AppTest),
+      ),
+    )
+
+    expect(result.decision).toEqual({})
+    expect(result.latest?.status).toBe("completed")
+    expect(result.latest?.result?.confidence).toBe("low")
+    expect(result.latest?.result?.risks.join("\n")).toContain("did not decode")
   })
 
   test("SubagentStop blocks read-only workers that report file changes", async () => {
@@ -196,7 +221,7 @@ describe("worker runtime hook integration", () => {
     }
   })
 
-  test("SubagentStop blocks write workers that changed files without passed verification", async () => {
+  test("native write-capable subagents are recorded read-only unless supervised", async () => {
     const decision = await Effect.runPromise(
       Effect.gen(function* () {
         yield* handleSubagentStart(startPayload("executor", "agent-unverified"))
@@ -222,11 +247,11 @@ describe("worker runtime hook integration", () => {
     expect("decision" in decision).toBe(true)
     if ("decision" in decision) {
       expect(decision.decision).toBe("block")
-      expect(decision.reason).toContain("verification not passed")
+      expect(decision.reason).toContain("read-only worker reported changes_made")
     }
   })
 
-  test("SubagentStop blocks write workers that report changes without an isolated patch", async () => {
+  test("native write-capable subagents cannot complete reported changes without supervisor isolation", async () => {
     const decision = await Effect.runPromise(
       Effect.gen(function* () {
         yield* handleSubagentStart(startPayload("executor", "agent-unisolated"))
@@ -239,7 +264,7 @@ describe("worker runtime hook integration", () => {
     expect("decision" in decision).toBe(true)
     if ("decision" in decision) {
       expect(decision.decision).toBe("block")
-      expect(decision.reason).toContain("captured isolated patch")
+      expect(decision.reason).toContain("read-only worker reported changes_made")
     }
   })
 
@@ -248,7 +273,7 @@ describe("worker runtime hook integration", () => {
       Effect.gen(function* () {
         yield* handleSubagentStart(startPayload("executor", "agent-isolated"))
         const runs = yield* WorkerRuns
-        yield* runs.complete("agent-isolated", workerResult("captured patch"), undefined, {
+        yield* runs.complete("session-1:agent-isolated", workerResult("captured patch"), undefined, {
           isolation: "worktree",
           workspace_path: "/tmp/worker-worktree",
           patch_path: "/repo/.claude-hooks/state/workers/patches/agent-isolated.patch",
@@ -258,14 +283,18 @@ describe("worker runtime hook integration", () => {
         )
         return {
           decision,
-          latest: yield* runs.get("agent-isolated"),
+          latest: yield* runs.get("session-1:agent-isolated"),
         }
       }).pipe(Effect.provide(AppTest)),
     )
 
-    expect(result.decision).toEqual({})
+    expect("decision" in result.decision).toBe(true)
+    if ("decision" in result.decision) {
+      expect(result.decision.decision).toBe("block")
+      expect(result.decision.reason).toContain("worker stop state update failed")
+    }
     expect(result.latest?.status).toBe("completed")
-    expect(result.latest?.result?.summary).toBe("final output")
+    expect(result.latest?.result?.summary).toBe("captured patch")
     expect(result.latest?.isolation).toBe("worktree")
     expect(result.latest?.workspace_path).toBe("/tmp/worker-worktree")
     expect(result.latest?.patch_path).toBe(
@@ -345,7 +374,30 @@ describe("worker runtime hook integration", () => {
     }
   })
 
-  test("write worker cannot write outside assigned scope", async () => {
+  test("read-only workers cannot run non-allowlisted Bash even when mutation detection misses it", async () => {
+    const decision = await Effect.runPromise(
+      Effect.gen(function* () {
+        yield* handleSubagentStart(startPayload("Explore", "agent-python"))
+        return yield* handlePreToolUse(
+          preTool("agent-python", "Bash", {
+            command: "python -c \"open('src/allowed/file.ts', 'w').write('x')\"",
+          }),
+        )
+      }).pipe(Effect.provide(AppTest)),
+    )
+
+    expect("hookSpecificOutput" in decision).toBe(true)
+    if ("hookSpecificOutput" in decision) {
+      const output = decision.hookSpecificOutput as {
+        readonly permissionDecision: string
+        readonly permissionDecisionReason: string
+      }
+      expect(output.permissionDecision).toBe("deny")
+      expect(output.permissionDecisionReason).toContain("read-only")
+    }
+  })
+
+  test("native write-capable subagent write tools are denied unless supervised", async () => {
     const decision = await Effect.runPromise(
       Effect.gen(function* () {
         yield* handleSubagentStart(startPayload("executor", "agent-1"))
@@ -365,11 +417,37 @@ describe("worker runtime hook integration", () => {
         readonly permissionDecisionReason: string
       }
       expect(output.permissionDecision).toBe("deny")
-      expect(output.permissionDecisionReason).toContain("outside assigned scope")
+      expect(output.permissionDecisionReason).toContain("read-only")
     }
   })
 
-  test("write worker may write inside assigned scope", async () => {
+  test("native write-capable subagent bare directory write attempts are denied read-only", async () => {
+    const decision = await Effect.runPromise(
+      Effect.gen(function* () {
+        yield* handleSubagentStart(
+          startPayload("executor", "agent-bare-scope", "Scope: src\nEdit only source files."),
+        )
+        return yield* handlePreToolUse(
+          preTool("agent-bare-scope", "Write", {
+            file_path: "docs/outside.md",
+            content: "outside bare scope",
+          }),
+        )
+      }).pipe(Effect.provide(AppTest)),
+    )
+
+    expect("hookSpecificOutput" in decision).toBe(true)
+    if ("hookSpecificOutput" in decision) {
+      const output = decision.hookSpecificOutput as {
+        readonly permissionDecision: string
+        readonly permissionDecisionReason: string
+      }
+      expect(output.permissionDecision).toBe("deny")
+      expect(output.permissionDecisionReason).toContain("read-only")
+    }
+  })
+
+  test("native write-capable subagent may not write inside assigned scope without supervisor isolation", async () => {
     const decision = await Effect.runPromise(
       Effect.gen(function* () {
         yield* handleSubagentStart(startPayload("executor", "agent-1"))
@@ -382,7 +460,38 @@ describe("worker runtime hook integration", () => {
       }).pipe(Effect.provide(AppTest)),
     )
 
-    expect(decision).toEqual({})
+    expect("hookSpecificOutput" in decision).toBe(true)
+    if ("hookSpecificOutput" in decision) {
+      const output = decision.hookSpecificOutput as {
+        readonly permissionDecision: string
+        readonly permissionDecisionReason: string
+      }
+      expect(output.permissionDecision).toBe("deny")
+      expect(output.permissionDecisionReason).toContain("read-only")
+    }
+  })
+
+  test("native write-capable subagent cannot use mutating Bash without supervisor isolation", async () => {
+    const decision = await Effect.runPromise(
+      Effect.gen(function* () {
+        yield* handleSubagentStart(startPayload("executor", "agent-bash-write"))
+        return yield* handlePreToolUse(
+          preTool("agent-bash-write", "Bash", {
+            command: "echo updated > src/allowed/file.ts",
+          }),
+        )
+      }).pipe(Effect.provide(AppTest)),
+    )
+
+    expect("hookSpecificOutput" in decision).toBe(true)
+    if ("hookSpecificOutput" in decision) {
+      const output = decision.hookSpecificOutput as {
+        readonly permissionDecision: string
+        readonly permissionDecisionReason: string
+      }
+      expect(output.permissionDecision).toBe("deny")
+      expect(output.permissionDecisionReason).toContain("read-only")
+    }
   })
 
   test("aggregation detects conflicting write-worker outputs", async () => {
@@ -420,6 +529,54 @@ describe("worker runtime hook integration", () => {
       },
     ])
     expect(summary.ready_for_integration).toBe(false)
+  })
+
+  test("aggregation detects conflicts from captured patch paths even when workers omit changes_made", async () => {
+    const summary = await Effect.runPromise(
+      Effect.gen(function* () {
+        const runs = yield* WorkerRuns
+        const aggregation = yield* WorkerAggregation
+        const noReportedChanges = {
+          ...workerResult("patch-only"),
+          changes_made: [],
+        }
+        yield* runs.createQueued({
+          worker_id: "worker-patch-1",
+          session_id: "session-1",
+          agent_type: "executor",
+          mode: "write-allowed",
+          prompt_hash: "prompt-hash-patch-1",
+          scope: "src/allowed/**",
+        })
+        yield* runs.complete("worker-patch-1", noReportedChanges, undefined, {
+          isolation: "worktree",
+          patch_path: "/tmp/worker-patch-1.patch",
+          patch_changed_files: ["src/allowed/file.ts"],
+        })
+        yield* runs.createQueued({
+          worker_id: "worker-patch-2",
+          session_id: "session-1",
+          agent_type: "test-engineer",
+          mode: "write-allowed",
+          prompt_hash: "prompt-hash-patch-2",
+          scope: "src/allowed/**",
+        })
+        yield* runs.complete("worker-patch-2", noReportedChanges, undefined, {
+          isolation: "worktree",
+          patch_path: "/tmp/worker-patch-2.patch",
+          patch_changed_files: ["src/allowed/file.ts"],
+        })
+        return yield* aggregation.summarizeSession("session-1")
+      }).pipe(Effect.provide(AppTest)),
+    )
+
+    expect(summary.files_changed).toEqual(["src/allowed/file.ts"])
+    expect(summary.conflicts).toEqual([
+      {
+        path: "src/allowed/file.ts",
+        worker_ids: ["worker-patch-1", "worker-patch-2"],
+      },
+    ])
   })
 
   test("aggregation blocks write-worker outputs without passed verification", async () => {
@@ -523,6 +680,40 @@ describe("worker runtime hook integration", () => {
           patch_path: "/tmp/worker-complete.patch",
         })
         yield* runs.markIntegrated("worker-complete")
+        return yield* handleTaskCompleted(taskCompletedPayload("parent-task-1"))
+      }).pipe(Effect.provide(AppTest)),
+    )
+
+    expect("decision" in decision).toBe(true)
+    if ("decision" in decision) {
+      expect(decision.decision).toBe("block")
+      expect(decision.reason).toContain("final verification")
+    }
+  })
+
+  test("TaskCompleted blocks when parent verification is older than worker integration", async () => {
+    const decision = await Effect.runPromise(
+      Effect.gen(function* () {
+        const runs = yield* WorkerRuns
+        const state = yield* SessionState
+        yield* runs.createQueued({
+          worker_id: "worker-stale-verification",
+          session_id: "session-1",
+          parent_task_id: "parent-task-1",
+          agent_type: "executor",
+          mode: "write-allowed",
+          prompt_hash: "prompt-hash-stale",
+          scope: "src/allowed/**",
+        })
+        yield* runs.complete("worker-stale-verification", workerResult("complete"), undefined, {
+          isolation: "worktree",
+          patch_path: "/tmp/worker-stale-verification.patch",
+        })
+        yield* state.update("session-1", {
+          verification_status: "passed",
+          verification_at: "2026-05-13T00:00:00.000Z",
+        })
+        yield* runs.markIntegrated("worker-stale-verification", "2026-05-13T00:01:00.000Z")
         return yield* handleTaskCompleted(taskCompletedPayload("parent-task-1"))
       }).pipe(Effect.provide(AppTest)),
     )

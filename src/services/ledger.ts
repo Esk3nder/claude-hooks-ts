@@ -4,6 +4,7 @@ import * as path from "node:path";
 import { LedgerError } from "../schema/errors.ts";
 import { eventStream, LedgerEntrySchema } from "../schema/events.ts";
 import { collectStream, EventStore, EventStoreLive, summarizeEventStoreError } from "./event-store.ts";
+import { safeStateSegment } from "./state-paths.ts";
 
 export interface LedgerEntry {
   readonly timestamp: number;
@@ -22,7 +23,7 @@ export interface LedgerApi {
 export class Ledger extends Context.Tag("Ledger")<Ledger, LedgerApi>() {}
 
 const sessionDir = (root: string, sessionId: string) =>
-  path.join(root, ".claude-hooks", "state", sessionId);
+  path.join(root, ".claude-hooks", "state", safeStateSegment(sessionId, "session"));
 
 const ledgerPath = (root: string, sessionId: string) =>
   path.join(sessionDir(root, sessionId), "ledger.jsonl");
@@ -32,6 +33,7 @@ const stateRoot = (root: string) => path.join(root, ".claude-hooks", "state");
 const ledgerStream = (root: string, sessionId: string) =>
   eventStream(`session-ledger:${sessionId}`, ledgerPath(root, sessionId), LedgerEntrySchema, {
     maxRecords: 1_000,
+    strictTail: true,
   });
 
 const isNodeErrorCode = (cause: unknown, code: string): boolean =>

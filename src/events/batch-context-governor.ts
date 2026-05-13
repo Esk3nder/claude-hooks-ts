@@ -3,6 +3,7 @@ import type { HookPayload } from "../schema/payloads.ts"
 import type { HookDecision } from "../schema/decisions.ts"
 import { NO_DECISION } from "../schema/decisions.ts"
 import { SessionState, type VerificationStatus } from "../services/session-state.ts"
+import { reportHookFailure } from "../services/hook-failure.ts"
 
 const EDIT_TOOLS = new Set(["Edit", "Write", "MultiEdit", "Update"])
 const READ_TOOLS = new Set(["Read"])
@@ -159,7 +160,16 @@ export const handlePostToolBatch = (
         .appendBatch(sessionId, batchEntries)
         .pipe(
           Effect.timeout("500 millis"),
-          Effect.orElseSucceed(() => undefined),
+          Effect.catchAll((cause) =>
+            reportHookFailure({
+              kind: "state_write_failed",
+              event: "PostToolBatch",
+              sessionId,
+              cause,
+              hookSafe: true,
+              context: { op: "session-state.appendBatch" },
+            }),
+          ),
         )
     }
 
@@ -180,7 +190,18 @@ export const handlePostToolBatch = (
           verification_status: verification,
           next_required_action: nextAction,
         })
-        .pipe(Effect.catchAll(() => Effect.succeed(undefined)))
+        .pipe(
+          Effect.catchAll((cause) =>
+            reportHookFailure({
+              kind: "state_write_failed",
+              event: "PostToolBatch",
+              sessionId,
+              cause,
+              hookSafe: true,
+              context: { op: "session-state.update" },
+            }),
+          ),
+        )
     }
 
     const summary: BatchSummary = {

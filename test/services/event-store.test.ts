@@ -55,6 +55,33 @@ describe("EventStoreLive", () => {
     }
   })
 
+  test("redacts camelCase sensitive aliases before JSONL persistence", async () => {
+    const root = mkdtempSync(join(tmpdir(), "chts-event-store-"))
+    try {
+      const stream = eventStream(
+        "camel-redact",
+        join(root, "events.jsonl"),
+        Schema.Struct({ toolInput: Schema.Unknown, promptText: Schema.Unknown }),
+      )
+      await Effect.runPromise(
+        Effect.gen(function* () {
+          const store = yield* EventStore
+          yield* store.append(stream, {
+            toolInput: { command: "cat ~/.ssh/id_rsa" },
+            promptText: "raw user prompt",
+          })
+        }).pipe(Effect.provide(EventStoreLive)),
+      )
+
+      const raw = readFileSync(join(root, "events.jsonl"), "utf8")
+      expect(raw).not.toContain("id_rsa")
+      expect(raw).not.toContain("raw user prompt")
+      expect(raw).toContain("\"redacted\":true")
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
   test("redacts circular sensitive values without failing append", async () => {
     const root = mkdtempSync(join(tmpdir(), "chts-events-"))
     try {
@@ -79,6 +106,34 @@ describe("EventStoreLive", () => {
       const persisted = readFileSync(file, "utf8")
       expect(persisted).toContain("redacted")
       expect(persisted).not.toContain("secret prompt")
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  test("array caps preserve the stream schema", async () => {
+    const root = mkdtempSync(join(tmpdir(), "chts-events-"))
+    try {
+      const file = join(root, "array-cap.jsonl")
+      const stream = eventStream(
+        "array-cap",
+        file,
+        Schema.Struct({ id: Schema.String, items: Schema.Array(Schema.String) }),
+      )
+      const records = await Effect.runPromise(
+        Effect.gen(function* () {
+          const store = yield* EventStore
+          yield* store.append(stream, {
+            id: "evt-array",
+            items: Array.from({ length: 150 }, (_, index) => `item-${index}`),
+          })
+          return yield* Stream.runCollect(store.tail(stream, 1)).pipe(Effect.map(Chunk.toReadonlyArray))
+        }).pipe(Effect.provide(EventStoreLive)),
+      )
+
+      expect(records).toHaveLength(1)
+      expect(records[0]?.items).toHaveLength(100)
+      expect(records[0]?.items[99]).toBe("item-99")
     } finally {
       rmSync(root, { recursive: true, force: true })
     }
@@ -148,12 +203,31 @@ describe("EventStoreLive", () => {
     }
   })
 
-  test("tail rejects a malformed final JSONL line without a trailing newline", async () => {
+  test("tail skips malformed JSONL lines instead of failing the whole hot read", async () => {
     const root = mkdtempSync(join(tmpdir(), "chts-events-"))
     try {
       const file = join(root, "bad-no-newline.jsonl")
-      writeFileSync(file, `${JSON.stringify({ id: 1 })}\n{"id":`)
+      writeFileSync(file, `${JSON.stringify({ id: 1 })}\n{"id":\n${JSON.stringify({ id: 2 })}`)
       const stream = eventStream("bad-no-newline", file, Schema.Struct({ id: Schema.Number }))
+      const records = await Effect.runPromise(
+        Effect.gen(function* () {
+          const store = yield* EventStore
+          return yield* Stream.runCollect(store.tail(stream, 10)).pipe(Effect.map(Chunk.toReadonlyArray))
+        }).pipe(Effect.provide(EventStoreLive)),
+      )
+
+      expect(records.map((r) => r.id)).toEqual([1, 2])
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  test("strict tails fail closed on malformed JSONL lines", async () => {
+    const root = mkdtempSync(join(tmpdir(), "chts-events-"))
+    try {
+      const file = join(root, "strict-bad.jsonl")
+      writeFileSync(file, `${JSON.stringify({ id: 1 })}\n{"id":\n${JSON.stringify({ id: 2 })}`)
+      const stream = eventStream("strict-bad", file, Schema.Struct({ id: Schema.Number }), { strictTail: true })
       const result = await Effect.runPromiseExit(
         Effect.gen(function* () {
           const store = yield* EventStore
@@ -162,6 +236,28 @@ describe("EventStoreLive", () => {
       )
 
       expect(result._tag).toBe("Failure")
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  test("strict tails ignore a partial trailing JSONL line from a crashed append", async () => {
+    const root = mkdtempSync(join(tmpdir(), "chts-events-"))
+    try {
+      const file = join(root, "strict-partial.jsonl")
+      const stream = eventStream("strict-partial", file, Schema.Struct({ id: Schema.String }), {
+        strictTail: true,
+      })
+      writeFileSync(file, `{"id":"ok"}\n{"id":`, "utf8")
+
+      const records = await Effect.runPromise(
+        Effect.gen(function* () {
+          const store = yield* EventStore
+          return yield* Stream.runCollect(store.tail(stream, 10)).pipe(Effect.map(Chunk.toReadonlyArray))
+        }).pipe(Effect.provide(EventStoreLive)),
+      )
+
+      expect(records).toEqual([{ id: "ok" }])
     } finally {
       rmSync(root, { recursive: true, force: true })
     }

@@ -11,7 +11,7 @@ import {
 } from "../../src/services/session-state.ts"
 
 describe("SessionState schema validation", () => {
-  test("corrupted JSON (schema mismatch) → EMPTY + .corrupt-*.bak preserved + warning log", async () => {
+  test("corrupted JSON (schema mismatch) → fail closed + .corrupt-*.bak preserved + warning log", async () => {
     const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "session-state-"))
     const sid = "sid-bad"
     const stateDir = path.join(tmp, ".claude-hooks", "state")
@@ -34,13 +34,13 @@ describe("SessionState schema validation", () => {
     }
 
     try {
-      const r = await Effect.runPromise(
+      const exit = await Effect.runPromiseExit(
         Effect.gen(function* () {
           const s = yield* SessionState
           return yield* s.get(sid)
         }).pipe(Effect.provide(SessionStateLive(tmp))),
       )
-      expect(r).toEqual(EMPTY_SESSION_STATE)
+      expect(exit._tag).toBe("Failure")
     } finally {
       console.error = origError
       console.log = origLog
@@ -141,5 +141,29 @@ describe("SessionState schema validation", () => {
     expect(r.next_required_action).toBe("ship it")
 
     await fs.rm(tmp, { recursive: true, force: true })
+  })
+
+  test("session IDs are sanitized before becoming state file names", async () => {
+    const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "session-state-"))
+    const maliciousSid = "../escape"
+    try {
+      await Effect.runPromise(
+        Effect.gen(function* () {
+          const s = yield* SessionState
+          yield* s.update(maliciousSid, { files_changed: ["safe.ts"] })
+          return yield* s.get(maliciousSid)
+        }).pipe(Effect.provide(SessionStateLive(tmp))),
+      )
+
+      expect(fsSync.existsSync(path.join(tmp, ".claude-hooks", "escape.json"))).toBe(false)
+      const stateDir = path.join(tmp, ".claude-hooks", "state")
+      const files = fsSync.readdirSync(stateDir)
+      expect(files.length).toBe(1)
+      expect(files[0]).toStartWith("escape-")
+      expect(files[0]).toEndWith(".json")
+      expect(files[0]).not.toContain("..")
+    } finally {
+      await fs.rm(tmp, { recursive: true, force: true })
+    }
   })
 })

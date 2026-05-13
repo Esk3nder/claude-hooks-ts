@@ -1,12 +1,15 @@
 import { describe, expect, test } from "bun:test"
-import { Effect, Schema } from "effect"
+import { Effect, Layer, Schema } from "effect"
 import { handleStop } from "../../src/events/stop-definition-of-done.ts"
+import { FsError } from "../../src/schema/errors.ts"
 import { HookPayload } from "../../src/schema/payloads.ts"
 import {
   SessionState,
   SessionStateTest,
   EMPTY_SESSION_STATE,
+  type SessionStateApi,
 } from "../../src/services/session-state.ts"
+import { HookFailureTest } from "../../src/services/hook-failure.ts"
 
 const decode = (raw: unknown) => Schema.decodeUnknownSync(HookPayload)(raw)
 
@@ -105,6 +108,37 @@ describe("handleStop (definition of done)", () => {
     const layer = SessionStateTest()
     const d = await Effect.runPromise(handleStop(stop("sid-5")).pipe(Effect.provide(layer)))
     expect(d).toEqual({})
+  })
+
+  test("blocks and reports typed failure when session state cannot be read", async () => {
+    const failure = new FsError({
+      op: "session-state.get",
+      path: "/repo/.claude-hooks/state/sid-fail.json",
+      message: "permission denied",
+    })
+    const stateLayer = Layer.succeed(
+      SessionState,
+      SessionState.of({
+        get: (() => Effect.fail(failure)) as SessionStateApi["get"],
+        update: (() => Effect.void) as SessionStateApi["update"],
+        append: (() => Effect.void) as SessionStateApi["append"],
+        appendBatch: (() => Effect.void) as SessionStateApi["appendBatch"],
+        reset: () => Effect.void,
+      }),
+    )
+    const hookFailure = HookFailureTest()
+
+    const d = await Effect.runPromise(
+      handleStop(stop("sid-fail")).pipe(
+        Effect.provide(Layer.merge(stateLayer, hookFailure.layer)),
+      ),
+    )
+
+    expect((d as { decision?: string }).decision).toBe("block")
+    expect(hookFailure.records()[0]?.kind).toBe("state_read_failed")
+    expect(hookFailure.records()[0]?.fallbackDecision).toMatchObject({
+      decision: "block",
+    })
   })
 
   test("payload may carry assistant_message field (per official spec) — does not affect decision", async () => {

@@ -1,4 +1,5 @@
 import { Schema } from "effect"
+import { firstNonBlank } from "./normalized.ts"
 
 export const RawWorkerLaunchInput = Schema.Struct({
   description: Schema.String,
@@ -18,15 +19,6 @@ export const NormalizedWorkerLaunchInput = Schema.Struct({
 export type NormalizedWorkerLaunchInput = Schema.Schema.Type<
   typeof NormalizedWorkerLaunchInput
 >
-
-const firstNonBlank = (
-  ...values: ReadonlyArray<string | undefined>
-): string | undefined => {
-  for (const value of values) {
-    if (typeof value === "string" && value.trim().length > 0) return value
-  }
-  return undefined
-}
 
 export const normalizeWorkerLaunchInput = (
   input: RawWorkerLaunchInput,

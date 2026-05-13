@@ -6,7 +6,7 @@ import { createInterface } from "node:readline";
 import { FsError } from "../schema/errors.ts";
 import { ApprovalRecordSchema, eventStream } from "../schema/events.ts";
 import { collectStream, EventStore, EventStoreLive, summarizeEventStoreError } from "./event-store.ts";
-import { withFileLock } from "./file-lock.ts";
+import { FileLock, FileLockPlatformLive } from "./file-lock.ts";
 
 export type ApprovalStatus = "approved" | "denied" | "pending";
 
@@ -65,6 +65,7 @@ const metaPath = (cwd: string): string =>
 const approvalsStream = (cwd: string) =>
   eventStream(`approvals:${cwd}`, ledgerPath(cwd), ApprovalRecordSchema, {
     maxRecords: 1_000,
+    strictTail: true,
   });
 
 const latestMatching = (
@@ -136,10 +137,21 @@ const rewriteApprovalLedger = async (
   }
 };
 
-export const ApprovalsLiveBase: Layer.Layer<Approvals, never, EventStore> = Layer.effect(
+const fsError = (op: string, file: string, cause: unknown): FsError =>
+  cause instanceof FsError
+    ? cause
+    : new FsError({
+        op,
+        path: file,
+        message: String(cause),
+        cause,
+      });
+
+export const ApprovalsLiveBase: Layer.Layer<Approvals, never, EventStore | FileLock> = Layer.effect(
   Approvals,
   Effect.gen(function* () {
     const store = yield* EventStore
+    const locks = yield* FileLock
     const readRecent = (cwd: string) => collectStream(store.tail(approvalsStream(cwd), 1_000))
     return Approvals.of({
       lookup: (cwd, pattern) =>
@@ -182,11 +194,21 @@ export const ApprovalsLiveBase: Layer.Layer<Approvals, never, EventStore> = Laye
               await writeMeta(metaPath(cwd), now);
               return;
             }
-            await withFileLock(file, async () => {
-              if (!fsSync.existsSync(file)) return;
-              const cutoff = now - maxAgeMs;
-              await rewriteApprovalLedger(file, (r) => r.cwd !== cwd || r.recordedAt >= cutoff);
-            });
+            await Effect.runPromise(
+              locks.withLock(
+                file,
+                Effect.tryPromise({
+                  try: async () => {
+                    if (!fsSync.existsSync(file)) return;
+                    const cutoff = now - maxAgeMs;
+                    await rewriteApprovalLedger(file, (r) => r.cwd !== cwd || r.recordedAt >= cutoff);
+                  },
+                  catch: (cause) => fsError("approvals.gc", file, cause),
+                }),
+              ).pipe(
+                Effect.mapError((cause) => fsError("approvals.gc", file, cause)),
+              ),
+            );
             await writeMeta(metaPath(cwd), now);
           },
           catch: (cause) =>
@@ -201,7 +223,8 @@ export const ApprovalsLiveBase: Layer.Layer<Approvals, never, EventStore> = Laye
   }),
 );
 
-export const ApprovalsLive: Layer.Layer<Approvals> = Layer.provide(ApprovalsLiveBase, EventStoreLive)
+export const ApprovalsLive: Layer.Layer<Approvals> =
+  Layer.provide(ApprovalsLiveBase, Layer.mergeAll(EventStoreLive, FileLockPlatformLive))
 
 export const ApprovalsTest = (
   initial: ReadonlyArray<ApprovalRecord> = [],

@@ -14,6 +14,7 @@ export const SessionStateRecordSchema = Schema.Struct({
   commands_failed: Schema.Array(Schema.String),
   tests_run: Schema.Array(Schema.String),
   verification_status: Schema.Literal("passed", "failed", "none"),
+  verification_at: Schema.NullOr(Schema.String),
   next_required_action: Schema.NullOr(Schema.String),
   stop_blocked_once: Schema.Boolean,
   source_urls: Schema.Array(Schema.String),

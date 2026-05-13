@@ -17,7 +17,7 @@ import {
   redactForPersistence,
   summarizeEventStoreError,
 } from "./event-store.ts"
-import { withFileLock } from "./file-lock.ts"
+import { FileLock, FileLockPlatformLive } from "./file-lock.ts"
 
 export type ElicitationAction = "accept" | "decline" | "cancel"
 
@@ -42,8 +42,17 @@ export interface PendingElicitationRecord {
 
 export const DEFAULT_GC_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000
 
+const signatureInput = (value: unknown): string => {
+  try {
+    const serialized = JSON.stringify(value ?? null)
+    return typeof serialized === "string" ? serialized : String(value)
+  } catch {
+    return String(value)
+  }
+}
+
 export const elicitationSignature = (value: unknown): string =>
-  crypto.createHash("sha1").update(JSON.stringify(value ?? null)).digest("hex").slice(0, 16)
+  crypto.createHash("sha1").update(signatureInput(value)).digest("hex").slice(0, 16)
 
 const sanitizeReplayContent = (content: unknown): unknown =>
   typeof content === "string" || Array.isArray(content)
@@ -72,12 +81,14 @@ const pendingLedgerPath = (cwd: string): string => path.join(cwd, ".claude-hooks
 const elicitationsStream = (cwd: string) =>
   eventStream(`elicitations:${cwd}`, ledgerPath(cwd), ElicitationRecordSchema, {
     maxRecords: 1_000,
+    strictTail: true,
     redact: sanitizeElicitationRecord,
   })
 
 const pendingElicitationsStream = (cwd: string) =>
   eventStream(`elicitations-pending:${cwd}`, pendingLedgerPath(cwd), PendingElicitationRecordSchema, {
     maxRecords: 1_000,
+    strictTail: true,
   })
 
 const latestMatching = (records: ReadonlyArray<ElicitationRecord>, cwd: string, server: string, tool: string, signature: string): ElicitationRecord | null => {
@@ -113,6 +124,11 @@ const eventStoreFsError = (op: string, file: string, cause: unknown): FsError =>
     cause: summary,
   })
 }
+
+const fsError = (op: string, file: string, cause: unknown): FsError =>
+  cause instanceof FsError
+    ? cause
+    : new FsError({ op, path: file, message: String(cause), cause })
 
 const rewriteJsonlLedger = async <A>(
   file: string,
@@ -158,10 +174,11 @@ const rewriteJsonlLedger = async <A>(
   }
 }
 
-export const ElicitationsLiveBase: Layer.Layer<Elicitations, never, EventStore> = Layer.effect(
+export const ElicitationsLiveBase: Layer.Layer<Elicitations, never, EventStore | FileLock> = Layer.effect(
   Elicitations,
   Effect.gen(function* () {
     const store = yield* EventStore
+    const locks = yield* FileLock
     const readRecent = (cwd: string) => collectStream(store.tail(elicitationsStream(cwd), 1_000))
     const readRecentPending = (cwd: string) => collectStream(store.tail(pendingElicitationsStream(cwd), 1_000))
     return Elicitations.of({
@@ -192,26 +209,42 @@ export const ElicitationsLiveBase: Layer.Layer<Elicitations, never, EventStore> 
           const file = ledgerPath(cwd)
           const cutoff = now - maxAgeMs
           if (fsSync.existsSync(file)) {
-            await withFileLock(file, async () => {
-              if (!fsSync.existsSync(file)) return
-              await rewriteJsonlLedger(
+            await Effect.runPromise(
+              locks.withLock(
                 file,
-                ElicitationRecordSchema,
-                (r) => r.cwd !== cwd || r.ts >= cutoff,
-                sanitizeElicitationRecord,
-              )
-            })
+                Effect.tryPromise({
+                  try: async () => {
+                    if (!fsSync.existsSync(file)) return
+                    await rewriteJsonlLedger(
+                      file,
+                      ElicitationRecordSchema,
+                      (r) => r.cwd !== cwd || r.ts >= cutoff,
+                      sanitizeElicitationRecord,
+                    )
+                  },
+                  catch: (cause) => fsError("elicitations.gc", file, cause),
+                }),
+              ).pipe(Effect.mapError((cause) => fsError("elicitations.gc", file, cause))),
+            )
           }
           const pendingFile = pendingLedgerPath(cwd)
           if (fsSync.existsSync(pendingFile)) {
-            await withFileLock(pendingFile, async () => {
-              if (!fsSync.existsSync(pendingFile)) return
-              await rewriteJsonlLedger(
+            await Effect.runPromise(
+              locks.withLock(
                 pendingFile,
-                PendingElicitationRecordSchema,
-                (r) => r.cwd !== cwd || r.ts >= cutoff,
-              )
-            })
+                Effect.tryPromise({
+                  try: async () => {
+                    if (!fsSync.existsSync(pendingFile)) return
+                    await rewriteJsonlLedger(
+                      pendingFile,
+                      PendingElicitationRecordSchema,
+                      (r) => r.cwd !== cwd || r.ts >= cutoff,
+                    )
+                  },
+                  catch: (cause) => fsError("elicitations.gc", pendingFile, cause),
+                }),
+              ).pipe(Effect.mapError((cause) => fsError("elicitations.gc", pendingFile, cause))),
+            )
           }
         },
         catch: (cause) => new FsError({ op: "elicitations.gc", path: ledgerPath(cwd), message: String(cause), cause }),
@@ -220,7 +253,8 @@ export const ElicitationsLiveBase: Layer.Layer<Elicitations, never, EventStore> 
   }),
 )
 
-export const ElicitationsLive: Layer.Layer<Elicitations> = Layer.provide(ElicitationsLiveBase, EventStoreLive)
+export const ElicitationsLive: Layer.Layer<Elicitations> =
+  Layer.provide(ElicitationsLiveBase, Layer.mergeAll(EventStoreLive, FileLockPlatformLive))
 
 export const ElicitationsTest = (
   initial: ReadonlyArray<ElicitationRecord> = [],

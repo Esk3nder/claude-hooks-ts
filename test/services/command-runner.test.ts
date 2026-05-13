@@ -32,6 +32,16 @@ describe("CommandRunner", () => {
     expect(result.stdout).toContain("output truncated at 3 bytes")
   })
 
+  test("flushes a partial UTF-8 character when truncation splits it", async () => {
+    const result = await runCommandLive("printf", ["€x"], {
+      stdoutMaxBytes: 2,
+    })
+
+    expect(result.exitCode).toBe(0)
+    expect(result.stdout).toContain("�")
+    expect(result.stdout).toContain("output truncated at 2 bytes")
+  })
+
   test("preserves multibyte UTF-8 split across process writes", async () => {
     const result = await runCommandLive("bun", [
       "-e",

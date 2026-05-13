@@ -247,7 +247,7 @@ describe("WorkerRunsLive", () => {
     }
   })
 
-  test("new completions clear stale patch and integration metadata unless supplied", async () => {
+  test("completed worker runs are idempotent and cannot be overwritten by stale completions", async () => {
     const root = mkdtempSync(join(tmpdir(), "chts-worker-runs-"))
     try {
       const latest = await Effect.runPromise(
@@ -267,19 +267,69 @@ describe("WorkerRunsLive", () => {
             patch_path: "/tmp/worker-1.patch",
           })
           yield* runs.markIntegrated("worker-1")
-          yield* runs.complete("worker-1", {
+          const second = yield* runs.complete("worker-1", {
             ...validResult("second"),
             changes_made: [],
-          })
-          return yield* runs.get("worker-1")
+          }).pipe(Effect.either)
+          return { second, latest: yield* runs.get("worker-1") }
         }).pipe(Effect.provide(WorkerRunsLive(root)), Effect.provide(EventStoreLive)),
       )
 
-      expect(latest?.status).toBe("completed")
-      expect(latest?.result?.summary).toBe("second")
-      expect(latest?.patch_path).toBeUndefined()
-      expect(latest?.integration_status).toBeUndefined()
-      expect(latest?.integrated_at).toBeUndefined()
+      expect(latest.latest?.status).toBe("completed")
+      expect(latest.latest?.result?.summary).toBe("first")
+      expect(latest.second._tag).toBe("Left")
+      expect(latest.latest?.patch_path).toBe("/tmp/worker-1.patch")
+      expect(latest.latest?.integration_status).toBe("applied")
+      expect(latest.latest?.integrated_at).toBeDefined()
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  test("idempotent completion is insensitive to result object key order", async () => {
+    const root = mkdtempSync(join(tmpdir(), "chts-worker-runs-"))
+    try {
+      const result = await Effect.runPromise(
+        Effect.gen(function* () {
+          const runs = yield* WorkerRuns
+          yield* runs.createQueued({
+            worker_id: "worker-ordered",
+            session_id: "session-1",
+            agent_type: "executor",
+            mode: "write-allowed",
+            prompt_hash: "prompt-hash-ordered",
+            scope: "src/**",
+          })
+          yield* runs.markRunning("worker-ordered")
+          const completion = validResult("same")
+          yield* runs.complete("worker-ordered", completion, undefined, {
+            isolation: "worktree",
+            patch_path: "/tmp/worker-ordered.patch",
+          })
+          const reordered: WorkerResult = {
+            confidence: "high",
+            blockers: [],
+            risks: [],
+            verification: completion.verification,
+            commands_run: completion.commands_run,
+            changes_made: completion.changes_made,
+            files_relevant: completion.files_relevant,
+            summary: "same",
+          }
+          const second = yield* runs.complete("worker-ordered", reordered, undefined, {
+            isolation: "worktree",
+            patch_path: "/tmp/worker-ordered.patch",
+          }).pipe(Effect.either)
+          return {
+            second,
+            latest: yield* runs.get("worker-ordered"),
+          }
+        }).pipe(Effect.provide(WorkerRunsLive(root)), Effect.provide(EventStoreLive)),
+      )
+
+      expect(result.second._tag).toBe("Right")
+      expect(result.latest?.status).toBe("completed")
+      expect(result.latest?.result?.summary).toBe("same")
     } finally {
       rmSync(root, { recursive: true, force: true })
     }
@@ -341,6 +391,41 @@ describe("WorkerRunsLive", () => {
       expect(result.latest?.status).toBe("running")
       expect(result.latest?.prompt_hash).toBe("prompt-hash-1")
       expect(result.latest?.scope).toBe("src/**")
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  test("terminal runs cannot be restarted or failed again", async () => {
+    const root = mkdtempSync(join(tmpdir(), "chts-worker-runs-"))
+    try {
+      const result = await Effect.runPromise(
+        Effect.gen(function* () {
+          const runs = yield* WorkerRuns
+          yield* runs.createQueued({
+            worker_id: "worker-terminal",
+            session_id: "session-1",
+            agent_type: "executor",
+            mode: "write-allowed",
+            prompt_hash: "prompt-hash-terminal",
+            scope: "src/**",
+          })
+          yield* runs.markRunning("worker-terminal")
+          yield* runs.complete("worker-terminal", validResult("done"))
+          const restart = yield* runs.markRunning("worker-terminal").pipe(Effect.either)
+          const refail = yield* runs.fail("worker-terminal", "late failure").pipe(Effect.either)
+          return {
+            restart,
+            refail,
+            latest: yield* runs.get("worker-terminal"),
+          }
+        }).pipe(Effect.provide(WorkerRunsLive(root)), Effect.provide(EventStoreLive)),
+      )
+
+      expect(result.restart._tag).toBe("Left")
+      expect(result.refail._tag).toBe("Left")
+      expect(result.latest?.status).toBe("completed")
+      expect(result.latest?.result?.summary).toBe("done")
     } finally {
       rmSync(root, { recursive: true, force: true })
     }

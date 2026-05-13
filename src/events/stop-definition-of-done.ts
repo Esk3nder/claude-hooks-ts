@@ -15,6 +15,7 @@ import {
 } from "../policies/verify-map.ts"
 import { runCommandLive, runShellCommandLive } from "../services/command-runner.ts"
 import { logWarning } from "../services/diagnostics.ts"
+import { reportHookFailure } from "../services/hook-failure.ts"
 const REGEN_TIMEOUT_MS = 10_000
 // Total wall-clock budget the Stop handler is willing to spend. Sits under
 // the dispatcher Stop cap (28_000 ms) and the installer's external 30_000 ms
@@ -27,6 +28,23 @@ const BLOCK_REASON =
 
 const RESEARCH_BLOCK_REASON =
   "Research answer is not ready: source ledger has unsupported claims. Reconcile claims to sources and state uncertainties before final response."
+
+const STATE_READ_BLOCK_REASON =
+  "Hook state could not be read, so verification status is unknown. Re-run the smallest relevant verification command, then try Stop again."
+
+const reportStateWriteFailure = (
+  sessionId: string,
+  op: string,
+  cause: unknown,
+): Effect.Effect<void> =>
+  reportHookFailure({
+    kind: "state_write_failed",
+    event: "Stop",
+    sessionId,
+    cause,
+    hookSafe: true,
+    context: { op },
+  })
 
 /**
  * Stop handler.
@@ -44,16 +62,24 @@ export const handleStop = (
     if (payload._tag !== "Stop") return NO_DECISION
     const state = yield* SessionState
     const sid = payload.session_id
-    const record = yield* state
-      .get(sid)
-      .pipe(
-        Effect.catchAll((cause) => {
-          return logWarning(
-            `[Stop] session-state op=get failed: sid=${sid} cause=${String(cause).slice(0, 160)}`,
-          ).pipe(Effect.as(null))
-        }),
-      )
-    if (record === null) return NO_DECISION
+    const stateReadFallback: HookDecision = {
+      decision: "block",
+      reason: STATE_READ_BLOCK_REASON,
+    }
+    const recordEither = yield* Effect.either(state.get(sid))
+    if (recordEither._tag === "Left") {
+      yield* reportHookFailure({
+        kind: "state_read_failed",
+        event: "Stop",
+        sessionId: sid,
+        cause: recordEither.left,
+        fallbackDecision: stateReadFallback,
+        hookSafe: true,
+        context: { op: "session-state.get" },
+      })
+      return stateReadFallback
+    }
+    const record = recordEither.right
     // Local loop-guard: never block twice in the same session.
     if (record.stop_blocked_once) return NO_DECISION
 
@@ -78,13 +104,7 @@ export const handleStop = (
     if (isaVerdict._tag === "block") {
       yield* state
         .update(sid, { stop_blocked_once: true })
-        .pipe(
-          Effect.catchAll((cause) => {
-            return logWarning(
-              `[Stop] session-state op=stop-blocked-once failed: sid=${sid} cause=${String(cause).slice(0, 160)}`,
-            )
-          }),
-        )
+        .pipe(Effect.catchAll((cause) => reportStateWriteFailure(sid, "stop-blocked-once", cause)))
       const out: HookDecision = {
         decision: "block",
         reason: isaVerdict.reason,
@@ -105,13 +125,7 @@ export const handleStop = (
     if (record.requires_web_sources && record.source_urls.length === 0) {
       yield* state
         .update(sid, { stop_blocked_once: true })
-        .pipe(
-          Effect.catchAll((cause) => {
-            return logWarning(
-              `[Stop] session-state op=stop-blocked-once failed: sid=${sid} cause=${String(cause).slice(0, 160)}`,
-            )
-          }),
-        )
+        .pipe(Effect.catchAll((cause) => reportStateWriteFailure(sid, "stop-blocked-once", cause)))
       const out: HookDecision = {
         decision: "block",
         reason: RESEARCH_BLOCK_REASON,
@@ -159,14 +173,14 @@ export const handleStop = (
             .update(sid, {
               verification_status: passed ? "passed" : "failed",
             })
-            .pipe(Effect.catchAll(() => Effect.succeed(undefined)))
+            .pipe(Effect.catchAll((cause) => reportStateWriteFailure(sid, "verification-status", cause)))
           yield* state
             .append(
               sid,
               passed ? "tests_run" : "commands_failed",
               result.commandPreview,
             )
-            .pipe(Effect.catchAll(() => Effect.succeed(undefined)))
+            .pipe(Effect.catchAll((cause) => reportStateWriteFailure(sid, "verification-command", cause)))
 
           if (passed) {
             verifiedThisStop = true
@@ -193,13 +207,7 @@ export const handleStop = (
     ) {
       yield* state
         .update(sid, { stop_blocked_once: true })
-        .pipe(
-          Effect.catchAll((cause) => {
-            return logWarning(
-              `[Stop] session-state op=stop-blocked-once failed: sid=${sid} cause=${String(cause).slice(0, 160)}`,
-            )
-          }),
-        )
+        .pipe(Effect.catchAll((cause) => reportStateWriteFailure(sid, "stop-blocked-once", cause)))
       const out: HookDecision = {
         decision: "block",
         reason: BLOCK_REASON,
@@ -224,7 +232,7 @@ export const handleStop = (
       if (!hasAnyIsa) {
         yield* state
           .update(payload.session_id, { stop_blocked_once: true })
-          .pipe(Effect.catchAll(() => Effect.succeed(undefined)))
+          .pipe(Effect.catchAll((cause) => reportStateWriteFailure(sid, "stop-blocked-once", cause)))
         const tierLabel =
           typeof record.last_tier === "number"
             ? `E${record.last_tier}`

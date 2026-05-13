@@ -6,7 +6,8 @@ import * as fsSync from "node:fs"
 import * as path from "node:path"
 import { EventStoreError } from "../schema/errors.ts"
 import type { EventStream, EventStreamName } from "../schema/events.ts"
-import { withFileLock } from "./file-lock.ts"
+import { FileLock, FileLockPlatformLive } from "./file-lock.ts"
+import { logWarning } from "./diagnostics.ts"
 
 const DEFAULT_MAX_LINE_BYTES = 32 * 1024
 const DEFAULT_MAX_TAIL_BYTES = 1024 * 1024
@@ -16,7 +17,14 @@ const MAX_ARRAY_ITEMS = 100
 const MAX_OBJECT_KEYS = 100
 const MAX_DEPTH = 8
 
-const SENSITIVE_KEYS = new Set(["tool_input", "prompt", "elicitation", "content"])
+const SENSITIVE_KEYS = new Set([
+  "tool_input",
+  "toolinput",
+  "prompt",
+  "prompttext",
+  "elicitation",
+  "content",
+])
 
 interface RedactionOptions {
   readonly sensitiveKeys?: ReadonlySet<string>
@@ -46,6 +54,9 @@ const hashUnknown = (value: unknown): string => {
   return crypto.createHash("sha256").update(serialized ?? "null").digest("hex").slice(0, 16)
 }
 
+const normalizeSensitiveKey = (key: string): string =>
+  key.replace(/[^A-Za-z0-9]/g, "").toLowerCase()
+
 const capString = (value: string): string => {
   if (value.length <= MAX_STRING_CHARS && byteLength(value) <= MAX_STRING_CHARS * 4) return value
   return `${value.slice(0, MAX_STRING_CHARS)}...[truncated bytes=${byteLength(value)}]`
@@ -58,7 +69,10 @@ export const redactForPersistence = (
   options: RedactionOptions = {},
 ): unknown => {
   const sensitiveKeys = options.sensitiveKeys ?? SENSITIVE_KEYS
-  if (key !== undefined && sensitiveKeys.has(key.toLowerCase())) {
+  if (
+    key !== undefined &&
+    (sensitiveKeys.has(key.toLowerCase()) || sensitiveKeys.has(normalizeSensitiveKey(key)))
+  ) {
     const serialized = safeJsonString(value)
     return {
       redacted: true,
@@ -72,11 +86,9 @@ export const redactForPersistence = (
   if (typeof value !== "object") return String(value)
   if (depth >= MAX_DEPTH) return { truncated: true, reason: "max_depth" }
   if (Array.isArray(value)) {
-    const items = value
+    return value
       .slice(0, MAX_ARRAY_ITEMS)
       .map((item) => redactForPersistence(item, undefined, depth + 1, options))
-    if (value.length > MAX_ARRAY_ITEMS) items.push({ truncated: true, omitted: value.length - MAX_ARRAY_ITEMS })
-    return items
   }
   const out: Record<string, unknown> = {}
   let allEntries: Array<[string, unknown]>
@@ -92,6 +104,31 @@ export const redactForPersistence = (
   const omitted = allEntries.length - entries.length
   if (omitted > 0) out["__truncated_keys"] = omitted
   return out
+}
+
+export const isRedactedPersistenceMarker = (
+  value: unknown,
+): value is { readonly redacted: true; readonly sha256: string; readonly bytes: number } =>
+  typeof value === "object" &&
+  value !== null &&
+  !Array.isArray(value) &&
+  (value as { redacted?: unknown }).redacted === true &&
+  typeof (value as { sha256?: unknown }).sha256 === "string" &&
+  typeof (value as { bytes?: unknown }).bytes === "number"
+
+export const containsRedactedPersistenceMarker = (
+  value: unknown,
+  depth = 0,
+): boolean => {
+  if (isRedactedPersistenceMarker(value)) return true
+  if (value === null || value === undefined || depth >= MAX_DEPTH) return false
+  if (typeof value !== "object") return false
+  if (Array.isArray(value)) {
+    return value.some((item) => containsRedactedPersistenceMarker(item, depth + 1))
+  }
+  return Object.values(value as Record<string, unknown>).some((item) =>
+    containsRedactedPersistenceMarker(item, depth + 1),
+  )
 }
 
 const makeError = (
@@ -247,17 +284,46 @@ const parseTail = <A>(
     if (limit === 0) return []
     let rawLines = tail.raw.split(/\r?\n/)
     if (tail.truncatedStart && rawLines.length > 0) rawLines = rawLines.slice(1)
+    const rawEndsWithNewline = tail.raw.length === 0 || /(?:\r?\n)$/.test(tail.raw)
     const out: A[] = []
+    let malformedLines = 0
+    let decodeFailures = 0
     for (let i = 0; i < rawLines.length; i++) {
       const line = rawLines[i] ?? ""
       if (line.trim().length === 0) continue
       let parsed: unknown
       try {
         parsed = JSON.parse(line)
-      } catch (cause) {
-        return yield* Effect.fail(makeError("tail", stream as EventStream<unknown>, "jsonl parse failed", cause))
+      } catch {
+        if (stream.strictTail === true && !rawEndsWithNewline && i === rawLines.length - 1) {
+          yield* logWarning(
+            `[event-store] ignored partial trailing JSONL record while tailing ${stream.name}`,
+          )
+          continue
+        }
+        malformedLines += 1
+        continue
       }
-      out.push(yield* decodeEvent(stream, parsed, "tail"))
+      const decoded = yield* decodeEvent(stream, parsed, "tail").pipe(Effect.either)
+      if (decoded._tag === "Right") {
+        out.push(decoded.right)
+      } else {
+        decodeFailures += 1
+      }
+    }
+    if (malformedLines > 0 || decodeFailures > 0) {
+      yield* logWarning(
+        `[event-store] skipped invalid JSONL record(s) while tailing ${stream.name}: malformed=${malformedLines} decode_failed=${decodeFailures}`,
+      )
+      if (stream.strictTail === true) {
+        return yield* Effect.fail(
+          makeError(
+            "tail",
+            stream as EventStream<unknown>,
+            `invalid JSONL record(s) in strict stream: malformed=${malformedLines} decode_failed=${decodeFailures}`,
+          ),
+        )
+      }
     }
     return out.slice(-limit)
   })
@@ -296,9 +362,10 @@ export const summarizeEventStoreError = (cause: unknown): string => {
   return "event-store operation failed"
 }
 
-export const EventStoreLive: Layer.Layer<EventStore> = Layer.effect(
+export const EventStoreLiveBase: Layer.Layer<EventStore, never, FileLock> = Layer.effect(
   EventStore,
   Effect.gen(function* () {
+    const locks = yield* FileLock
     const streams = yield* Ref.make<Map<EventStreamName, RegisteredStream>>(new Map())
     const remember = <A>(stream: EventStream<A>): Effect.Effect<void> =>
       Ref.update(streams, (map) => registerStream(map, stream))
@@ -307,15 +374,22 @@ export const EventStoreLive: Layer.Layer<EventStore> = Layer.effect(
         Effect.gen(function* () {
           yield* remember(stream)
           const line = yield* encodeLine(stream, event)
-          yield* Effect.tryPromise({
-            try: async () => {
-              await fs.mkdir(path.dirname(stream.path), { recursive: true })
-              await withFileLock(stream.path, async () => {
+          yield* locks.withLock(
+            stream.path,
+            Effect.tryPromise({
+              try: async () => {
+                await fs.mkdir(path.dirname(stream.path), { recursive: true })
                 await fs.appendFile(stream.path, line, "utf8")
-              })
-            },
-            catch: (cause) => makeError("append", stream as EventStream<unknown>, "append write failed", cause),
-          })
+              },
+              catch: (cause) => makeError("append", stream as EventStream<unknown>, "append write failed", cause),
+            }),
+          ).pipe(
+            Effect.mapError((cause) =>
+              cause instanceof EventStoreError
+                ? cause
+                : makeError("append", stream as EventStream<unknown>, "append write failed", cause),
+            ),
+          )
         }),
       tail: <A>(stream: EventStream<A>, n: number) =>
         Stream.unwrap(
@@ -328,18 +402,27 @@ export const EventStoreLive: Layer.Layer<EventStore> = Layer.effect(
         Effect.gen(function* () {
           const map = yield* Ref.get(streams)
           const stream = yield* compactTarget(name, map)
-          yield* Effect.tryPromise({
-            try: () =>
-              withFileLock(stream.path, async () => {
-                const records = await Effect.runPromise(readTail(stream, stream.maxRecords ?? DEFAULT_MAX_RECORDS))
-                await Effect.runPromise(writeAll(stream, records))
-              }),
-            catch: (cause) => makeError("compact", stream, "compact failed", cause),
-          })
+          yield* locks.withLock(
+            stream.path,
+            Effect.gen(function* () {
+              const records = yield* readTail(stream, stream.maxRecords ?? DEFAULT_MAX_RECORDS)
+              const compacted = stream.compactRecords?.(records) ?? records
+              yield* writeAll(stream, compacted)
+            }),
+          ).pipe(
+            Effect.mapError((cause) =>
+              cause instanceof EventStoreError
+                ? cause
+                : makeError("compact", stream, "compact failed", cause),
+            ),
+          )
         }),
     })
   }),
 )
+
+export const EventStoreLive: Layer.Layer<EventStore> =
+  Layer.provide(EventStoreLiveBase, FileLockPlatformLive)
 
 export const collectStream = <A, E>(stream: Stream.Stream<A, E>): Effect.Effect<ReadonlyArray<A>, E> =>
   Stream.runCollect(stream).pipe(Effect.map(Chunk.toReadonlyArray))
@@ -387,7 +470,8 @@ export const EventStoreTest = (): Layer.Layer<EventStore> =>
             yield* Ref.update(records, (recordMap) => {
               const next = new Map(recordMap)
               const current = next.get(key) ?? []
-              next.set(key, current.slice(-(stream.maxRecords ?? DEFAULT_MAX_RECORDS)))
+              const retained = current.slice(-(stream.maxRecords ?? DEFAULT_MAX_RECORDS))
+              next.set(key, stream.compactRecords?.(retained) ?? retained)
               return next
             })
           }),

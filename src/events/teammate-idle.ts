@@ -26,7 +26,7 @@ interface TeammateIdleLedgerEntry {
  */
 const workerIdleBlockReason = (
   summary: WorkerIntegrationSummary,
-  finalVerificationPassed: boolean,
+  finalVerificationCurrent: boolean,
 ): string | null => {
   if (summary.workers_total === 0) return null
   if (summary.queued > 0 || summary.running > 0 || summary.blocked > 0) {
@@ -46,33 +46,50 @@ const workerIdleBlockReason = (
   if (summary.blockers.length > 0) {
     return `Worker outputs still report blockers: ${summary.blockers.slice(0, 3).join("; ")}`
   }
-  if (summary.final_verification_required && !finalVerificationPassed) {
+  if (summary.final_verification_required && !finalVerificationCurrent) {
     return "Integrated worker changes still need final parent-workspace verification before going idle."
   }
   return null
 }
 
+const workerIdleStateReadFailure = (sessionId: string): string =>
+  `Worker state could not be read (session=${sessionId}); retry after the worker ledger is readable.`
+
+const verificationCoversWorkerIntegration = (
+  summary: WorkerIntegrationSummary,
+  verificationStatus: string | undefined,
+  verificationAt: string | null | undefined,
+): boolean => {
+  if (!summary.final_verification_required) return true
+  if (verificationStatus !== "passed") return false
+  if (summary.latest_integrated_at === undefined) return true
+  if (verificationAt === undefined || verificationAt === null) return false
+  const verified = Date.parse(verificationAt)
+  const integrated = Date.parse(summary.latest_integrated_at)
+  return Number.isFinite(verified) && Number.isFinite(integrated) && verified >= integrated
+}
+
 const evaluateWorkerIdle = (
   sessionId: string,
-  finalVerificationPassed: boolean,
+  verificationStatus: string | undefined,
+  verificationAt: string | null | undefined,
 ): Effect.Effect<string | null> =>
   Effect.gen(function* () {
     const config = yield* loadRuntimeConfig
     if (!config.workersEnabled) return null
     const aggregation = yield* Effect.serviceOption(WorkerAggregation)
     if (Option.isNone(aggregation)) return null
-    const summary = yield* aggregation.value
-      .summarizeSession(sessionId)
-      .pipe(
-        Effect.catchAll((cause) =>
-          logWarning(
-            `[TeammateIdle] worker aggregation failed: sid=${sessionId} cause=${String(cause).slice(0, 160)}`,
-          ).pipe(Effect.as(null)),
-        ),
-      )
-    return summary === null
-      ? null
-      : workerIdleBlockReason(summary, finalVerificationPassed)
+    const lookup = yield* aggregation.value.summarizeSession(sessionId).pipe(Effect.either)
+    if (lookup._tag === "Left") {
+      return yield* logWarning(
+        `[TeammateIdle] worker aggregation failed: sid=${sessionId} cause=${String(lookup.left).slice(0, 160)}`,
+      ).pipe(Effect.as(workerIdleStateReadFailure(sessionId)))
+    }
+    const summary = lookup.right
+    return workerIdleBlockReason(
+      summary,
+      verificationCoversWorkerIntegration(summary, verificationStatus, verificationAt),
+    )
   })
 
 export const handleTeammateIdle = (
@@ -119,11 +136,18 @@ export const handleTeammateIdle = (
         ),
       ),
     )
+    if (stateE._tag === "Left") {
+      return {
+        decision: "block",
+        reason: `Session state could not be read (session=${payload.session_id}); retry after state is readable before going idle.`,
+      }
+    }
     if (stateE._tag === "Right") {
       const rec = stateE.right
       const workerBlockReason = yield* evaluateWorkerIdle(
         payload.session_id,
-        rec.verification_status === "passed",
+        rec.verification_status,
+        rec.verification_at,
       )
       if (workerBlockReason !== null) {
         return {

@@ -35,7 +35,7 @@ export class FileSystem extends Context.Tag("FileSystem")<
   FileSystemApi
 >() {}
 
-const FileSystemLiveBase = Layer.effect(
+export const FileSystemLiveBase = Layer.effect(
   FileSystem,
   Effect.map(FileLock, (locks) => FileSystem.of({
     readFile: (path) =>

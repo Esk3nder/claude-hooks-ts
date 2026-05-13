@@ -21,6 +21,7 @@ export interface RuntimeConfig {
   readonly workerRequireStructuredResult: boolean
   readonly workerEnforceReadOnlyRoles: boolean
   readonly workerWriteIsolation: WorkerWriteIsolation
+  readonly workerIdOverride: Option.Option<string>
 }
 
 export interface RuntimeConfigApi {
@@ -32,7 +33,7 @@ export class RuntimeConfigService extends Context.Tag("RuntimeConfigService")<
   RuntimeConfigApi
 >() {}
 
-export type WorkerWriteIsolation = "none" | "serial" | "worktree" | "patch"
+export type WorkerWriteIsolation = "none" | "serial" | "worktree"
 
 const millis = (n: number): Duration.Duration => Duration.millis(n)
 
@@ -55,6 +56,7 @@ export const DEFAULT_RUNTIME_CONFIG: RuntimeConfig = {
   workerRequireStructuredResult: true,
   workerEnforceReadOnlyRoles: true,
   workerWriteIsolation: "serial",
+  workerIdOverride: Option.none(),
 }
 
 const envFlag = (value: string | undefined): boolean =>
@@ -83,8 +85,9 @@ const envWorkerWriteIsolation = (
     case "none":
     case "serial":
     case "worktree":
-    case "patch":
       return value
+    case "patch":
+      return "worktree"
     default:
       return fallback
   }
@@ -137,6 +140,7 @@ export const runtimeConfigFromEnv = (
     env["CLAUDE_HOOKS_WORKER_WRITE_ISOLATION"],
     base.workerWriteIsolation,
   ),
+  workerIdOverride: nonEmpty(env["CLAUDE_HOOKS_WORKER_ID"]),
 })
 
 export const loadRuntimeConfig: Effect.Effect<RuntimeConfig> = Effect.gen(function* () {

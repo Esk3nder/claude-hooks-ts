@@ -30,7 +30,7 @@ const hasEvidenceItem = (value: unknown): value is string =>
 
 const workerCompletionBlockReason = (
   summary: WorkerIntegrationSummary,
-  finalVerificationPassed: boolean,
+  finalVerificationCurrent: boolean,
 ): string | null => {
   if (summary.workers_total === 0) return null
   if (summary.queued > 0 || summary.running > 0 || summary.blocked > 0) {
@@ -68,7 +68,7 @@ const workerCompletionBlockReason = (
       summary.blockers.slice(0, 3).join("; "),
     ].join(" ")
   }
-  if (summary.final_verification_required && !finalVerificationPassed) {
+  if (summary.final_verification_required && !finalVerificationCurrent) {
     return [
       "Task marked complete but integrated worker changes still need final verification.",
       `files=${summary.files_changed.join(",")}`,
@@ -78,10 +78,28 @@ const workerCompletionBlockReason = (
   return null
 }
 
+const workerCompletionStateReadFailure = (scope: "task" | "session", id: string): string =>
+  `Task marked complete but worker state could not be read (${scope}=${id}); retry after the worker ledger is readable.`
+
+const verificationCoversWorkerIntegration = (
+  summary: WorkerIntegrationSummary,
+  verificationStatus: string | undefined,
+  verificationAt: string | null | undefined,
+): boolean => {
+  if (!summary.final_verification_required) return true
+  if (verificationStatus !== "passed") return false
+  if (summary.latest_integrated_at === undefined) return true
+  if (verificationAt === undefined || verificationAt === null) return false
+  const verified = Date.parse(verificationAt)
+  const integrated = Date.parse(summary.latest_integrated_at)
+  return Number.isFinite(verified) && Number.isFinite(integrated) && verified >= integrated
+}
+
 const evaluateWorkerCompletion = (
   sessionId: string,
   taskId: string,
-  finalVerificationPassed: boolean,
+  verificationStatus: string | undefined,
+  verificationAt: string | null | undefined,
 ): Effect.Effect<string | null> =>
   Effect.gen(function* () {
     const cfg = yield* loadRuntimeConfig
@@ -89,28 +107,27 @@ const evaluateWorkerCompletion = (
     const aggregation = yield* Effect.serviceOption(WorkerAggregation)
     if (Option.isNone(aggregation)) return null
 
-    const parentSummary = yield* aggregation.value
-      .summarizeParent(taskId)
-      .pipe(
-        Effect.catchAll((cause) =>
-          logWarning(
-            `[TaskCompleted] worker aggregation parent lookup failed: task=${taskId} cause=${String(cause).slice(0, 160)}`,
-          ).pipe(Effect.as(null)),
-        ),
-      )
-    const summary =
-      parentSummary !== null && parentSummary.workers_total > 0
-        ? parentSummary
-        : yield* aggregation.value
-            .summarizeSession(sessionId)
-            .pipe(
-              Effect.catchAll((cause) =>
-                logWarning(
-                  `[TaskCompleted] worker aggregation session lookup failed: sid=${sessionId} cause=${String(cause).slice(0, 160)}`,
-                ).pipe(Effect.as(null)),
-              ),
-            )
-    return summary === null ? null : workerCompletionBlockReason(summary, finalVerificationPassed)
+    const parentLookup = yield* aggregation.value.summarizeParent(taskId).pipe(Effect.either)
+    if (parentLookup._tag === "Left") {
+      return yield* logWarning(
+        `[TaskCompleted] worker aggregation parent lookup failed: task=${taskId} cause=${String(parentLookup.left).slice(0, 160)}`,
+      ).pipe(Effect.as(workerCompletionStateReadFailure("task", taskId)))
+    }
+    const parentSummary = parentLookup.right
+    let summary: WorkerIntegrationSummary = parentSummary
+    if (summary.workers_total === 0) {
+      const sessionLookup = yield* aggregation.value.summarizeSession(sessionId).pipe(Effect.either)
+      if (sessionLookup._tag === "Left") {
+        return yield* logWarning(
+          `[TaskCompleted] worker aggregation session lookup failed: sid=${sessionId} cause=${String(sessionLookup.left).slice(0, 160)}`,
+        ).pipe(Effect.as(workerCompletionStateReadFailure("session", sessionId)))
+      }
+      summary = sessionLookup.right
+    }
+    return workerCompletionBlockReason(
+      summary,
+      verificationCoversWorkerIntegration(summary, verificationStatus, verificationAt),
+    )
   })
 
 /**
@@ -219,24 +236,27 @@ export const handleTaskCompleted = (
     // project, but the active ISA is still the one under the project.
     const state = yield* SessionState
     const sid = payload.session_id
-    const record = yield* state
-      .get(sid)
-      .pipe(
-        Effect.catchAll((cause) => {
-          return logWarning(
-            `[TaskCompleted] session-state op=get failed: sid=${sid} cause=${String(cause).slice(0, 160)}`,
-          ).pipe(Effect.as(null))
-        }),
+    const recordResult = yield* state.get(sid).pipe(Effect.either)
+    if (recordResult._tag === "Left") {
+      yield* logWarning(
+        `[TaskCompleted] session-state op=get failed: sid=${sid} cause=${String(recordResult.left).slice(0, 160)}`,
       )
+      return {
+        decision: "block",
+        reason: `Task marked complete but session state could not be read (session=${sid}); retry after state is readable.`,
+      } satisfies HookDecision
+    }
+    const record = recordResult.right
     const currentCwd =
       typeof payload.cwd === "string" && payload.cwd.length > 0
         ? payload.cwd
         : process.cwd()
-    const sessionRoot = record?.session_root ?? currentCwd
+    const sessionRoot = record.session_root ?? currentCwd
     const workerBlockReason = yield* evaluateWorkerCompletion(
       sid,
       payload.task_id,
-      record?.verification_status === "passed",
+      record.verification_status,
+      record.verification_at,
     )
     if (workerBlockReason !== null) {
       return { decision: "block", reason: workerBlockReason } satisfies HookDecision

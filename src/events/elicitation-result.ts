@@ -5,6 +5,7 @@ import type { HookDecision } from "../schema/decisions.ts"
 import { NO_DECISION } from "../schema/decisions.ts"
 import { Project } from "../services/project.ts"
 import { Elicitations } from "../services/elicitations.ts"
+import { reportHookFailure } from "../services/hook-failure.ts"
 
 // ElicitationResult lacks the original `elicitation` request shape, so we
 // approximate the signature from (server, tool, sorted top-level content keys).
@@ -30,12 +31,45 @@ export const handleElicitationResult = (
         payload.server_name,
         payload.tool_name,
       )
-      .pipe(Effect.catchAll(() => Effect.succeed(null)))
+      .pipe(
+        Effect.catchAll((cause) =>
+          reportHookFailure({
+            kind: "state_read_failed",
+            event: "ElicitationResult",
+            sessionId: payload.session_id,
+            cause,
+            hookSafe: true,
+            context: {
+              op: "elicitations.findLatestPending",
+              cwd,
+              server: payload.server_name,
+              tool_name: payload.tool_name,
+            },
+          }).pipe(Effect.as(null)),
+        ),
+      )
     const signature =
       pending?.requestSignature ??
       resultSignature(payload.server_name, payload.tool_name, payload.content)
     yield* elicitations
       .record(cwd, payload.server_name, payload.tool_name, signature, payload.action, payload.content)
-      .pipe(Effect.catchAll(() => Effect.succeed(undefined)))
+      .pipe(
+        Effect.catchAll((cause) =>
+          reportHookFailure({
+            kind: "state_write_failed",
+            event: "ElicitationResult",
+            sessionId: payload.session_id,
+            cause,
+            hookSafe: true,
+            context: {
+              op: "elicitations.record",
+              cwd,
+              server: payload.server_name,
+              tool_name: payload.tool_name,
+              action: payload.action,
+            },
+          }),
+        ),
+      )
     return NO_DECISION
   })

@@ -3,6 +3,7 @@ import { Effect, Layer, Stream } from "effect"
 import { EventStoreError } from "../../src/schema/errors.ts"
 import { Approvals, ApprovalsLiveBase, ApprovalsTest } from "../../src/services/approvals.ts"
 import { EventStore } from "../../src/services/event-store.ts"
+import { FileLockPlatformLive } from "../../src/services/file-lock.ts"
 
 const failingEventStore = (failure: EventStoreError): Layer.Layer<EventStore> =>
   Layer.succeed(
@@ -90,7 +91,14 @@ describe("Approvals (test layer)", () => {
       Effect.gen(function* () {
         const a = yield* Approvals
         return yield* Effect.either(a.lookup("/repo", "p"))
-      }).pipe(Effect.provide(Layer.provide(ApprovalsLiveBase, failingEventStore(failure)))),
+      }).pipe(
+        Effect.provide(
+          Layer.provide(
+            ApprovalsLiveBase,
+            Layer.merge(failingEventStore(failure), FileLockPlatformLive),
+          ),
+        ),
+      ),
     )
 
     expect(result._tag).toBe("Left")

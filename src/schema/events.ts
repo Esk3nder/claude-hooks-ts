@@ -9,7 +9,9 @@ export interface EventStream<A> {
   readonly maxLineBytes?: number
   readonly maxTailBytes?: number
   readonly maxRecords?: number
+  readonly strictTail?: boolean
   readonly redact?: (event: A) => unknown
+  readonly compactRecords?: (records: ReadonlyArray<A>) => ReadonlyArray<A>
 }
 
 export const eventStream = <A>(
@@ -20,7 +22,9 @@ export const eventStream = <A>(
     readonly maxLineBytes?: number
     readonly maxTailBytes?: number
     readonly maxRecords?: number
+    readonly strictTail?: boolean
     readonly redact?: (event: A) => unknown
+    readonly compactRecords?: (records: ReadonlyArray<A>) => ReadonlyArray<A>
   } = {},
 ): EventStream<A> => ({
   name,
@@ -109,6 +113,16 @@ export const WorkerJobSchema = Schema.Struct({
 })
 
 export type WorkerJob = Schema.Schema.Type<typeof WorkerJobSchema>
+
+export const WorkerJobClaimSchema = Schema.Struct({
+  id: Schema.String,
+  queue: Schema.String,
+  claimedAt: Schema.Number,
+  leaseUntil: Schema.optional(Schema.Number),
+  completedAt: Schema.optional(Schema.Number),
+})
+
+export type WorkerJobClaim = Schema.Schema.Type<typeof WorkerJobClaimSchema>
 
 export const WorktreeRemoveRecordSchema = Schema.Struct({
   session_id: Schema.String,

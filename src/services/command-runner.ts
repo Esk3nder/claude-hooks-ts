@@ -80,7 +80,7 @@ const collectTextCapped = (
     },
   ).pipe(
     Effect.map((acc) => {
-      const text = acc.truncated ? acc.text : acc.text + decoder.decode()
+      const text = acc.text + decoder.decode()
       return acc.truncated ? `${text}\n[command-runner] output truncated at ${cap} bytes` : text
     }),
   )

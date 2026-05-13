@@ -1,4 +1,5 @@
 import { Context, Effect, Layer } from "effect"
+import * as path from "node:path"
 import { EventStoreError } from "../schema/errors.ts"
 import type {
   WorkerConflict,
@@ -28,14 +29,34 @@ const countStatus = (
 
 const workerResult = (run: WorkerRun) => run.result ?? run.output
 
+const normalizeChangedPath = (run: WorkerRun, changedPath: string): string => {
+  let normalized = changedPath.trim()
+  if (normalized.length === 0) return ""
+  if (path.isAbsolute(normalized) && run.workspace_path !== undefined) {
+    const relative = path.relative(run.workspace_path, normalized)
+    if (relative.length > 0 && !relative.startsWith("..") && !path.isAbsolute(relative)) {
+      normalized = relative
+    }
+  }
+  return normalized.replace(/\\/g, "/").replace(/^\.\/+/, "")
+}
+
+const changedPathsForRun = (run: WorkerRun): ReadonlyArray<string> =>
+  [
+    ...(workerResult(run)?.changes_made.map((change) => change.path) ?? []),
+    ...(run.patch_changed_files ?? []),
+  ]
+    .map((changedPath) => normalizeChangedPath(run, changedPath))
+    .filter((changedPath) => changedPath.length > 0)
+
 const detectConflicts = (runs: ReadonlyArray<WorkerRun>): ReadonlyArray<WorkerConflict> => {
   const byPath = new Map<string, Set<string>>()
   for (const run of runs) {
     if (run.status !== "completed" || run.mode !== "write-allowed") continue
-    for (const change of workerResult(run)?.changes_made ?? []) {
-      const workers = byPath.get(change.path) ?? new Set<string>()
+    for (const changedPath of changedPathsForRun(run)) {
+      const workers = byPath.get(changedPath) ?? new Set<string>()
       workers.add(run.worker_id)
-      byPath.set(change.path, workers)
+      byPath.set(changedPath, workers)
     }
   }
   return [...byPath.entries()]
@@ -53,7 +74,7 @@ const verificationBlockers = (runs: ReadonlyArray<WorkerRun>): ReadonlyArray<str
   runs.flatMap((run) => {
     if (run.status !== "completed" || run.mode !== "write-allowed") return []
     const result = workerResult(run)
-    if ((result?.changes_made.length ?? 0) === 0) return []
+    if (changedPathsForRun(run).length === 0) return []
     const verification = result?.verification ?? []
     if (verification.length === 0) {
       return [`worker ${run.worker_id} changed files without verification evidence`]
@@ -67,8 +88,7 @@ const verificationBlockers = (runs: ReadonlyArray<WorkerRun>): ReadonlyArray<str
 const integrationBlockers = (runs: ReadonlyArray<WorkerRun>): ReadonlyArray<string> =>
   runs.flatMap((run) => {
     if (run.status !== "completed" || run.mode !== "write-allowed") return []
-    const result = workerResult(run)
-    if ((result?.changes_made.length ?? 0) === 0) return []
+    if (changedPathsForRun(run).length === 0) return []
     if (run.patch_path === undefined) {
       return [`worker ${run.worker_id} changed files without a captured isolated patch`]
     }
@@ -101,8 +121,13 @@ export const summarizeWorkerRuns = (
     runs.filter((run) => run.status === "blocked").map((run) => run.worker_id),
   )
   const filesChanged = uniqueSorted(
-    runs.flatMap((run) => workerResult(run)?.changes_made.map((change) => change.path) ?? []),
+    runs.flatMap(changedPathsForRun),
   )
+  const latestIntegratedAt = runs
+    .filter((run) => run.integration_status === "applied" && run.integrated_at !== undefined)
+    .map((run) => run.integrated_at!)
+    .sort()
+    .at(-1)
   const risks = uniqueSorted(runs.flatMap((run) => workerResult(run)?.risks ?? []))
   const blockers = uniqueSorted([
     ...runs.flatMap((run) => workerResult(run)?.blockers ?? []),
@@ -161,6 +186,7 @@ export const summarizeWorkerRuns = (
     blockers,
     conflicts,
     integration_plan: integrationPlan,
+    ...(latestIntegratedAt === undefined ? {} : { latest_integrated_at: latestIntegratedAt }),
     final_verification_required: readyForIntegration && filesChanged.length > 0,
     ready_for_integration: readyForIntegration,
   }
@@ -182,7 +208,7 @@ export const WorkerAggregationLive: Layer.Layer<
         summarizeParent: (parentTaskId) =>
           runs.forParent(parentTaskId).pipe(
             Effect.map((parentRuns) =>
-              summarizeWorkerRuns(parentRuns[0]?.session_id ?? "", parentRuns, parentTaskId),
+              summarizeWorkerRuns(parentRuns[0]?.session_id ?? "unknown", parentRuns, parentTaskId),
             ),
           ),
       }),

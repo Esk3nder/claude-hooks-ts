@@ -7,6 +7,7 @@
  *   claude-hooks-workers show <worker_id> [--cwd <dir>] [--json]
  *   claude-hooks-workers tail [--cwd <dir>] [--session <id>] [--limit <n>] [--json]
  *   claude-hooks-workers summary --session <id> [--cwd <dir>] [--json]
+ *   claude-hooks-workers run [--cwd <dir>] [--count <n>] [--json]
  *   claude-hooks-workers apply <worker_id> [--cwd <dir>] [--check] [--json]
  *   claude-hooks-workers cancel <worker_id> [--cwd <dir>] [--reason <text>] [--json]
  *   claude-hooks-workers retry <worker_id> --prompt <text> [--cwd <dir>] [--json]
@@ -18,8 +19,10 @@ import * as path from "node:path"
 import { EventStoreLive } from "../src/services/event-store.ts"
 import { loadRuntimeConfig, RuntimeConfigLive } from "../src/services/runtime-config.ts"
 import { WorkerQueue, WorkerQueueLive } from "../src/services/worker-queue.ts"
+import { ClaudeSubprocessLive } from "../src/services/claude-subprocess.ts"
 import { CommandRunnerPlatformLive } from "../src/services/command-runner.ts"
 import { WorkerIntegration, WorkerIntegrationLive } from "../src/services/worker-integration.ts"
+import { WorkerExecutorLive, WorkerSupervisor, WorkerSupervisorLive } from "../src/services/worker-supervisor.ts"
 import {
   hashWorkerPrompt,
   WorkerRuns,
@@ -30,7 +33,9 @@ import type { WorkerJobPayload, WorkerRun } from "../src/schema/worker-run.ts"
 import type { WorkerJob } from "../src/schema/events.ts"
 import { writeCliStderr, writeCliStdout } from "./io.ts"
 
-type Command = "list" | "show" | "tail" | "summary" | "apply" | "cancel" | "retry" | "help"
+type Command = "list" | "show" | "tail" | "summary" | "run" | "apply" | "cancel" | "retry" | "help"
+
+const SUMMARY_LIMIT = 5_000
 
 interface Output {
   readonly stdout: (message: string) => void
@@ -59,6 +64,7 @@ const usage = `Usage:
   claude-hooks-workers show <worker_id> [--cwd <dir>] [--json]
   claude-hooks-workers tail [--cwd <dir>] [--session <id>] [--limit <n>] [--json]
   claude-hooks-workers summary --session <id> [--cwd <dir>] [--json]
+  claude-hooks-workers run [--cwd <dir>] [--count <n>] [--json]
   claude-hooks-workers apply <worker_id> [--cwd <dir>] [--check] [--json]
   claude-hooks-workers cancel <worker_id> [--cwd <dir>] [--reason <text>] [--json]
   claude-hooks-workers retry <worker_id> --prompt <text> [--cwd <dir>] [--json]
@@ -72,6 +78,7 @@ const commandFrom = (value: string | undefined): Command => {
     case "show":
     case "tail":
     case "summary":
+    case "run":
     case "apply":
     case "cancel":
     case "retry":
@@ -98,7 +105,7 @@ export const parseArgs = (argv: ReadonlyArray<string>): ParsedArgs => {
   let cwd = process.cwd()
   let workerId: string | undefined
   let sessionId: string | undefined
-  let limit = 20
+  let limit = command === "run" ? 1 : 20
   let json = false
   let checkOnly = false
   let reason = "cancelled by operator"
@@ -116,6 +123,8 @@ export const parseArgs = (argv: ReadonlyArray<string>): ParsedArgs => {
       sessionId = next
     } else if (arg === "--limit") {
       limit = parsePositiveInt(argv[++i], "--limit")
+    } else if (arg === "--count") {
+      limit = parsePositiveInt(argv[++i], "--count")
     } else if (arg === "--json") {
       json = true
     } else if (arg === "--check") {
@@ -167,7 +176,13 @@ const dataLayer = (cwd: string) => {
     WorkerIntegrationLive,
     Layer.mergeAll(eventBacked, CommandRunnerPlatformLive),
   )
-  return Layer.mergeAll(eventBacked, integration)
+  const claude = Layer.provide(ClaudeSubprocessLive, CommandRunnerPlatformLive)
+  const executor = Layer.provide(WorkerExecutorLive, claude)
+  const supervisor = Layer.provide(
+    WorkerSupervisorLive,
+    Layer.mergeAll(eventBacked, executor, CommandRunnerPlatformLive),
+  )
+  return Layer.mergeAll(eventBacked, integration, supervisor)
 }
 
 const formatRun = (run: WorkerRun): string =>
@@ -198,6 +213,7 @@ const jobForRetry = (run: WorkerRun, workerId: string, prompt: string): WorkerJo
     agent_type: run.agent_type,
     mode: run.mode,
     prompt,
+    prompt_hash: hashWorkerPrompt(prompt),
     scope: run.scope,
     ...(run.parent_task_id === undefined ? {} : { parent_task_id: run.parent_task_id }),
     ...(run.agent_id === undefined ? {} : { agent_id: run.agent_id }),
@@ -251,6 +267,15 @@ export const runWorkersDetailed = async (
           })
           return { kind: "value" as const, value: applied, text: `${JSON.stringify(applied, null, 2)}\n` }
         }
+        if (args.command === "run") {
+          const supervisor = yield* WorkerSupervisor
+          const completed = yield* supervisor.runN(args.limit)
+          return {
+            kind: "value" as const,
+            value: completed,
+            text: completed.map(formatRun).join("\n") + (completed.length > 0 ? "\n" : ""),
+          }
+        }
         if (args.command === "retry") {
           const run = yield* runs.get(args.workerId!)
           if (run === null) return { kind: "not-found" as const, workerId: args.workerId! }
@@ -284,7 +309,7 @@ export const runWorkersDetailed = async (
           return { kind: "value" as const, value: queued, text: `${formatRun(queued)}\n` }
         }
         if (args.command === "summary") {
-          const sessionRuns = yield* runs.forSession(args.sessionId!, args.limit)
+          const sessionRuns = yield* runs.forSession(args.sessionId!, SUMMARY_LIMIT)
           const summary = summarizeWorkerRuns(args.sessionId!, sessionRuns)
           return { kind: "value" as const, value: summary, text: `${JSON.stringify(summary, null, 2)}\n` }
         }

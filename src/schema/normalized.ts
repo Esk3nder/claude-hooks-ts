@@ -46,7 +46,7 @@ export const stableHookPayloadHash = (payload: Record<string, unknown>): string 
   return sha1Short(JSON.stringify(canonical))
 }
 
-const firstNonBlank = (
+export const firstNonBlank = (
   ...values: ReadonlyArray<string | undefined>
 ): string | undefined => {
   for (const value of values) {

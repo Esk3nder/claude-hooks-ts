@@ -33,6 +33,8 @@ export interface ClaudeSpawnOptions {
   readonly timeoutMs: number
   /** Optional cwd override. */
   readonly cwd?: string
+  /** Additional sanitized environment for hook correlation. */
+  readonly env?: Record<string, string | undefined>
 }
 
 export interface ClaudeSpawnResult {
@@ -86,6 +88,7 @@ export const ClaudeSubprocessLive = Layer.effect(
       spawn: (args, opts) =>
         runner.run("claude", args, {
           ...(opts.cwd === undefined ? {} : { cwd: opts.cwd }),
+          ...(opts.env === undefined ? {} : { env: opts.env }),
           stdin: opts.stdin,
           timeoutMs: opts.timeoutMs,
           scrubEnv: scrubClaudeEnv,

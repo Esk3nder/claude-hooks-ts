@@ -13,9 +13,11 @@ import { loadRuntimeConfig } from "../services/runtime-config.ts";
 import {
   WorkerRuns,
   hashWorkerPrompt,
+  scopedWorkerRunId,
   type WorkerRunCompletionMetadata,
 } from "../services/worker-runs.ts";
 import { parseWorkerResultText } from "../services/worker-supervisor.ts";
+import type { WorkerResult } from "../schema/worker-run.ts";
 
 export const invocationKey = (payload: {
   readonly session_id: string;
@@ -24,14 +26,61 @@ export const invocationKey = (payload: {
 }): string => `${payload.session_id}:${payload.agent_type}:${payload.agent_id}`;
 
 export const inferWorkerScope = (prompt: string | undefined): string => {
-  if (prompt === undefined) return "**/*";
-  const match = /(?:^|\n)\s*(?:scope|files?|paths?)\s*:\s*([^\n]+)/i.exec(prompt);
+  if (prompt === undefined) return "";
+  const match =
+    /(?:^|\n)\s*(?:assigned[- ]scope|worker[- ]scope|scope|files?|paths?)\s*:\s*([^\n]+)/i.exec(
+      prompt,
+    );
   const scope = match?.[1]?.trim();
-  return scope === undefined || scope.length === 0 ? "**/*" : scope;
+  if (scope === undefined || scope.length === 0) return "";
+  if (/\b(?:you are|return|do not|delegated prompt|worker contract)\b/i.test(scope)) {
+    return "";
+  }
+  if (
+    !/(?:[/*]|\b(?:src|test|tests|docs|scripts|lib|app|packages)\b|[A-Za-z0-9_.-]+\.[A-Za-z0-9]{1,8}\b)/.test(
+      scope,
+    )
+  ) {
+    return "";
+  }
+  return scope;
 };
 
-const roleModeForRun = (agentType: string): "read-only" | "write-allowed" =>
-  lookupRole(agentType).mode === "write-allowed" ? "write-allowed" : "read-only";
+const nativeSubagentModeForRun = (_agentType: string): "read-only" => "read-only";
+
+const workerIdForSubagent = (payload: {
+  readonly session_id: string;
+  readonly agent_id: string;
+}): string => scopedWorkerRunId(payload.session_id, payload.agent_id);
+
+const fallbackWorkerResult = (output: string): WorkerResult => ({
+  summary: output.trim().slice(0, 500) || "worker completed with unstructured output",
+  files_relevant: [],
+  changes_made: [],
+  commands_run: [],
+  verification: [],
+  risks: ["worker output did not decode as structured WorkerResult"],
+  blockers: [],
+  confidence: "low",
+});
+
+const reportSessionStateAppendFailure = (
+  payload: Extract<NormalizedHookEvent, { readonly _tag: "SubagentStart" | "SubagentStop" }>,
+  cause: unknown,
+  op: string,
+): Effect.Effect<void> =>
+  reportHookFailure({
+    kind: "state_write_failed",
+    event: payload._tag,
+    sessionId: payload.session_id,
+    cause,
+    hookSafe: true,
+    context: {
+      op,
+      agent_id: payload.agent_id,
+      agent_type: payload.agent_type,
+    },
+  });
 
 const recordWorkerStart = (
   payload: Extract<NormalizedHookEvent, { readonly _tag: "SubagentStart" }>,
@@ -43,24 +92,23 @@ const recordWorkerStart = (
       payload.prompt === undefined
         ? stableHookPayloadHash(payload as unknown as Record<string, unknown>)
         : hashWorkerPrompt(payload.prompt);
-    const existing = yield* runs.value
-      .get(payload.agent_id)
-      .pipe(Effect.catchAll(() => Effect.succeed(null)));
+    const workerId = workerIdForSubagent(payload);
+    const existing = yield* runs.value.get(workerId);
     if (existing === null) {
       yield* runs.value.createQueued({
-        worker_id: payload.agent_id,
+        worker_id: workerId,
         session_id: payload.session_id,
         agent_id: payload.agent_id,
         agent_type: payload.agent_type,
-        mode: roleModeForRun(payload.agent_type),
+        mode: nativeSubagentModeForRun(payload.agent_type),
         prompt_hash: promptHash,
         scope: inferWorkerScope(payload.prompt),
       });
-      yield* runs.value.markRunning(payload.agent_id);
+      yield* runs.value.markRunning(workerId);
       return;
     }
     if (existing.status !== "running") {
-      yield* runs.value.markRunning(payload.agent_id);
+      yield* runs.value.markRunning(workerId);
     }
   }).pipe(
     Effect.catchAll((cause) =>
@@ -85,63 +133,93 @@ const recordWorkerStop = (
   Effect.gen(function* () {
     const runs = yield* Effect.serviceOption(WorkerRuns);
     if (runs._tag === "None") return null;
+    const workerId =
+      (yield* runs.value.findByAgent(payload.session_id, payload.agent_id))?.worker_id ?? workerIdForSubagent(payload);
     if (payload.output === undefined || payload.output.trim().length === 0) {
       const reason = "worker output was missing; strict WorkerResult JSON is required";
-      yield* runs.value.markBlocked(payload.agent_id, reason).pipe(Effect.catchAll(() => Effect.void));
+      yield* runs.value.markBlocked(workerId, reason);
       return reason;
     }
     const config = yield* loadRuntimeConfig;
-    const parsed = yield* parseWorkerResultText(payload.agent_id, payload.output).pipe(
+    const run = yield* runs.value.get(workerId);
+    const mode = run?.mode ?? nativeSubagentModeForRun(payload.agent_type);
+    const parsed = yield* parseWorkerResultText(workerId, payload.output).pipe(
       Effect.either,
     );
     if (parsed._tag === "Left") {
       const reason = "worker output did not decode as WorkerResult";
-      yield* runs.value.markBlocked(payload.agent_id, reason).pipe(Effect.catchAll(() => Effect.void));
       if (config.workerRequireStructuredResult) {
+        yield* runs.value.markBlocked(workerId, reason);
         return reason;
       }
+      if (mode === "write-allowed") {
+        const writeReason = "write worker output did not decode as WorkerResult; structured output is required to verify changes";
+        yield* runs.value.markBlocked(workerId, writeReason);
+        return writeReason;
+      }
+      yield* runs.value.complete(workerId, fallbackWorkerResult(payload.output));
       return null;
     }
-    const run = yield* runs.value
-      .get(payload.agent_id)
-      .pipe(Effect.catchAll(() => Effect.succeed(null)));
-    const mode = run?.mode ?? roleModeForRun(payload.agent_type);
     if (mode === "read-only" && parsed.right.changes_made.length > 0) {
       const reason = "read-only worker reported changes_made; inspect-only workers must not change files";
       yield* runs.value.markBlocked(
-        payload.agent_id,
+        workerId,
         reason,
       );
       return reason;
     }
     let completionMetadata: WorkerRunCompletionMetadata = {};
-    if (mode === "write-allowed" && parsed.right.changes_made.length > 0) {
+    if (mode === "write-allowed") {
+      const hasCapturedOrReportedChanges =
+        parsed.right.changes_made.length > 0 ||
+        run?.patch_path !== undefined ||
+        (run?.patch_changed_files?.length ?? 0) > 0;
+      if (!hasCapturedOrReportedChanges) {
+        const state = yield* Effect.serviceOption(SessionState);
+        if (state._tag === "Some") {
+          const sessionState = yield* state.value.get(payload.session_id).pipe(Effect.either);
+          if (sessionState._tag === "Left") {
+            const reason = "write worker completed without a captured patch and session changes could not be verified";
+            yield* runs.value.markBlocked(workerId, reason);
+            return reason;
+          }
+          if (sessionState.right.files_changed.length > 0) {
+            const reason =
+              "write worker reported no changes_made while the session has changed files; structured output must account for worker changes";
+            yield* runs.value.markBlocked(workerId, reason);
+            return reason;
+          }
+        }
+      }
       if (parsed.right.blockers.length > 0) {
         const reason = `write worker reported blockers: ${parsed.right.blockers.slice(0, 3).join("; ")}`;
-        yield* runs.value.markBlocked(payload.agent_id, reason);
+        yield* runs.value.markBlocked(workerId, reason);
         return reason;
       }
-      const failedVerification = parsed.right.verification.find((check) => check.status !== "passed");
-      if (parsed.right.verification.length === 0 || failedVerification !== undefined) {
-        const reason =
-          failedVerification === undefined
-            ? "write worker changed files without verification evidence"
-            : `write worker verification not passed: ${failedVerification.check}=${failedVerification.status}`;
-        yield* runs.value.markBlocked(payload.agent_id, reason);
-        return reason;
+      if (hasCapturedOrReportedChanges) {
+        const failedVerification = parsed.right.verification.find((check) => check.status !== "passed");
+        if (parsed.right.verification.length === 0 || failedVerification !== undefined) {
+          const reason =
+            failedVerification === undefined
+              ? "write worker changed files without verification evidence"
+              : `write worker verification not passed: ${failedVerification.check}=${failedVerification.status}`;
+          yield* runs.value.markBlocked(workerId, reason);
+          return reason;
+        }
+        if (run?.patch_path === undefined) {
+          const reason = "write worker reported changes without a captured isolated patch";
+          yield* runs.value.markBlocked(workerId, reason);
+          return reason;
+        }
+        completionMetadata = {
+          ...(run.isolation === undefined ? {} : { isolation: run.isolation }),
+          ...(run.workspace_path === undefined ? {} : { workspace_path: run.workspace_path }),
+          patch_path: run.patch_path,
+          ...(run.patch_changed_files === undefined ? {} : { patch_changed_files: run.patch_changed_files }),
+        };
       }
-      if (run?.patch_path === undefined) {
-        const reason = "write worker reported changes without a captured isolated patch";
-        yield* runs.value.markBlocked(payload.agent_id, reason);
-        return reason;
-      }
-      completionMetadata = {
-        ...(run.isolation === undefined ? {} : { isolation: run.isolation }),
-        ...(run.workspace_path === undefined ? {} : { workspace_path: run.workspace_path }),
-        patch_path: run.patch_path,
-      };
     }
-    yield* runs.value.complete(payload.agent_id, parsed.right, undefined, completionMetadata);
+    yield* runs.value.complete(workerId, parsed.right, undefined, completionMetadata);
     return null;
   }).pipe(
     Effect.catchAll((cause) =>
@@ -156,7 +234,9 @@ const recordWorkerStop = (
           agent_id: payload.agent_id,
           agent_type: payload.agent_type,
         },
-      }).pipe(Effect.as(null)),
+      }).pipe(
+        Effect.as("worker stop state update failed; retry after the worker ledger is readable"),
+      ),
     ),
   );
 
@@ -174,7 +254,11 @@ export const handleSubagentStart = (
     if (!prev.subagent_starts.includes(key)) {
       yield* state
         .append(payload.session_id, "subagent_starts", key)
-        .pipe(Effect.catchAll(() => Effect.succeed(undefined as void)));
+        .pipe(
+          Effect.catchAll((cause) =>
+            reportSessionStateAppendFailure(payload, cause, "session-state.append.subagent_starts"),
+          ),
+        );
     }
     yield* recordWorkerStart(payload);
 
@@ -205,7 +289,11 @@ export const handleSubagentStop = (
     if (!prev.subagent_stops.includes(key)) {
       yield* state
         .append(payload.session_id, "subagent_stops", key)
-        .pipe(Effect.catchAll(() => Effect.succeed(undefined as void)));
+        .pipe(
+          Effect.catchAll((cause) =>
+            reportSessionStateAppendFailure(payload, cause, "session-state.append.subagent_stops"),
+          ),
+        );
     }
     const workerBlockReason = yield* recordWorkerStop(payload);
     if (workerBlockReason !== null) {
@@ -225,7 +313,11 @@ export const handleSubagentStop = (
     if (!prev.subagent_stops.includes(`${key}:blocked`)) {
       yield* state
         .append(payload.session_id, "subagent_stops", `${key}:blocked`)
-        .pipe(Effect.catchAll(() => Effect.succeed(undefined as void)));
+        .pipe(
+          Effect.catchAll((cause) =>
+            reportSessionStateAppendFailure(payload, cause, "session-state.append.subagent_stops_blocked"),
+          ),
+        );
     }
 
     const decision: HookDecision = {

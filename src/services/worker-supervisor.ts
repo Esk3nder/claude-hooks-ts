@@ -1,4 +1,4 @@
-import { Context, Effect, Layer, Schedule, Schema } from "effect"
+import { Context, Effect, Layer, Option, Schedule, Schema } from "effect"
 import * as crypto from "node:crypto"
 import * as fs from "node:fs/promises"
 import * as os from "node:os"
@@ -18,10 +18,12 @@ import { CommandRunner } from "./command-runner.ts"
 import { durationMillis, loadRuntimeConfig } from "./runtime-config.ts"
 import { WorkerQueue } from "./worker-queue.ts"
 import { hashWorkerPrompt, WorkerRuns } from "./worker-runs.ts"
+import { safeStateSegment } from "./state-paths.ts"
 
 export interface WorkerExecutionJob extends WorkerJobPayloadType {
   readonly worker_id: string
   readonly timeout_ms: number
+  readonly state_root?: string
 }
 
 export interface WorkerExecutorApi {
@@ -38,6 +40,7 @@ export interface WorkerSupervisorApi {
     input: WorkerJobPayloadType,
   ) => Effect.Effect<WorkerRunType, WorkerRunError | EventStoreError>
   readonly runOne: Effect.Effect<WorkerRunType, WorkerRunError | EventStoreError>
+  /** Bounded drain: runs up to `count` available jobs and returns once the queue is briefly idle. */
   readonly runN: (count: number) => Effect.Effect<ReadonlyArray<WorkerRunType>, WorkerRunError | EventStoreError>
 }
 
@@ -102,13 +105,36 @@ const jobForPayload = (
 ): WorkerJob => ({
   id: workerId,
   queue: "default",
-  payload: { ...payload, worker_id: workerId },
+  payload: {
+    ...payload,
+    worker_id: workerId,
+    prompt_hash: promptHashForPayload(payload),
+  },
   enqueuedAt: Date.now(),
   attempts: 0,
 })
 
-const sanitizedPathPart = (value: string): string =>
-  value.replace(/[^A-Za-z0-9_.-]/g, "-").slice(0, 80) || "worker"
+const promptHashForPayload = (payload: WorkerJobPayloadType): string =>
+  payload.prompt_hash ?? hashWorkerPrompt(payload.prompt)
+
+const payloadCompatibleWithRun = (
+  payload: WorkerJobPayloadType,
+  workerId: string,
+  run: WorkerRunType,
+): boolean =>
+  run.worker_id === workerId &&
+  run.session_id === payload.session_id &&
+  run.agent_type === payload.agent_type &&
+  run.mode === payload.mode &&
+  run.prompt_hash === promptHashForPayload(payload) &&
+  run.scope === payload.scope &&
+  (run.parent_task_id ?? undefined) === (payload.parent_task_id ?? undefined) &&
+  (run.agent_id ?? undefined) === (payload.agent_id ?? undefined)
+
+const sanitizedPathPart = (value: string): string => safeStateSegment(value, "worker")
+
+const isTerminalRun = (run: WorkerRunType): boolean =>
+  run.status === "completed" || run.status === "failed" || run.status === "cancelled"
 
 const runGitText = (
   runner: CommandRunner["Type"],
@@ -176,6 +202,9 @@ const writeWorkerPatch = (
       workerError("worker-supervisor.patch", "failed to persist worker patch", workerId, cause),
   })
 }
+
+const parseChangedFiles = (stdout: string): ReadonlyArray<string> =>
+  [...new Set(stdout.split(/\r?\n/).map((line) => line.trim()).filter((line) => line.length > 0))].sort()
 
 const acquireWorkerWorktree = (
   runner: CommandRunner["Type"],
@@ -272,25 +301,28 @@ const removeWorkerWorktree = (
       ),
     )
 
+interface WorkerExecutionOutcome {
+  readonly result: unknown
+  readonly metadata: {
+    readonly isolation: WorkerIsolation
+    readonly workspace_path?: string
+    readonly patch_path?: string
+    readonly patch_changed_files?: ReadonlyArray<string>
+  }
+}
+
 const runWithWorktreeIsolation = (
   runner: CommandRunner["Type"],
   executor: WorkerExecutor["Type"],
   job: WorkerExecutionJob,
   isolation: WorkerIsolation,
-): Effect.Effect<{
-  readonly result: unknown
-  readonly metadata: {
-    readonly isolation: WorkerIsolation
-    readonly workspace_path: string
-    readonly patch_path?: string
-  }
-}, WorkerRunError> => {
+): Effect.Effect<WorkerExecutionOutcome, WorkerRunError> => {
   const sourceCwd = job.cwd ?? process.cwd()
   return Effect.acquireUseRelease(
     acquireWorkerWorktree(runner, job.worker_id, sourceCwd),
     ({ repoRoot, worktreePath }) =>
       Effect.gen(function* () {
-        const result = yield* executor.run({ ...job, cwd: worktreePath })
+        const result = yield* executor.run({ ...job, cwd: worktreePath, state_root: repoRoot })
         yield* runGitText(
           runner,
           ["add", "-A"],
@@ -306,6 +338,16 @@ const runWithWorktreeIsolation = (
           "worker-supervisor.patch",
           { stdoutMaxBytes: MAX_WORKER_PATCH_BYTES },
         )
+        const changedFiles = parseChangedFiles(
+          yield* runGitText(
+            runner,
+            ["diff", "--cached", "--name-only"],
+            worktreePath,
+            job.worker_id,
+            "worker-supervisor.patch",
+            { stdoutMaxBytes: 200_000 },
+          ),
+        )
         const patchPath = yield* writeWorkerPatch(repoRoot, job.worker_id, diff)
         return {
           result,
@@ -313,6 +355,7 @@ const runWithWorktreeIsolation = (
             isolation,
             workspace_path: worktreePath,
             ...(patchPath === undefined ? {} : { patch_path: patchPath }),
+            ...(changedFiles.length === 0 ? {} : { patch_changed_files: changedFiles }),
           },
         }
       }),
@@ -355,7 +398,15 @@ export const WorkerExecutorLive: Layer.Layer<WorkerExecutor, never, ClaudeSubpro
     Effect.map(ClaudeSubprocess, (claude) =>
       WorkerExecutor.of({
         run: (job) =>
-          claude
+          job.prompt_redacted === true
+            ? Effect.fail(
+                workerError(
+                  "worker-executor.prompt",
+                  "worker prompt was redacted for persistence and cannot be executed; re-enqueue with the original prompt",
+                  job.worker_id,
+                ),
+              )
+            : claude
             .spawn(
               [
                 "--print",
@@ -368,6 +419,12 @@ export const WorkerExecutorLive: Layer.Layer<WorkerExecutor, never, ClaudeSubpro
                 stdin: job.prompt,
                 timeoutMs: job.timeout_ms,
                 ...(job.cwd === undefined ? {} : { cwd: job.cwd }),
+                env: {
+                  CLAUDE_HOOKS_WORKER_ID: job.worker_id,
+                  CLAUDE_HOOKS_SESSION_ID: job.session_id,
+                  ...(job.agent_id === undefined ? {} : { CLAUDE_HOOKS_WORKER_AGENT_ID: job.agent_id }),
+                  ...(job.state_root === undefined ? {} : { CLAUDE_HOOKS_STATE_ROOT: job.state_root }),
+                },
               },
             )
             .pipe(
@@ -451,10 +508,18 @@ export const WorkerSupervisorLive: Layer.Layer<
                   ...(payload.agent_id === undefined ? {} : { agent_id: payload.agent_id }),
                   agent_type: payload.agent_type,
                   mode: payload.mode,
-                  prompt_hash: hashWorkerPrompt(payload.prompt),
+                  prompt_hash: promptHashForPayload(payload),
                   scope: payload.scope,
                 })
-              : Effect.succeed(existing),
+              : payloadCompatibleWithRun(payload, workerId, existing)
+                ? Effect.succeed(existing)
+                : Effect.fail(
+                    workerError(
+                      "worker-supervisor.ensureQueued",
+                      "worker id already exists with incompatible payload",
+                      workerId,
+                    ),
+                  ),
           ),
         )
 
@@ -466,17 +531,24 @@ export const WorkerSupervisorLive: Layer.Layer<
               workerError("worker-supervisor.runOne", "workers are disabled by runtime config", workerId),
             )
           }
-          yield* ensureQueued(payload, workerId)
+          const queued = yield* ensureQueued(payload, workerId)
+          if (isTerminalRun(queued)) return queued
+          if (payload.prompt_redacted === true) {
+            const reason = "worker prompt was redacted for persistence and cannot be executed; re-enqueue with the original prompt"
+            yield* runs.fail(workerId, reason)
+            return yield* Effect.fail(workerError("worker-supervisor.prompt", reason, workerId))
+          }
           const timeoutMs = positiveInt(payload.timeout_ms, durationMillis(config.workerDefaultTimeoutMs))
           const maxAttempts = positiveInt(payload.max_attempts, config.workerRetryLimit + 1)
           const executionJob: WorkerExecutionJob = {
             ...payload,
             worker_id: workerId,
             timeout_ms: timeoutMs,
+            ...(payload.cwd === undefined ? {} : { state_root: payload.cwd }),
           }
-          const execute =
+          const execute: Effect.Effect<WorkerExecutionOutcome, WorkerRunError> =
             payload.mode === "write-allowed" &&
-              (config.workerWriteIsolation === "worktree" || config.workerWriteIsolation === "patch")
+              config.workerWriteIsolation === "worktree"
               ? runWithWorktreeIsolation(runner, executor, executionJob, config.workerWriteIsolation)
               : executor.run(executionJob).pipe(
                   Effect.map((result) => ({
@@ -486,7 +558,8 @@ export const WorkerSupervisorLive: Layer.Layer<
                     },
                   })),
                 )
-          const attempt = runs.markRunning(workerId).pipe(
+          const attempt: Effect.Effect<WorkerRunType, WorkerRunError | EventStoreError> =
+            runs.markRunning(workerId).pipe(
             Effect.zipRight(
               execute.pipe(
                 Effect.timeoutFail({
@@ -519,12 +592,35 @@ export const WorkerSupervisorLive: Layer.Layer<
           )
         })
 
-      const runOne = queue.take.pipe(
-        Effect.flatMap((job) =>
-          decodePayload(job).pipe(
-            Effect.flatMap((payload) => runDecoded(payload, payload.worker_id ?? job.id)),
+      const completeQueueIfTerminal = (jobId: string, workerId: string) =>
+        runs.get(workerId).pipe(
+          Effect.flatMap((run) =>
+            run !== null &&
+              (run.status === "completed" || run.status === "failed" || run.status === "cancelled")
+              ? queue.complete(jobId)
+              : Effect.void,
           ),
-        ),
+        )
+
+      const runJob = (job: WorkerJob): Effect.Effect<WorkerRunType, WorkerRunError | EventStoreError> =>
+        decodePayload(job).pipe(
+          Effect.flatMap((payload) => {
+            const workerId = payload.worker_id ?? job.id
+            return runDecoded(payload, workerId).pipe(
+              Effect.either,
+              Effect.flatMap((outcome) =>
+                outcome._tag === "Right"
+                  ? queue.complete(job.id).pipe(Effect.as(outcome.right))
+                  : completeQueueIfTerminal(job.id, workerId).pipe(
+                      Effect.zipRight(Effect.fail(outcome.left)),
+                    ),
+              ),
+            )
+          }),
+        )
+
+      const runOne: Effect.Effect<WorkerRunType, WorkerRunError | EventStoreError> = queue.take.pipe(
+        Effect.flatMap(runJob),
       )
 
       return WorkerSupervisor.of({
@@ -533,7 +629,17 @@ export const WorkerSupervisorLive: Layer.Layer<
           const payload = { ...input, worker_id: workerId }
           return runs.get(workerId).pipe(
             Effect.flatMap((existing) => {
-              if (existing !== null) return Effect.succeed(existing)
+              if (existing !== null) {
+                return payloadCompatibleWithRun(input, workerId, existing)
+                  ? Effect.succeed(existing)
+                  : Effect.fail(
+                      workerError(
+                        "worker-supervisor.enqueue",
+                        "worker id already exists with incompatible payload",
+                        workerId,
+                      ),
+                    )
+              }
               return runs.createQueued({
                 worker_id: workerId,
                 session_id: input.session_id,
@@ -541,7 +647,7 @@ export const WorkerSupervisorLive: Layer.Layer<
                 ...(input.agent_id === undefined ? {} : { agent_id: input.agent_id }),
                 agent_type: input.agent_type,
                 mode: input.mode,
-                prompt_hash: hashWorkerPrompt(input.prompt),
+                prompt_hash: promptHashForPayload(input),
                 scope: input.scope,
               }).pipe(
                 Effect.flatMap((queued) =>
@@ -577,12 +683,24 @@ export const WorkerSupervisorLive: Layer.Layer<
           Effect.gen(function* () {
             const config = yield* loadRuntimeConfig
             const runCount = Math.max(0, Math.floor(count))
+            if (runCount === 0) return []
             const concurrency = Math.max(1, Math.min(runCount, config.workerMaxConcurrent))
-            return yield* Effect.forEach(
-              Array.from({ length: runCount }),
-              () => runOne,
-              { concurrency },
-            )
+            const completed: WorkerRunType[] = []
+            while (completed.length < runCount) {
+              const needed = Math.min(concurrency, runCount - completed.length)
+              const maybeJobs = yield* Effect.forEach(
+                Array.from({ length: needed }),
+                () => queue.take.pipe(Effect.timeoutOption("100 millis")),
+                { concurrency: needed },
+              )
+              const jobs = maybeJobs
+                .filter(Option.isSome)
+                .map((job) => job.value)
+              if (jobs.length === 0) break
+              const batch = yield* Effect.forEach(jobs, runJob, { concurrency })
+              completed.push(...batch)
+            }
+            return completed
           }),
       })
     }),

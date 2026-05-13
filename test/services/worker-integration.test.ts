@@ -91,6 +91,7 @@ describe("WorkerIntegrationLive", () => {
     expect(applied.result.final_verification_required).toBe(true)
     expect(applied.latest?.integration_status).toBe("applied")
     expect(commands).toEqual([
+      "git status --porcelain",
       `git apply --check ${applied.result.patch_path}`,
       `git apply ${applied.result.patch_path}`,
     ])
@@ -116,7 +117,36 @@ describe("WorkerIntegrationLive", () => {
     )
 
     expect(checked.applied).toBe(false)
-    expect(commands).toEqual([`git apply --check ${checked.patch_path}`])
+    expect(commands).toEqual([
+      "git status --porcelain",
+      `git apply --check ${checked.patch_path}`,
+    ])
+  })
+
+  test("already applied worker patches are idempotent no-ops", async () => {
+    const root = mkdtempSync(join(tmpdir(), "chts-worker-idempotent-"))
+    const commands: string[] = []
+    const layer = layerFor(
+      root,
+      CommandRunnerTest((command, args) => {
+        commands.push([command, ...args].join(" "))
+        return commandResult(command, args)
+      }),
+    )
+
+    const checked = await Effect.runPromise(
+      Effect.gen(function* () {
+        yield* seedCompleted(root)
+        const runs = yield* WorkerRuns
+        yield* runs.markIntegrated("worker-1")
+        const integration = yield* WorkerIntegration
+        return yield* integration.applyWorkerPatch("worker-1")
+      }).pipe(Effect.provide(layer)),
+    )
+
+    expect(checked.applied).toBe(false)
+    expect(checked.check_only).toBe(false)
+    expect(commands).toEqual([])
   })
 
   test("failed verification blocks patch application", async () => {
@@ -225,6 +255,9 @@ describe("WorkerIntegrationLive", () => {
       root,
       CommandRunnerTest((command, args) => {
         commands.push([command, ...args].join(" "))
+        if (command === "git" && args[0] === "status") {
+          return commandResult(command, args)
+        }
         return commandResult(command, args, 1, "patch does not apply")
       }),
     )
@@ -239,7 +272,37 @@ describe("WorkerIntegrationLive", () => {
 
     expect(exit._tag).toBe("Left")
     expect(commands).toEqual([
+      "git status --porcelain",
       `git apply --check ${join(root, ".claude-hooks", "state", "workers", "patches", "worker-1.patch")}`,
     ])
+  })
+
+  test("untracked parent workspace files block patch application", async () => {
+    const root = mkdtempSync(join(tmpdir(), "chts-worker-untracked-"))
+    const commands: string[] = []
+    const layer = layerFor(
+      root,
+      CommandRunnerTest((command, args) => {
+        commands.push([command, ...args].join(" "))
+        if (command === "git" && args[0] === "status") {
+          return { ...commandResult(command, args), stdout: "?? scratch.txt\n" }
+        }
+        return commandResult(command, args)
+      }),
+    )
+
+    const exit = await Effect.runPromise(
+      Effect.gen(function* () {
+        yield* seedCompleted(root)
+        const integration = yield* WorkerIntegration
+        return yield* integration.applyWorkerPatch("worker-1").pipe(Effect.either)
+      }).pipe(Effect.provide(layer)),
+    )
+
+    expect(exit._tag).toBe("Left")
+    expect(commands).toEqual(["git status --porcelain"])
+    if (exit._tag === "Left") {
+      expect(exit.left.message).toContain("parent workspace has changes")
+    }
   })
 })

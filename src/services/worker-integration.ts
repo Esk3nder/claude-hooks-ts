@@ -41,6 +41,13 @@ const workerError = (
   return new WorkerRunError(payload)
 }
 
+const summarizeCause = (cause: unknown): string => {
+  if (cause instanceof WorkerRunError) return `${cause.op}: ${cause.message}`
+  if (cause instanceof EventStoreError) return `${cause.op}: ${cause.message}`
+  if (cause instanceof Error) return `${cause.name}: ${cause.message}`.slice(0, 240)
+  return String(cause).slice(0, 240)
+}
+
 const repoRootForPatch = (workerId: string, patchPath: string): Effect.Effect<string, WorkerRunError> => {
   if (!path.isAbsolute(patchPath)) {
     return Effect.fail(
@@ -155,6 +162,76 @@ const runGitApply = (
       ),
     )
 
+const ensureCleanWorkspace = (
+  runner: CommandRunner["Type"],
+  workerId: string,
+  repoRoot: string,
+): Effect.Effect<void, WorkerRunError> =>
+  runner
+    .run("git", ["status", "--porcelain"], {
+      cwd: repoRoot,
+      timeoutMs: 30_000,
+      stdoutMaxBytes: 200_000,
+      stderrMaxBytes: 200_000,
+    })
+    .pipe(
+      Effect.flatMap((result) => {
+        if (result.timedOut) {
+          return Effect.fail(workerError("worker-integration.apply", "git status timed out", workerId, result))
+        }
+        if (result.exitCode !== 0) {
+          const detail = (result.stderr.trim() || result.stdout.trim() || `git status exited ${result.exitCode}`)
+            .slice(0, 500)
+          return Effect.fail(workerError("worker-integration.apply", detail, workerId, result))
+        }
+        if (result.stdout.trim().length > 0) {
+          return Effect.fail(
+            workerError(
+              "worker-integration.apply",
+              "parent workspace has changes; apply worker patches from a clean workspace",
+              workerId,
+              result.stdout,
+            ),
+          )
+        }
+        return Effect.void
+      }),
+      Effect.mapError((cause) =>
+        cause instanceof WorkerRunError
+          ? cause
+          : workerError("worker-integration.apply", String(cause), workerId, cause),
+      ),
+    )
+
+const applyPatchAndMarkIntegrated = (
+  runner: CommandRunner["Type"],
+  runs: WorkerRuns["Type"],
+  workerId: string,
+  repoRoot: string,
+  patchPath: string,
+): Effect.Effect<void, WorkerRunError | EventStoreError> =>
+  runGitApply(runner, workerId, repoRoot, ["apply", patchPath]).pipe(
+    Effect.zipRight(
+      runs.markIntegrated(workerId).pipe(
+        Effect.catchAll((cause) =>
+          runGitApply(runner, workerId, repoRoot, ["apply", "-R", patchPath]).pipe(
+            Effect.catchAll((rollbackCause) =>
+              Effect.fail(
+                workerError(
+                  "worker-integration.rollback",
+                  `patch applied but integration state update failed and rollback failed: mark=${summarizeCause(cause)} rollback=${summarizeCause(rollbackCause)}`,
+                  workerId,
+                  { mark: cause, rollback: rollbackCause },
+                ),
+              ),
+            ),
+            Effect.zipRight(Effect.fail(cause)),
+          ),
+        ),
+      ),
+    ),
+  )
+
 export const WorkerIntegrationLive: Layer.Layer<
   WorkerIntegration,
   never,
@@ -170,15 +247,23 @@ export const WorkerIntegrationLive: Layer.Layer<
           runs.get(workerId).pipe(
             Effect.flatMap((run) => validateRunForApply(workerId, run)),
             Effect.flatMap((run) =>
+              run.integration_status === "applied"
+                ? Effect.succeed({
+                    worker_id: workerId,
+                    patch_path: run.patch_path!,
+                    applied: false,
+                    check_only: opts.checkOnly === true,
+                    final_verification_required: true,
+                  })
+                :
               repoRootForPatch(workerId, run.patch_path!).pipe(
                 Effect.flatMap((repoRoot) =>
-                  runGitApply(runner, workerId, repoRoot, ["apply", "--check", run.patch_path!]).pipe(
+                  ensureCleanWorkspace(runner, workerId, repoRoot).pipe(
+                    Effect.zipRight(runGitApply(runner, workerId, repoRoot, ["apply", "--check", run.patch_path!])),
                     Effect.zipRight(
                       opts.checkOnly === true
                         ? Effect.void
-                        : runGitApply(runner, workerId, repoRoot, ["apply", run.patch_path!]).pipe(
-                            Effect.zipRight(runs.markIntegrated(workerId)),
-                          ),
+                        : applyPatchAndMarkIntegrated(runner, runs, workerId, repoRoot, run.patch_path!),
                     ),
                     Effect.as({
                       worker_id: workerId,
