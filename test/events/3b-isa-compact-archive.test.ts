@@ -26,6 +26,7 @@ import { handlePreCompact } from "../../src/events/precompact-snapshot.ts"
 import { handlePostCompact } from "../../src/events/postcompact-ledger.ts"
 import { handleSessionEnd } from "../../src/events/session-ledger.ts"
 import { HookPayload } from "../../src/schema/payloads.ts"
+import { EventStoreLive } from "../../src/services/event-store.ts"
 import { FileSystemLive } from "../../src/services/filesystem.ts"
 import { SessionStateLive } from "../../src/services/session-state.ts"
 import { Project, type ProjectApi } from "../../src/services/project.ts"
@@ -205,7 +206,7 @@ describe("PostCompact rehydrates ISA section as additionalContext", () => {
       })
       const decision = await Effect.runPromise(
         handlePostCompact(post).pipe(
-          Effect.provide(FileSystemLive),
+          Effect.provide(EventStoreLive),
           Effect.provide(projectAt(root)),
         ),
       )
@@ -238,7 +239,7 @@ describe("PostCompact rehydrates ISA section as additionalContext", () => {
       })
       const decision = await Effect.runPromise(
         handlePostCompact(post).pipe(
-          Effect.provide(FileSystemLive),
+          Effect.provide(EventStoreLive),
           Effect.provide(projectAt(root)),
         ),
       )
@@ -267,7 +268,7 @@ describe("PostCompact rehydrates ISA section as additionalContext", () => {
       })
       const decision = await Effect.runPromise(
         handlePostCompact(post).pipe(
-          Effect.provide(FileSystemLive),
+          Effect.provide(EventStoreLive),
           Effect.provide(projectAt(root)),
         ),
       )

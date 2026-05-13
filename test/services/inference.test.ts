@@ -212,7 +212,7 @@ describe("Inference.classify (with ClaudeSubprocessTest layer)", () => {
     expect(record.context["timeout_ms"]).toBe(25_000)
   })
 
-  test("non-zero exit → fail-safe tier 3 with stderr in reason", async () => {
+  test("non-zero exit → fail-safe tier 3 with redacted stderr summary", async () => {
     const c = await runClassify({
       stdout: "",
       stderr: "claude: not authenticated",
@@ -224,6 +224,26 @@ describe("Inference.classify (with ClaudeSubprocessTest layer)", () => {
     expect(c.tier).toBe(3)
     expect(c.source).toBe("fail-safe")
     expect(c.reason).toContain("exit 2")
+  })
+
+  test("non-zero exit does not persist raw subprocess stderr", async () => {
+    const { classification, failures } = await runClassifyWithFailures({
+      stdout: "",
+      stderr: "TOP_SECRET_CLASSIFIER_PROMPT",
+      exitCode: 2,
+      latencyMs: 100,
+      timedOut: false,
+    })
+
+    expect(classification.source).toBe("fail-safe")
+    expect(classification.reason).toContain("exit 2")
+    expect(classification.reason).toContain("stderr redacted")
+    expect(classification.reason).not.toContain("TOP_SECRET_CLASSIFIER_PROMPT")
+
+    const record = failures.records()[0]
+    if (record === undefined) throw new Error("missing hook failure record")
+    expect(record.cause).toContain("stderr redacted")
+    expect(record.cause).not.toContain("TOP_SECRET_CLASSIFIER_PROMPT")
   })
 
   test("unparseable stdout → fail-safe tier 3", async () => {

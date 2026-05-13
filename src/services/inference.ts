@@ -247,6 +247,13 @@ const buildStdin = (
   return `${refs}\n\n${framedPrompt}`
 }
 
+const classifierExitSummary = (exitCode: number, stderr: string): string => {
+  const stderrBytes = Buffer.byteLength(stderr, "utf8")
+  return stderrBytes > 0
+    ? `classifier exit ${exitCode}; stderr redacted (${stderrBytes} bytes)`
+    : `classifier exit ${exitCode}`
+}
+
 const liveImpl: InferenceApi = {
   classify: (prompt, opts) =>
     Effect.gen(function* () {
@@ -297,16 +304,17 @@ const liveImpl: InferenceApi = {
         }
       }
       if (result.exitCode !== 0) {
+        const reason = classifierExitSummary(result.exitCode, result.stderr)
         yield* reportHookFailure({
           kind: "subprocess_failed",
           event: "UserPromptSubmit",
-          cause: `classifier exit ${result.exitCode}: ${result.stderr.slice(0, 120).trim()}`,
+          cause: reason,
           hookSafe: true,
           context: { subprocess: "claude", op: "classifier.spawn", exit_code: result.exitCode },
         })
         return {
           ...FAIL_SAFE,
-          reason: `classifier exit ${result.exitCode}: ${result.stderr.slice(0, 120).trim()}`,
+          reason,
           latencyMs: result.latencyMs,
         }
       }

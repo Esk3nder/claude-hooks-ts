@@ -4,7 +4,8 @@ import * as fsSync from "node:fs"
 import type { HookPayload } from "../schema/payloads.ts"
 import type { HookDecision } from "../schema/decisions.ts"
 import { SAFE_DEFAULT } from "../schema/decisions.ts"
-import { FileSystem } from "../services/filesystem.ts"
+import { eventStream, SetupRecordSchema } from "../schema/events.ts"
+import { EventStore, summarizeEventStoreError } from "../services/event-store.ts"
 import { Project } from "../services/project.ts"
 import { Approvals } from "../services/approvals.ts"
 
@@ -77,10 +78,10 @@ const rotateLargeLedgers = (cwd: string): number => {
  */
 export const handleSetup = (
   payload: HookPayload,
-): Effect.Effect<HookDecision, never, FileSystem | Project | Approvals> =>
+): Effect.Effect<HookDecision, never, EventStore | Project | Approvals> =>
   Effect.gen(function* () {
     if (payload._tag !== "Setup") return SAFE_DEFAULT
-    const fs = yield* FileSystem
+    const eventStore = yield* EventStore
     const project = yield* Project
     const approvals = yield* Approvals
     const root = yield* project.root()
@@ -92,25 +93,11 @@ export const handleSetup = (
       trigger,
       ts: new Date().toISOString(),
     }
-    const append = Effect.gen(function* () {
-      const existsE = yield* Effect.either(fs.exists(ledgerPath))
-      const prior =
-        existsE._tag === "Right" && existsE.right
-          ? yield* fs
-              .readFile(ledgerPath)
-              .pipe(Effect.catchAll(() => Effect.succeed("")))
-          : ""
-      const next =
-        (prior.length === 0 || prior.endsWith("\n") ? prior : prior + "\n") +
-        JSON.stringify(entry) +
-        "\n"
-      yield* fs.writeFile(ledgerPath, next)
-    })
-    yield* fs.withLock(ledgerPath, append).pipe(
+    yield* eventStore.append(eventStream("setup", ledgerPath, SetupRecordSchema, { maxRecords: 1_000 }), entry).pipe(
       Effect.catchAll((err) =>
         Effect.sync(() => {
           process.stderr.write(
-            `setup: ledger write failed: ${String(err).slice(0, 120)}\n`,
+            `setup: ledger write failed: ${summarizeEventStoreError(err)}\n`,
           )
         }),
       ),
@@ -146,6 +133,19 @@ export const handleSetup = (
             "utf8",
           )
           created = true
+        } else {
+          if (!fsSync.existsSync(stateDir)) {
+            fsSync.mkdirSync(stateDir, { recursive: true })
+            created = true
+          }
+          if (!fsSync.existsSync(readme)) {
+            fsSync.writeFileSync(
+              readme,
+              "policies: see https://github.com/Esk3nder/claude-hooks-ts/blob/main/docs/HOOK-EVENTS.md\n",
+              "utf8",
+            )
+            created = true
+          }
         }
       } catch {
         // best-effort

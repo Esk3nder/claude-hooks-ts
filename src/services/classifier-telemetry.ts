@@ -11,15 +11,15 @@
  * (under the package's existing state root, not under MEMORY/OBSERVABILITY
  * which is a this package-specific path).
  *
- * Failure policy: best-effort. A failed write must NEVER block the hook
- * response. implements canonical behavior empty try/catch around the appendFileSync call.
+ * Failure policy: best-effort. A failed EventStore append must NEVER block
+ * the hook response.
  */
 
 import { Context, Effect, Layer } from "effect"
 import * as crypto from "node:crypto"
 import * as path from "node:path"
 import { ClassifierTelemetryRecordSchema, eventStream } from "../schema/events.ts"
-import { EventStore, EventStoreLive } from "./event-store.ts"
+import { EventStore, EventStoreLive, summarizeEventStoreError } from "./event-store.ts"
 import type { Mode, Tier, ClassificationSource } from "./inference.ts"
 
 export interface ClassifierTelemetryRecord {
@@ -112,7 +112,7 @@ export const ClassifierTelemetryLiveBase = (
             Effect.catchAll((err) =>
               Effect.sync(() => {
                 process.stderr.write(
-                  `classifier-telemetry: append failed: ${String(err).slice(0, 160)}\n`,
+                  `classifier-telemetry: append failed: ${summarizeEventStoreError(err)}\n`,
                 )
               }),
             ),

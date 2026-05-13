@@ -263,7 +263,7 @@ const parseJson = (raw: string): Effect.Effect<unknown, StdinParseError> =>
     try: () => JSON.parse(raw) as unknown,
     catch: (cause) =>
       new StdinParseError({
-        message: `stdin not valid JSON: ${raw.slice(0, 80)}`,
+        message: "stdin not valid JSON",
         cause,
       }),
   })
@@ -468,7 +468,7 @@ export const program = (argv: ReadonlyArray<string>): Effect.Effect<void> =>
         event: action,
         cause: parsedE.left,
         fallbackDecision: fallback,
-        context: { raw_prefix: raw.slice(0, 80) },
+        context: { raw_bytes: Buffer.byteLength(raw, "utf8") },
       })
       yield* emit(fallback, fallback, { event: action })
       return
@@ -479,7 +479,7 @@ export const program = (argv: ReadonlyArray<string>): Effect.Effect<void> =>
       yield* reportFallback({
         kind: "payload_decode_failed",
         event: action,
-        cause: decodedE.left,
+        cause: "raw payload schema mismatch",
         fallbackDecision: fallback,
         context: { stage: "raw_payload" },
       })
@@ -492,7 +492,7 @@ export const program = (argv: ReadonlyArray<string>): Effect.Effect<void> =>
       yield* reportFallback({
         kind: "payload_decode_failed",
         event: action,
-        cause: normalizedE.left,
+        cause: "normalized payload schema mismatch",
         fallbackDecision: fallback,
         context: { stage: "normalized_payload" },
       })

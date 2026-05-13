@@ -3,7 +3,8 @@ import * as path from "node:path";
 import type { HookPayload } from "../schema/payloads.ts";
 import type { HookDecision } from "../schema/decisions.ts";
 import { SAFE_DEFAULT } from "../schema/decisions.ts";
-import { FileSystem } from "../services/filesystem.ts";
+import { eventStream, StopFailureRecordSchema } from "../schema/events.ts";
+import { EventStore, summarizeEventStoreError } from "../services/event-store.ts";
 import { Project } from "../services/project.ts";
 
 interface StopFailureLedgerEntry {
@@ -59,6 +60,14 @@ export const categorizeFailure = (
   return "other";
 };
 
+const persistedErrorMessage = (
+  category: FailureCategory,
+  errorMessage: string,
+): string =>
+  category === "authentication"
+    ? `authentication failure message redacted (${Buffer.byteLength(errorMessage, "utf8")} bytes)`
+    : errorMessage;
+
 /**
  * StopFailure — appends to <cwd>/.claude-hooks/state/failures.jsonl, then
  * categorizes the error and may emit a ContextInjection for actionable
@@ -67,10 +76,10 @@ export const categorizeFailure = (
  */
 export const handleStopFailure = (
   payload: HookPayload,
-): Effect.Effect<HookDecision, never, FileSystem | Project> =>
+): Effect.Effect<HookDecision, never, EventStore | Project> =>
   Effect.gen(function* () {
     if (payload._tag !== "StopFailure") return SAFE_DEFAULT;
-    const fs = yield* FileSystem;
+    const eventStore = yield* EventStore;
     const project = yield* Project;
     const root = yield* project.root();
     const ledgerPath = path.join(
@@ -87,26 +96,20 @@ export const handleStopFailure = (
       session_id: payload.session_id,
       error_type: payload.error_type,
       error_category: category,
-      error_message: payload.error_message,
+      error_message: persistedErrorMessage(category, payload.error_message),
       ts: new Date().toISOString(),
     };
-    const append = Effect.gen(function* () {
-      const existsE = yield* Effect.either(fs.exists(ledgerPath));
-      const prior =
-        existsE._tag === "Right" && existsE.right
-          ? yield* fs
-              .readFile(ledgerPath)
-              .pipe(Effect.catchAll(() => Effect.succeed("")))
-          : "";
-      const next =
-        (prior.length === 0 || prior.endsWith("\n") ? prior : prior + "\n") +
-        JSON.stringify(entry) +
-        "\n";
-      yield* fs.writeFile(ledgerPath, next);
-    });
-    yield* fs
-      .withLock(ledgerPath, append)
-      .pipe(Effect.catchAll(() => Effect.succeed(undefined)));
+    yield* eventStore
+      .append(eventStream("stop-failures", ledgerPath, StopFailureRecordSchema, { maxRecords: 1_000 }), entry)
+      .pipe(
+        Effect.catchAll((err) =>
+          Effect.sync(() => {
+            process.stderr.write(
+              `stop-failure: ledger write failed: ${summarizeEventStoreError(err)}\n`,
+            );
+          }),
+        ),
+      );
 
     if (category === "rate_limit") {
       return {
@@ -121,7 +124,7 @@ export const handleStopFailure = (
       return {
         hookSpecificOutput: {
           hookEventName: "Stop",
-          additionalContext: `Re-auth needed: ${payload.error_message}`,
+          additionalContext: "Recent failure: authentication. Re-authenticate or refresh provider credentials.",
         },
       };
     }

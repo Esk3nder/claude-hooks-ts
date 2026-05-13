@@ -4,7 +4,8 @@ import * as path from "node:path";
 import type { HookPayload } from "../schema/payloads.ts";
 import type { HookDecision } from "../schema/decisions.ts";
 import { SAFE_DEFAULT } from "../schema/decisions.ts";
-import { FileSystem } from "../services/filesystem.ts";
+import { eventStream, PostCompactRecordSchema } from "../schema/events.ts";
+import { EventStore, summarizeEventStoreError } from "../services/event-store.ts";
 import { Project } from "../services/project.ts";
 
 const sanitize = (s: string): string => s.replace(/[^a-zA-Z0-9._-]/g, "_");
@@ -77,16 +78,16 @@ interface PostCompactLedgerEntry {
  * reconstruct what happened around each compaction event. Best-effort:
  * always returns SAFE_DEFAULT and never propagates write failures.
  *
- * Cross-process safety: the read-modify-write block is wrapped in
- * `FileSystem.withLock(ledgerPath, ...)` so concurrent appends from sibling
- * dispatcher processes don't interleave partial JSON lines.
+ * Cross-process safety: EventStore owns locking, line caps, and append
+ * serialization so sibling dispatcher processes don't interleave partial
+ * JSON lines.
  */
 export const handlePostCompact = (
   payload: HookPayload,
-): Effect.Effect<HookDecision, never, FileSystem | Project> =>
+): Effect.Effect<HookDecision, never, EventStore | Project> =>
   Effect.gen(function* () {
     if (payload._tag !== "PostCompact") return SAFE_DEFAULT;
-    const fs = yield* FileSystem;
+    const eventStore = yield* EventStore;
     const project = yield* Project;
 
     const root = yield* project.root();
@@ -118,24 +119,9 @@ export const handlePostCompact = (
       "postcompact-ledger.jsonl",
     );
 
-    const append = Effect.gen(function* () {
-      const existsE = yield* Effect.either(fs.exists(ledgerPath));
-      const prior =
-        existsE._tag === "Right" && existsE.right
-          ? yield* fs
-              .readFile(ledgerPath)
-              .pipe(Effect.catchAll(() => Effect.succeed("")))
-          : "";
-      const next =
-        (prior.length === 0 || prior.endsWith("\n") ? prior : prior + "\n") +
-        JSON.stringify(entry) +
-        "\n";
-      yield* fs.writeFile(ledgerPath, next);
-    });
-
-    yield* fs.withLock(ledgerPath, append).pipe(
+    yield* eventStore.append(eventStream("postcompact", ledgerPath, PostCompactRecordSchema, { maxRecords: 1_000 }), entry).pipe(
       Effect.catchAll((cause: unknown) => {
-        const msg = String(cause).slice(0, 120);
+        const msg = summarizeEventStoreError(cause);
         process.stderr.write(`postcompact-ledger: write failed: ${msg}\n`);
         return Effect.succeed(undefined);
       }),

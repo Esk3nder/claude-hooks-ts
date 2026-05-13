@@ -3,7 +3,8 @@ import * as path from "node:path"
 import type { HookPayload } from "../schema/payloads.ts"
 import type { HookDecision } from "../schema/decisions.ts"
 import { SAFE_DEFAULT } from "../schema/decisions.ts"
-import { FileSystem } from "../services/filesystem.ts"
+import { eventStream, TeammateIdleRecordSchema } from "../schema/events.ts"
+import { EventStore, summarizeEventStoreError } from "../services/event-store.ts"
 import { Project } from "../services/project.ts"
 import { SessionState } from "../services/session-state.ts"
 
@@ -25,11 +26,11 @@ export const handleTeammateIdle = (
 ): Effect.Effect<
   HookDecision,
   never,
-  FileSystem | Project | SessionState
+  EventStore | Project | SessionState
 > =>
   Effect.gen(function* () {
     if (payload._tag !== "TeammateIdle") return SAFE_DEFAULT
-    const fs = yield* FileSystem
+    const eventStore = yield* EventStore
     const project = yield* Project
     const state = yield* SessionState
     const root = yield* project.root()
@@ -46,29 +47,13 @@ export const handleTeammateIdle = (
       teammate_type: payload.teammate_type,
       ts: new Date().toISOString(),
     }
-    yield* fs
-      .withLock(
-        ledgerPath,
-        Effect.gen(function* () {
-          const existsE = yield* Effect.either(fs.exists(ledgerPath))
-          const prior =
-            existsE._tag === "Right" && existsE.right
-              ? yield* fs
-                  .readFile(ledgerPath)
-                  .pipe(Effect.catchAll(() => Effect.succeed("")))
-              : ""
-          const next =
-            (prior.length === 0 || prior.endsWith("\n") ? prior : prior + "\n") +
-            JSON.stringify(entry) +
-            "\n"
-          yield* fs.writeFile(ledgerPath, next)
-        }),
-      )
+    yield* eventStore
+      .append(eventStream("teammate-idle", ledgerPath, TeammateIdleRecordSchema, { maxRecords: 1_000 }), entry)
       .pipe(
         Effect.tapError((cause) =>
           Effect.sync(() => {
             process.stderr.write(
-              `[TeammateIdle] ledger append failed: ${String(cause).slice(0, 160)}\n`,
+              `[TeammateIdle] ledger append failed: ${summarizeEventStoreError(cause)}\n`,
             )
           }),
         ),

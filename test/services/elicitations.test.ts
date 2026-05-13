@@ -62,6 +62,26 @@ describe("ElicitationsLive replay content", () => {
       await fs.rm(cwd, { recursive: true, force: true })
     }
   })
+
+  test("redacts raw string replay content before persistence", async () => {
+    const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "elicitations-live-"))
+    try {
+      const sig = elicitationSignature({ prompt: "ok?" })
+      const result = await Effect.runPromise(Effect.gen(function* () {
+        const e = yield* Elicitations
+        yield* e.record(cwd, "mcp.foo", "ask", sig, "accept", "TOP_SECRET_ELICITATION")
+        return yield* e.lookup(cwd, "mcp.foo", "ask", sig)
+      }).pipe(Effect.provide(ElicitationsLive)))
+
+      expect((result?.content as { redacted?: boolean }).redacted).toBe(true)
+
+      const persisted = await fs.readFile(ledger(cwd), "utf8")
+      expect(persisted).toContain("redacted")
+      expect(persisted).not.toContain("TOP_SECRET_ELICITATION")
+    } finally {
+      await fs.rm(cwd, { recursive: true, force: true })
+    }
+  })
 })
 
 let projectA: string

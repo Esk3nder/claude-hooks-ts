@@ -117,3 +117,58 @@ export const WorktreeRemoveRecordSchema = Schema.Struct({
 })
 
 export type WorktreeRemoveEvent = Schema.Schema.Type<typeof WorktreeRemoveRecordSchema>
+
+export const NotificationRecordSchema = Schema.Struct({
+  session_id: Schema.String,
+  notification_type: Schema.String,
+  message: Schema.String,
+  ts: Schema.String,
+})
+
+export type NotificationEvent = Schema.Schema.Type<typeof NotificationRecordSchema>
+
+export const InstructionsLoadedRecordSchema = Schema.Struct({
+  session_id: Schema.String,
+  file_path: Schema.String,
+  memory_type: Schema.String,
+  load_reason: Schema.String,
+  ts: Schema.String,
+})
+
+export type InstructionsLoadedEvent = Schema.Schema.Type<typeof InstructionsLoadedRecordSchema>
+
+export const StopFailureRecordSchema = Schema.Struct({
+  session_id: Schema.String,
+  error_type: Schema.String,
+  error_category: Schema.String,
+  error_message: Schema.String,
+  ts: Schema.String,
+})
+
+export type StopFailureEvent = Schema.Schema.Type<typeof StopFailureRecordSchema>
+
+export const TeammateIdleRecordSchema = Schema.Struct({
+  session_id: Schema.String,
+  teammate_name: Schema.String,
+  teammate_type: Schema.String,
+  ts: Schema.String,
+})
+
+export type TeammateIdleEvent = Schema.Schema.Type<typeof TeammateIdleRecordSchema>
+
+export const SetupRecordSchema = Schema.Struct({
+  session_id: Schema.String,
+  trigger: Schema.String,
+  ts: Schema.String,
+})
+
+export type SetupEvent = Schema.Schema.Type<typeof SetupRecordSchema>
+
+export const PostCompactRecordSchema = Schema.Struct({
+  session_id: Schema.String,
+  trigger: Schema.String,
+  compacted_at: Schema.String,
+  snapshot_path: Schema.Union(Schema.String, Schema.Null),
+})
+
+export type PostCompactEvent = Schema.Schema.Type<typeof PostCompactRecordSchema>

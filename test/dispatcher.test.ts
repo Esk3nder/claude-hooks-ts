@@ -29,6 +29,17 @@ describe("dispatcher subprocess", () => {
     expect(parsed).toEqual({})
   }, 30_000)
 
+  test("malformed stdin diagnostics do not echo raw prompt content", async () => {
+    const r = await runDispatcher("Stop", '{"prompt":"TOP_SECRET_PROMPT"')
+    expect(r.exitCode).toBe(0)
+    const parsed = JSON.parse(r.stdout)
+    expect(parsed).toEqual({})
+    expect(r.stderr).toContain("json_parse_failed")
+    expect(r.stderr).not.toContain("TOP_SECRET_PROMPT")
+    expect(r.stderr).not.toContain("raw_prefix")
+    expect(r.stderr).toContain("raw_bytes")
+  }, 30_000)
+
   test("malformed stdin for PreToolUse → ask instead of silent allow", async () => {
     const r = await runDispatcher("PreToolUse", "not json {{{")
     expect(r.exitCode).toBe(0)
@@ -64,6 +75,22 @@ describe("dispatcher subprocess", () => {
     expect(parsed.hookSpecificOutput?.permissionDecisionReason).toContain(
       "Malformed PreToolUse payload",
     )
+  }, 30_000)
+
+  test("schema-invalid payload diagnostics do not echo tool input", async () => {
+    const payload = JSON.stringify({
+      hook_event_name: "PreToolUse",
+      tool_name: "Bash",
+      tool_input: { command: "echo TOP_SECRET_SCHEMA" },
+    })
+    const r = await runDispatcher("PreToolUse", payload)
+    expect(r.exitCode).toBe(0)
+    const parsed = JSON.parse(r.stdout)
+    expect(parsed.hookSpecificOutput?.permissionDecision).toBe("ask")
+    expect(r.stderr).toContain("payload_decode_failed")
+    expect(r.stderr).toContain("raw payload schema mismatch")
+    expect(r.stderr).not.toContain("TOP_SECRET_SCHEMA")
+    expect(r.stderr).not.toContain("tool_input")
   }, 30_000)
 
   test("missing action → exit 0 + valid JSON", async () => {

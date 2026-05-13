@@ -6,13 +6,23 @@ import type { HookDecision } from "../schema/decisions.ts"
 import { SAFE_DEFAULT } from "../schema/decisions.ts"
 import { eventStream, WorktreeRemoveRecordSchema } from "../schema/events.ts"
 import { CommandRunner } from "../services/command-runner.ts"
-import { EventStore } from "../services/event-store.ts"
+import { EventStore, redactForPersistence, summarizeEventStoreError } from "../services/event-store.ts"
 import { Project } from "../services/project.ts"
 
 interface WorktreeRemoveLedgerEntry {
   readonly session_id: string
   readonly worktree_path: string
   readonly ts: string
+}
+
+const MAX_ARCHIVE_JSONL_FILES = 200
+const MAX_ARCHIVE_FILE_BYTES = 1024 * 1024
+const MAX_ARCHIVE_LINES = 1_000
+const MAX_ARCHIVE_LINE_BYTES = 32 * 1024
+
+interface JsonlFile {
+  readonly path: string
+  readonly size: number
 }
 
 /**
@@ -42,23 +52,110 @@ const findMainRepo = (worktreePath: string): string | null => {
  * Used to capture both top-level legacy ledgers and per-session
  * `state/<sessionId>/ledger.jsonl` files before archival.
  */
-const collectJsonlFiles = (root: string): string[] => {
-  const out: string[] = []
+const collectJsonlFiles = (root: string): { files: JsonlFile[]; capped: boolean } => {
+  const out: JsonlFile[] = []
+  let capped = false
   const walk = (dir: string): void => {
+    if (out.length >= MAX_ARCHIVE_JSONL_FILES) {
+      capped = true
+      return
+    }
     let ents: fs.Dirent[]
     try {
       ents = fs.readdirSync(dir, { withFileTypes: true })
     } catch {
       return
     }
-    for (const ent of ents) {
+    for (const ent of ents.sort((a, b) => a.name.localeCompare(b.name))) {
+      if (out.length >= MAX_ARCHIVE_JSONL_FILES) {
+        capped = true
+        return
+      }
       const p = path.join(dir, ent.name)
       if (ent.isDirectory()) walk(p)
-      else if (ent.isFile() && ent.name.endsWith(".jsonl")) out.push(p)
+      else if (ent.isFile() && ent.name.endsWith(".jsonl")) {
+        try {
+          out.push({ path: p, size: fs.statSync(p).size })
+        } catch {
+          // best-effort archive; skip files that disappear mid-walk
+        }
+      }
     }
   }
   walk(root)
-  return out
+  return { files: out, capped }
+}
+
+const byteLength = (value: string): number => Buffer.byteLength(value, "utf8")
+
+const readBoundedTail = (
+  file: JsonlFile,
+): { text: string; truncatedStart: boolean; dropLeadingLine: boolean } => {
+  const length = Math.min(file.size, MAX_ARCHIVE_FILE_BYTES)
+  if (length <= 0) return { text: "", truncatedStart: false, dropLeadingLine: false }
+  const buffer = Buffer.alloc(length)
+  const start = Math.max(0, file.size - length)
+  const fd = fs.openSync(file.path, "r")
+  try {
+    let offset = 0
+    while (offset < length) {
+      const read = fs.readSync(fd, buffer, offset, length - offset, start + offset)
+      if (read === 0) break
+      offset += read
+    }
+    let dropLeadingLine = start > 0
+    if (start > 0) {
+      const previous = Buffer.alloc(1)
+      const read = fs.readSync(fd, previous, 0, 1, start - 1)
+      if (read === 1 && (previous[0] === 0x0a || previous[0] === 0x0d)) {
+        dropLeadingLine = false
+      }
+    }
+    return {
+      text: buffer.subarray(0, offset).toString("utf8"),
+      truncatedStart: start > 0,
+      dropLeadingLine,
+    }
+  } finally {
+    fs.closeSync(fd)
+  }
+}
+
+const archiveNotice = (reason: string, extra: Record<string, unknown> = {}): string =>
+  JSON.stringify({ archive_notice: { reason, redacted: true, ...extra } })
+
+const sanitizeArchiveLine = (line: string): string => {
+  const lineBytes = byteLength(line)
+  if (lineBytes > MAX_ARCHIVE_LINE_BYTES) {
+    return archiveNotice("line_too_large", { bytes: lineBytes })
+  }
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(line)
+  } catch {
+    return archiveNotice("invalid_jsonl", { bytes: lineBytes })
+  }
+  const serialized = JSON.stringify(redactForPersistence(parsed))
+  return byteLength(serialized) <= MAX_ARCHIVE_LINE_BYTES
+    ? serialized
+    : archiveNotice("redacted_line_too_large", { bytes: byteLength(serialized) })
+}
+
+const writeSanitizedJsonlArchive = (from: JsonlFile, to: string): void => {
+  const bounded = readBoundedTail(from)
+  let lines = bounded.text.split(/\r?\n/).filter((line) => line.trim().length > 0)
+  if (bounded.dropLeadingLine && lines.length > 0) lines = lines.slice(1)
+  const omittedLines = Math.max(0, lines.length - MAX_ARCHIVE_LINES)
+  if (omittedLines > 0) lines = lines.slice(-MAX_ARCHIVE_LINES)
+  const output: string[] = []
+  if (bounded.truncatedStart) {
+    output.push(archiveNotice("file_tail_truncated", { max_bytes: MAX_ARCHIVE_FILE_BYTES }))
+  }
+  if (omittedLines > 0) {
+    output.push(archiveNotice("line_count_truncated", { omitted: omittedLines }))
+  }
+  for (const line of lines) output.push(sanitizeArchiveLine(line))
+  fs.writeFileSync(to, output.length === 0 ? "" : `${output.join("\n")}\n`, "utf8")
 }
 
 /**
@@ -70,7 +167,7 @@ const collectJsonlFiles = (root: string): string[] => {
  */
 const archiveWorktreeLedgers = (worktreePath: string, mainRepo: string): void => {
   const stateDir = path.join(worktreePath, ".claude-hooks", "state")
-  const found = collectJsonlFiles(stateDir)
+  const { files: found, capped } = collectJsonlFiles(stateDir)
   if (found.length > 0) {
     const stamp = new Date().toISOString().replace(/[:.]/g, "-")
     const base = path.basename(worktreePath)
@@ -83,15 +180,20 @@ const archiveWorktreeLedgers = (worktreePath: string, mainRepo: string): void =>
     )
     try {
       fs.mkdirSync(archiveDir, { recursive: true })
+      if (capped) {
+        process.stderr.write(
+          `worktree-remove: archive capped at ${MAX_ARCHIVE_JSONL_FILES} jsonl files under ${stateDir}\n`,
+        )
+      }
       for (const from of found) {
-        const rel = path.relative(stateDir, from)
+        const rel = path.relative(stateDir, from.path)
         const to = path.join(archiveDir, rel)
         try {
           fs.mkdirSync(path.dirname(to), { recursive: true })
-          fs.copyFileSync(from, to)
+          writeSanitizedJsonlArchive(from, to)
         } catch (e) {
           process.stderr.write(
-            `worktree-remove: archive ${from} -> ${to}: ${String(e)}\n`,
+            `worktree-remove: archive ${from.path} -> ${to}: ${String(e)}\n`,
           )
         }
       }
@@ -160,7 +262,7 @@ export const handleWorktreeRemove = (
       Effect.catchAll((err) =>
         Effect.sync(() => {
           process.stderr.write(
-            `worktree-remove: ledger append failed: ${String(err).slice(0, 120)}\n`,
+            `worktree-remove: ledger append failed: ${summarizeEventStoreError(err)}\n`,
           )
         }),
       ),

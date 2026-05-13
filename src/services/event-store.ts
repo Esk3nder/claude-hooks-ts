@@ -214,18 +214,25 @@ const parseTail = <A>(
 const readTail = <A>(stream: EventStream<A>, n: number): Effect.Effect<ReadonlyArray<A>, EventStoreError> =>
   Effect.tryPromise({
     try: () => readTailText(stream.path, stream.maxTailBytes ?? DEFAULT_MAX_TAIL_BYTES),
-    catch: (cause) => makeError("tail", stream as EventStream<unknown>, String(cause), cause),
+    catch: (cause) => makeError("tail", stream as EventStream<unknown>, "tail read failed", cause),
   }).pipe(Effect.flatMap((tail) => parseTail(stream, tail, Math.min(n, stream.maxRecords ?? DEFAULT_MAX_RECORDS))))
 
 const writeAll = <A>(stream: EventStream<A>, records: ReadonlyArray<A>): Effect.Effect<void, EventStoreError> =>
   Effect.tryPromise({
     try: async () => {
       await fs.mkdir(path.dirname(stream.path), { recursive: true })
-      const body = records.map((record) => JSON.stringify(record)).join("\n")
-      await fs.writeFile(stream.path, body.length === 0 ? "" : `${body}\n`, "utf8")
+      const lines = await Effect.runPromise(Effect.all(records.map((record) => encodeLine(stream, record))))
+      await fs.writeFile(stream.path, lines.join(""), "utf8")
     },
-    catch: (cause) => makeError("compact", stream as EventStream<unknown>, String(cause), cause),
+    catch: (cause) => makeError("compact", stream as EventStream<unknown>, "compact write failed", cause),
   })
+
+export const summarizeEventStoreError = (cause: unknown): string => {
+  if (cause instanceof EventStoreError) {
+    return `${cause.op} failed for ${cause.stream}: ${cause.message}`
+  }
+  return "event-store operation failed"
+}
 
 export const EventStoreLive: Layer.Layer<EventStore> = Layer.effect(
   EventStore,
@@ -245,7 +252,7 @@ export const EventStoreLive: Layer.Layer<EventStore> = Layer.effect(
                 await fs.appendFile(stream.path, line, "utf8")
               })
             },
-            catch: (cause) => makeError("append", stream as EventStream<unknown>, String(cause), cause),
+            catch: (cause) => makeError("append", stream as EventStream<unknown>, "append write failed", cause),
           })
         }),
       tail: <A>(stream: EventStream<A>, n: number) =>
@@ -270,7 +277,7 @@ export const EventStoreLive: Layer.Layer<EventStore> = Layer.effect(
                 const records = await Effect.runPromise(readTail(stream, stream.maxRecords ?? DEFAULT_MAX_RECORDS))
                 await Effect.runPromise(writeAll(stream, records))
               }),
-            catch: (cause) => makeError("compact", stream, String(cause), cause),
+            catch: (cause) => makeError("compact", stream, "compact failed", cause),
           })
         }),
     })

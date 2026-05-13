@@ -3,8 +3,14 @@ import { Chunk, Effect, Schema, Stream } from "effect"
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
+import { EventStoreError } from "../../src/schema/errors.ts"
 import { eventStream } from "../../src/schema/events.ts"
-import { EventStore, EventStoreLive, EventStoreTest } from "../../src/services/event-store.ts"
+import {
+  EventStore,
+  EventStoreLive,
+  EventStoreTest,
+  summarizeEventStoreError,
+} from "../../src/services/event-store.ts"
 
 const TestEventSchema = Schema.Struct({
   id: Schema.String,
@@ -161,6 +167,39 @@ describe("EventStoreLive", () => {
     }
   })
 
+  test("compact re-applies redaction to legacy raw records", async () => {
+    const root = mkdtempSync(join(tmpdir(), "chts-events-"))
+    try {
+      const file = join(root, "compact-redact.jsonl")
+      const stream = eventStream("compact-redact", file, TestEventSchema, { maxRecords: 10 })
+      writeFileSync(
+        file,
+        `${JSON.stringify({
+          id: "legacy",
+          tool_input: { command: "echo TOP_SECRET_TOOL" },
+          prompt: "TOP_SECRET_PROMPT",
+          nested: { content: "TOP_SECRET_CONTENT" },
+        })}\n`,
+      )
+
+      await Effect.runPromise(
+        Effect.gen(function* () {
+          const store = yield* EventStore
+          yield* Stream.runDrain(store.tail(stream, 10))
+          yield* store.compact(stream.name)
+        }).pipe(Effect.provide(EventStoreLive)),
+      )
+
+      const persisted = readFileSync(file, "utf8")
+      expect(persisted).toContain("redacted")
+      expect(persisted).not.toContain("TOP_SECRET_TOOL")
+      expect(persisted).not.toContain("TOP_SECRET_PROMPT")
+      expect(persisted).not.toContain("TOP_SECRET_CONTENT")
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
   test("rejects records that fail the stream schema", async () => {
     const root = mkdtempSync(join(tmpdir(), "chts-events-"))
     try {
@@ -177,6 +216,24 @@ describe("EventStoreLive", () => {
     } finally {
       rmSync(root, { recursive: true, force: true })
     }
+  })
+})
+
+describe("summarizeEventStoreError", () => {
+  test("does not stringify raw nested causes", () => {
+    const summary = summarizeEventStoreError(
+      new EventStoreError({
+        op: "append",
+        stream: "sensitive-stream",
+        path: "/tmp/events.jsonl",
+        message: "event schema decode failed",
+        cause: { tool_input: { command: "echo TOP_SECRET_CAUSE" } },
+      }),
+    )
+
+    expect(summary).toBe("append failed for sensitive-stream: event schema decode failed")
+    expect(summary).not.toContain("TOP_SECRET_CAUSE")
+    expect(summary).not.toContain("tool_input")
   })
 })
 

@@ -4,7 +4,7 @@ import type { HookPayload } from "../schema/payloads.ts";
 import type { HookDecision } from "../schema/decisions.ts";
 import { SAFE_DEFAULT } from "../schema/decisions.ts";
 import { eventStream, PermissionDeniedRecordSchema } from "../schema/events.ts";
-import { collectStream, EventStore } from "../services/event-store.ts";
+import { collectStream, EventStore, summarizeEventStoreError } from "../services/event-store.ts";
 import { Project } from "../services/project.ts";
 import { derivePatternKey } from "../policies/permission-patterns.ts";
 
@@ -65,7 +65,7 @@ export const handlePermissionDenied = (
         Effect.catchAll((err) =>
           Effect.sync(() => {
             process.stderr.write(
-              `permission-denied: event-store append/tail failed: ${String(err).slice(0, 160)}\n`,
+              `permission-denied: event-store append/tail failed: ${summarizeEventStoreError(err)}\n`,
             );
             return [] as ReadonlyArray<PermissionDeniedLedgerEntry>;
           }),

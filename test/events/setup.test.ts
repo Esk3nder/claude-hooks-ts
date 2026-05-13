@@ -5,7 +5,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { handleSetup } from "../../src/events/setup.ts";
 import { HookPayload } from "../../src/schema/payloads.ts";
-import { FileSystem, FileSystemTest } from "../../src/services/filesystem.ts";
+import { EventStoreLive } from "../../src/services/event-store.ts";
 import { ProjectTest } from "../../src/services/project.ts";
 import { ApprovalsTest } from "../../src/services/approvals.ts";
 
@@ -13,38 +13,36 @@ const decode = (raw: unknown) => Schema.decodeUnknownSync(HookPayload)(raw);
 
 describe("handleSetup", () => {
   test("appends ledger entry and returns SAFE_DEFAULT for non-handled trigger", async () => {
-    const layer = Layer.mergeAll(
-      FileSystemTest(),
-      ProjectTest({ root: "/proj" }),
-      ApprovalsTest(),
-    );
-    // Use a non-init/non-maintenance trigger by relying on the schema's default
-    // path: init triggers conditionally inject. We assert ledger only here.
-    const payload = decode({
-      _tag: "Setup",
-      session_id: "s1",
-      hook_event_name: "Setup",
-      trigger: "init",
-    });
-    const program = Effect.gen(function* () {
-      yield* handleSetup(payload);
-      const fs = yield* FileSystem;
-      const content = yield* fs.readFile(
-        "/proj/.claude-hooks/state/setup.jsonl",
+    const root = fsSync.mkdtempSync(path.join(os.tmpdir(), "chts-setup-ledger-"));
+    try {
+      const layer = Layer.mergeAll(
+        EventStoreLive,
+        ProjectTest({ root }),
+        ApprovalsTest(),
       );
-      return content;
-    });
-    const content = await Effect.runPromise(
-      program.pipe(Effect.provide(layer)),
-    );
-    const parsed = JSON.parse(content.trim().split("\n")[0]!);
-    expect(parsed.session_id).toBe("s1");
-    expect(parsed.trigger).toBe("init");
+      // Use an init trigger on an already-created hook dir so the decision is SAFE_DEFAULT.
+      fsSync.mkdirSync(path.join(root, ".claude-hooks", "state"), { recursive: true });
+      fsSync.writeFileSync(path.join(root, ".claude-hooks", "README.md"), "ready\n");
+      const payload = decode({
+        _tag: "Setup",
+        session_id: "s1",
+        hook_event_name: "Setup",
+        trigger: "init",
+      });
+      const d = await Effect.runPromise(handleSetup(payload).pipe(Effect.provide(layer)));
+      const content = fsSync.readFileSync(path.join(root, ".claude-hooks", "state", "setup.jsonl"), "utf8");
+      const parsed = JSON.parse(content.trim().split("\n")[0]!);
+      expect(d).toEqual({});
+      expect(parsed.session_id).toBe("s1");
+      expect(parsed.trigger).toBe("init");
+    } finally {
+      fsSync.rmSync(root, { recursive: true, force: true });
+    }
   });
 
   test("non-Setup payload is no-op", async () => {
     const layer = Layer.mergeAll(
-      FileSystemTest(),
+      EventStoreLive,
       ProjectTest({ root: "/proj" }),
       ApprovalsTest(),
     );
@@ -65,7 +63,7 @@ describe("handleSetup", () => {
     );
     try {
       const layer = Layer.mergeAll(
-        FileSystemTest(),
+        EventStoreLive,
         ProjectTest({ root: tmpRoot }),
         ApprovalsTest(),
       );
@@ -114,7 +112,7 @@ describe("handleSetup", () => {
       }
 
       const layer = Layer.mergeAll(
-        FileSystemTest(),
+        EventStoreLive,
         ProjectTest({ root: tmpRoot }),
         ApprovalsTest(),
       );

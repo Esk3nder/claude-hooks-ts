@@ -4,7 +4,8 @@ import * as fsSync from "node:fs"
 import type { HookPayload } from "../schema/payloads.ts"
 import type { HookDecision } from "../schema/decisions.ts"
 import { SAFE_DEFAULT } from "../schema/decisions.ts"
-import { FileSystem } from "../services/filesystem.ts"
+import { eventStream, InstructionsLoadedRecordSchema } from "../schema/events.ts"
+import { EventStore, summarizeEventStoreError } from "../services/event-store.ts"
 import { Project } from "../services/project.ts"
 
 interface InstructionsLoadedLedgerEntry {
@@ -53,10 +54,10 @@ const formatDate = (ms: number): string => {
  */
 export const handleInstructionsLoaded = (
   payload: HookPayload,
-): Effect.Effect<HookDecision, never, FileSystem | Project> =>
+): Effect.Effect<HookDecision, never, EventStore | Project> =>
   Effect.gen(function* () {
     if (payload._tag !== "InstructionsLoaded") return SAFE_DEFAULT
-    const fs = yield* FileSystem
+    const eventStore = yield* EventStore
     const project = yield* Project
     const root = yield* project.root()
     const ledgerPath = path.join(
@@ -72,20 +73,17 @@ export const handleInstructionsLoaded = (
       load_reason: payload.load_reason,
       ts: new Date().toISOString(),
     }
-    yield* Effect.gen(function* () {
-      const existsE = yield* Effect.either(fs.exists(ledgerPath))
-      const prior =
-        existsE._tag === "Right" && existsE.right
-          ? yield* fs
-              .readFile(ledgerPath)
-              .pipe(Effect.catchAll(() => Effect.succeed("")))
-          : ""
-      const next =
-        (prior.length === 0 || prior.endsWith("\n") ? prior : prior + "\n") +
-        JSON.stringify(entry) +
-        "\n"
-      yield* fs.writeFile(ledgerPath, next)
-    }).pipe(Effect.catchAll(() => Effect.succeed(undefined)))
+    yield* eventStore
+      .append(eventStream("instructions-loaded", ledgerPath, InstructionsLoadedRecordSchema, { maxRecords: 1_000 }), entry)
+      .pipe(
+        Effect.catchAll((err) =>
+          Effect.sync(() => {
+            process.stderr.write(
+              `instructions-loaded: ledger write failed: ${summarizeEventStoreError(err)}\n`,
+            )
+          }),
+        ),
+      )
 
     if (isThirdPartyHookFile(payload.file_path)) {
       return {
