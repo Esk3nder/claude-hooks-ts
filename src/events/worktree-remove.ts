@@ -4,7 +4,9 @@ import * as fs from "node:fs"
 import type { HookPayload } from "../schema/payloads.ts"
 import type { HookDecision } from "../schema/decisions.ts"
 import { SAFE_DEFAULT } from "../schema/decisions.ts"
-import { FileSystem } from "../services/filesystem.ts"
+import { eventStream, WorktreeRemoveRecordSchema } from "../schema/events.ts"
+import { CommandRunner } from "../services/command-runner.ts"
+import { EventStore } from "../services/event-store.ts"
 import { Project } from "../services/project.ts"
 
 interface WorktreeRemoveLedgerEntry {
@@ -66,7 +68,7 @@ const collectJsonlFiles = (root: string): string[] => {
  * relative paths. Then run `git worktree remove --force` (best-effort,
  * non-fatal).
  */
-const archiveAndRemove = (worktreePath: string, mainRepo: string): void => {
+const archiveWorktreeLedgers = (worktreePath: string, mainRepo: string): void => {
   const stateDir = path.join(worktreePath, ".claude-hooks", "state")
   const found = collectJsonlFiles(stateDir)
   if (found.length > 0) {
@@ -99,17 +101,15 @@ const archiveAndRemove = (worktreePath: string, mainRepo: string): void => {
       )
     }
   }
-  // Best-effort `git worktree remove --force`.
-  try {
-    Bun.spawnSync(["git", "worktree", "remove", "--force", worktreePath], {
-      cwd: mainRepo,
-      stdout: "ignore",
-      stderr: "ignore",
-    })
-  } catch (e) {
-    process.stderr.write(`worktree-remove: git remove: ${String(e)}\n`)
-  }
 }
+
+const worktreeRemoveStream = (root: string) =>
+  eventStream(
+    "worktree-remove",
+    path.join(root, ".claude-hooks", "state", "worktree-remove.jsonl"),
+    WorktreeRemoveRecordSchema,
+    { maxRecords: 1_000 },
+  )
 
 /**
  * WorktreeRemove — archives the worktree's JSONL ledgers into the main repo's
@@ -118,50 +118,49 @@ const archiveAndRemove = (worktreePath: string, mainRepo: string): void => {
  */
 export const handleWorktreeRemove = (
   payload: HookPayload,
-): Effect.Effect<HookDecision, never, FileSystem | Project> =>
+): Effect.Effect<HookDecision, never, CommandRunner | EventStore | Project> =>
   Effect.gen(function* () {
     if (payload._tag !== "WorktreeRemove") return SAFE_DEFAULT
-    const fs2 = yield* FileSystem
+    const runner = yield* CommandRunner
+    const eventStore = yield* EventStore
     const project = yield* Project
     const root = yield* project.root()
 
-    // Archive + git worktree remove (best-effort, sync, never throws).
-    yield* Effect.sync(() => {
-      const mainRepo =
-        findMainRepo(payload.worktree_path) ?? payload.cwd ?? root
-      archiveAndRemove(payload.worktree_path, mainRepo)
-    })
+    const mainRepo = findMainRepo(payload.worktree_path) ?? payload.cwd ?? root
+    yield* Effect.sync(() => archiveWorktreeLedgers(payload.worktree_path, mainRepo))
+    yield* runner
+      .run("git", ["worktree", "remove", "--force", payload.worktree_path], {
+        cwd: mainRepo,
+        timeoutMs: 10_000,
+        stdoutMaxBytes: 1_000,
+        stderrMaxBytes: 2_000,
+      })
+      .pipe(
+        Effect.flatMap((result) =>
+          result.exitCode === 0 && !result.timedOut
+            ? Effect.void
+            : Effect.sync(() => {
+                const detail = (result.stderr || result.stdout || `exit ${result.exitCode}`).slice(0, 200)
+                process.stderr.write(`worktree-remove: git remove failed: ${detail}\n`)
+              }),
+        ),
+        Effect.catchAll((err) =>
+          Effect.sync(() => {
+            process.stderr.write(`worktree-remove: git remove: ${String(err).slice(0, 200)}\n`)
+          }),
+        ),
+      )
 
-    const ledgerPath = path.join(
-      root,
-      ".claude-hooks",
-      "state",
-      "worktree-remove.jsonl",
-    )
     const entry: WorktreeRemoveLedgerEntry = {
       session_id: payload.session_id,
       worktree_path: payload.worktree_path,
       ts: new Date().toISOString(),
     }
-    const append = Effect.gen(function* () {
-      const existsE = yield* Effect.either(fs2.exists(ledgerPath))
-      const prior =
-        existsE._tag === "Right" && existsE.right
-          ? yield* fs2
-              .readFile(ledgerPath)
-              .pipe(Effect.catchAll(() => Effect.succeed("")))
-          : ""
-      const next =
-        (prior.length === 0 || prior.endsWith("\n") ? prior : prior + "\n") +
-        JSON.stringify(entry) +
-        "\n"
-      yield* fs2.writeFile(ledgerPath, next)
-    })
-    yield* fs2.withLock(ledgerPath, append).pipe(
+    yield* eventStore.append(worktreeRemoveStream(root), entry).pipe(
       Effect.catchAll((err) =>
         Effect.sync(() => {
           process.stderr.write(
-            `worktree-remove: ledger write failed: ${String(err).slice(0, 120)}\n`,
+            `worktree-remove: ledger append failed: ${String(err).slice(0, 120)}\n`,
           )
         }),
       ),

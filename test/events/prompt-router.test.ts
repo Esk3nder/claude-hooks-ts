@@ -11,6 +11,7 @@ import {
 import { ClaudeSubprocessTest } from "../../src/services/claude-subprocess.ts"
 import { InferenceTest, FAIL_SAFE } from "../../src/services/inference.ts"
 import { ClassifierTelemetryTest } from "../../src/services/classifier-telemetry.ts"
+import { CommandRunnerTest } from "../../src/services/command-runner.ts"
 
 const inferenceLayer = InferenceTest(() => ({
   ...FAIL_SAFE,
@@ -56,6 +57,7 @@ describe("handleUserPromptSubmit", () => {
           Effect.provide(inferenceLayer),
           Effect.provide(subprocLayer),
           Effect.provide(ClassifierTelemetryTest().layer),
+          Effect.provide(CommandRunnerTest()),
         ),
       )
       const out = d as {
@@ -82,6 +84,7 @@ describe("handleUserPromptSubmit", () => {
         Effect.provide(inferenceLayer),
         Effect.provide(subprocLayer),
         Effect.provide(ClassifierTelemetryTest().layer),
+        Effect.provide(CommandRunnerTest()),
       ),
     )
     const ctx = (
@@ -117,6 +120,7 @@ describe("handleUserPromptSubmit", () => {
         Effect.provide(e4Layer),
         Effect.provide(subprocLayer),
         Effect.provide(ClassifierTelemetryTest().layer),
+        Effect.provide(CommandRunnerTest()),
       ),
     )
     const ctx = (
@@ -161,6 +165,7 @@ describe("handleUserPromptSubmit", () => {
         Effect.provide(inferenceLayer),
         Effect.provide(subprocLayer),
         Effect.provide(ClassifierTelemetryTest().layer),
+        Effect.provide(CommandRunnerTest()),
       ),
     )
     expect(record.engagement_required).toBe(true)
@@ -198,6 +203,7 @@ describe("handleUserPromptSubmit", () => {
         Effect.provide(minimalLayer),
         Effect.provide(subprocLayer),
         Effect.provide(ClassifierTelemetryTest().layer),
+        Effect.provide(CommandRunnerTest()),
       ),
     )
     expect(record.engagement_required).toBe(false)
@@ -225,6 +231,7 @@ describe("handleUserPromptSubmit", () => {
         Effect.provide(minimalLayer),
         Effect.provide(subprocLayer),
         Effect.provide(ClassifierTelemetryTest().layer),
+        Effect.provide(CommandRunnerTest()),
       ),
     )
     const ctx = (
@@ -253,6 +260,7 @@ describe("handleUserPromptSubmit", () => {
         Effect.provide(tier2Layer),
         Effect.provide(subprocLayer),
         Effect.provide(ClassifierTelemetryTest().layer),
+        Effect.provide(CommandRunnerTest()),
       ),
     )
     const ctx = (
@@ -281,6 +289,7 @@ describe("handleUserPromptSubmit", () => {
         Effect.provide(inferenceLayer),
         Effect.provide(subprocLayer),
         Effect.provide(ClassifierTelemetryTest().layer),
+        Effect.provide(CommandRunnerTest()),
       ),
     )
     expect(record.requires_web_sources).toBe(true)
@@ -314,6 +323,7 @@ describe("handleUserPromptSubmit", () => {
         Effect.provide(inferenceLayer),
         Effect.provide(subprocLayer),
         Effect.provide(ClassifierTelemetryTest().layer),
+        Effect.provide(CommandRunnerTest()),
       ),
     )
     // Priming tag is the loose research.web (via "look up"), but the
@@ -334,6 +344,7 @@ describe("handleUserPromptSubmit", () => {
         Effect.provide(inferenceLayer),
         Effect.provide(subprocLayer),
         Effect.provide(ClassifierTelemetryTest().layer),
+        Effect.provide(CommandRunnerTest()),
       ),
     )
     expect(d).toEqual({})

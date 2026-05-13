@@ -15,6 +15,7 @@ import {
 import { getRecentContext } from "../algorithm/transcript-context.ts"
 import type { Inference } from "../services/inference.ts"
 import type { ClaudeSubprocess } from "../services/claude-subprocess.ts"
+import type { CommandRunner } from "../services/command-runner.ts"
 import {
   ClassifierTelemetry,
   buildRecord,
@@ -70,7 +71,7 @@ export const handleUserPromptSubmit = (
 ): Effect.Effect<
   HookDecision,
   never,
-  SessionState | Inference | ClaudeSubprocess | ClassifierTelemetry
+  SessionState | Inference | ClaudeSubprocess | ClassifierTelemetry | CommandRunner
 > =>
   Effect.gen(function* () {
     if (payload._tag !== "UserPromptSubmit") return SAFE_DEFAULT
@@ -153,7 +154,7 @@ export const handleUserPromptSubmit = (
         ? payload.cwd
         : process.cwd()
     const sessionRoot = engagementRequired
-      ? (existing?.session_root ?? detectSessionRoot(initialCwd))
+      ? (existing?.session_root ?? (yield* detectSessionRoot(initialCwd)))
       : null
     const expectedIsaPathAbsolute =
       engagementRequired && sessionRoot !== null && plan !== null

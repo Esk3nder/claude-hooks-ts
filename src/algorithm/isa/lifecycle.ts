@@ -422,7 +422,7 @@ export const handlePostToolUseIsaEffects = (
       // is the F3-style bug class this façade exists to prevent.
       if (anyFlipped) {
         try {
-          runCheckpoint(isa, cwd)
+          await runCheckpoint(isa, cwd)
         } catch (err) {
           process.stderr.write(
             `[probes] post-flip checkpoint failed: ${String(err)}\n`,

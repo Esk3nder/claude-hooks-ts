@@ -16,9 +16,9 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import * as os from "node:os";
-import { spawnSync } from "node:child_process";
 import { HOOK_EVENT_NAMES } from "../src/schema/hook-events.ts";
 import { shellQuote, splitShellWords } from "../src/services/shell-words.ts";
+import { runCommandLive } from "../src/services/command-runner.ts";
 
 const DISPATCHER_MARKERS = ["claude-hooks-ts/bin/claude-hook", "claude-hook"];
 const DEFAULT_TARGET = path.join(os.homedir(), ".claude", "settings.json");
@@ -64,18 +64,25 @@ const HOOK_EVENTS: ReadonlyArray<HookEvent> = HOOK_EVENT_NAMES;
  * Instead we build on first --apply, which is when the user has already
  * committed to the install. Returns true on success.
  */
-const tryBuild = (
+const tryBuild = async (
   installRoot: string,
   out: NodeJS.WritableStream,
-): boolean => {
+): Promise<boolean> => {
   const buildScript = path.join(installRoot, "scripts", "build.ts");
   if (!fs.existsSync(buildScript)) return false;
   out.write(`${CYAN}build:${RESET} compiling claude-hook for ${process.platform}-${process.arch}\n`);
-  const r = spawnSync("bun", ["run", buildScript], {
-    cwd: installRoot,
-    stdio: ["ignore", "inherit", "inherit"],
-  });
-  return r.status === 0;
+  try {
+    const result = await runCommandLive("bun", ["run", buildScript], {
+      cwd: installRoot,
+      timeoutMs: 120_000,
+    });
+    if (result.stdout.length > 0) out.write(result.stdout);
+    if (result.stderr.length > 0) out.write(result.stderr);
+    return result.exitCode === 0 && !result.timedOut;
+  } catch (cause) {
+    out.write(`${YELLOW}build skipped:${RESET} ${String(cause).slice(0, 200)}\n`);
+    return false;
+  }
 };
 
 /**
@@ -86,11 +93,12 @@ const tryBuild = (
  * `<installRoot>/bin/claude-hook` only when --no-binary is set or the
  * build fails.
  */
-const resolveDispatcherPath = (
+const resolveDispatcherPath = async (
   installRoot: string,
   noBinary: boolean,
   out: NodeJS.WritableStream = process.stdout,
-): string => {
+  allowBuild: boolean = true,
+): Promise<string> => {
   if (noBinary) {
     return path.join(installRoot, "bin", "claude-hook");
   }
@@ -103,8 +111,8 @@ const resolveDispatcherPath = (
         ? "darwin"
         : process.platform;
   const binary = path.join(installRoot, "dist", `claude-hook-${platform}-${arch}`);
-  if (!fs.existsSync(binary)) {
-    tryBuild(installRoot, out);
+  if (allowBuild && !fs.existsSync(binary)) {
+    await tryBuild(installRoot, out);
   }
   try {
     fs.accessSync(binary, fs.constants.X_OK);
@@ -114,12 +122,13 @@ const resolveDispatcherPath = (
   }
 };
 
-const buildEntries = (
+const buildEntries = async (
   installRoot: string,
   noBinary: boolean = false,
   out: NodeJS.WritableStream = process.stdout,
-): Record<HookEvent, HookMatcher[]> => {
-  const dispatcher = resolveDispatcherPath(installRoot, noBinary, out);
+  allowBuild: boolean = true,
+): Promise<Record<HookEvent, HookMatcher[]>> => {
+  const dispatcher = await resolveDispatcherPath(installRoot, noBinary, out, allowBuild);
   const entries: Partial<Record<HookEvent, HookMatcher[]>> = {};
   for (const ev of HOOK_EVENTS) {
     entries[ev] = [
@@ -134,6 +143,12 @@ const buildEntries = (
       },
     ];
   }
+  return entries as Record<HookEvent, HookMatcher[]>;
+};
+
+const emptyEntries = (): Record<HookEvent, HookMatcher[]> => {
+  const entries: Partial<Record<HookEvent, HookMatcher[]>> = {};
+  for (const ev of HOOK_EVENTS) entries[ev] = [];
   return entries as Record<HookEvent, HookMatcher[]>;
 };
 
@@ -263,10 +278,10 @@ interface InstallResult {
   uninstall: boolean;
 }
 
-export const runInstallDetailed = (
+export const runInstallDetailed = async (
   argv: ReadonlyArray<string>,
   out: NodeJS.WritableStream = process.stdout,
-): InstallResult => {
+): Promise<InstallResult> => {
   const args = parseArgs(argv);
   let existing: SettingsShape;
   try {
@@ -282,7 +297,9 @@ export const runInstallDetailed = (
       uninstall: args.uninstall,
     };
   }
-  const ours = buildEntries(args.installRoot, args.noBinary, out);
+  const ours = args.uninstall
+    ? emptyEntries()
+    : await buildEntries(args.installRoot, args.noBinary, out, args.apply);
   const merged = mergeHooks(
     existing,
     ours,
@@ -344,7 +361,7 @@ export const runInstallDetailed = (
 export const runInstall = (
   argv: ReadonlyArray<string>,
   out: NodeJS.WritableStream = process.stdout,
-): number => runInstallDetailed(argv, out).code;
+): Promise<number> => runInstallDetailed(argv, out).then((result) => result.code);
 
 interface WiredEntryLite {
   command: string;
@@ -436,34 +453,20 @@ export const verifyDispatcherRoundtrip = async (
     }
   }
   try {
-    const proc = Bun.spawn(argv, {
-      stdin: "pipe",
-      stdout: "pipe",
-      stderr: "pipe",
-    });
-    proc.stdin.write(ROUND_TRIP_PAYLOAD);
-    await proc.stdin.end();
     const timeoutMs = 5000;
-    const winner = await Promise.race([
-      proc.exited,
-      new Promise<"timeout">((resolve) =>
-        setTimeout(() => resolve("timeout"), timeoutMs),
-      ),
-    ]);
-    if (winner === "timeout") {
-      try {
-        proc.kill();
-      } catch {
-        // ignore
-      }
+    const run = await runCommandLive(argv[0]!, argv.slice(1), {
+      stdin: ROUND_TRIP_PAYLOAD,
+      timeoutMs,
+    });
+    if (run.timedOut) {
       out.write(
         `${RED}✗ Round-trip failed; settings rolled back${RESET} (5s timeout)\n`,
       );
       rollback(result, out);
       return 1;
     }
-    const code = proc.exitCode ?? -1;
-    const stdout = await new Response(proc.stdout).text();
+    const code = run.exitCode;
+    const stdout = run.stdout;
     if (code !== 0) {
       out.write(
         `${RED}✗ Round-trip failed; settings rolled back${RESET} (exit ${code}; stdout=${stdout.slice(0, 200)})\n`,
@@ -517,7 +520,7 @@ if (import.meta.main) {
     );
     process.exit(1);
   }
-  const result = runInstallDetailed(process.argv.slice(2));
+  const result = await runInstallDetailed(process.argv.slice(2));
   if (result.code !== 0) {
     process.exit(result.code);
   }

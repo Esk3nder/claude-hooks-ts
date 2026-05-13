@@ -28,6 +28,7 @@ import {
   EMPTY_SESSION_STATE,
   type SessionStateRecord,
 } from "../../src/services/session-state.ts"
+import { CommandRunnerTest } from "../../src/services/command-runner.ts"
 
 const decode = (raw: unknown) => Schema.decodeUnknownSync(HookPayload)(raw)
 
@@ -440,6 +441,7 @@ describe("UserPromptSubmit — frozen root is write-once across prompts", () => 
           Effect.provide(inferenceLayer),
           Effect.provide(ClaudeSubprocessTest()),
           Effect.provide(ClassifierTelemetryTest().layer),
+          Effect.provide(CommandRunnerTest()),
         ),
       )
       expect(after.session_root).toBe(root)
@@ -492,6 +494,7 @@ describe("UserPromptSubmit — frozen root is write-once across prompts", () => 
           Effect.provide(inferenceLayer),
           Effect.provide(ClaudeSubprocessTest()),
           Effect.provide(ClassifierTelemetryTest().layer),
+          Effect.provide(CommandRunnerTest()),
         ),
       )
       expect(after.engagement_required).toBe(true)

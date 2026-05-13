@@ -2,7 +2,8 @@ import { Context, Effect, Layer, Ref } from "effect";
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import { LedgerError } from "../schema/errors.ts";
-import { withFileLock } from "./file-lock.ts";
+import { eventStream, LedgerEntrySchema } from "../schema/events.ts";
+import { collectStream, EventStore, EventStoreLive } from "./event-store.ts";
 
 export interface LedgerEntry {
   readonly timestamp: number;
@@ -28,86 +29,66 @@ const ledgerPath = (root: string, sessionId: string) =>
 
 const stateRoot = (root: string) => path.join(root, ".claude-hooks", "state");
 
-const parseLines = (raw: string): LedgerEntry[] => {
-  const entries: LedgerEntry[] = [];
-  for (const line of raw.split("\n")) {
-    if (line.trim().length === 0) continue;
-    try {
-      entries.push(JSON.parse(line) as LedgerEntry);
-    } catch (err) {
-      process.stderr.write(
-        `ledger.read: skipping malformed line: ${String(err).slice(0, 120)}\n`,
-      );
-    }
-  }
-  return entries;
-};
+const ledgerStream = (root: string, sessionId: string) =>
+  eventStream(`session-ledger:${sessionId}`, ledgerPath(root, sessionId), LedgerEntrySchema, {
+    maxRecords: 1_000,
+  });
 
-const readSessionFile = async (file: string): Promise<LedgerEntry[]> => {
-  let raw: string;
-  try {
-    raw = await fs.readFile(file, "utf8");
-  } catch (err) {
-    if (
-      typeof err === "object" &&
-      err !== null &&
-      (err as { code?: string }).code === "ENOENT"
-    ) {
-      return [];
-    }
-    throw err;
-  }
-  return parseLines(raw);
-};
+const isNodeErrorCode = (cause: unknown, code: string): boolean =>
+  typeof cause === "object" &&
+  cause !== null &&
+  "code" in cause &&
+  (cause as { code?: unknown }).code === code;
 
-export const LedgerLive = (root: string = process.cwd()): Layer.Layer<Ledger> =>
-  Layer.succeed(
+const isDirectory = (filePath: string): Effect.Effect<boolean, LedgerError> =>
+  Effect.tryPromise({
+    try: async () => (await fs.stat(filePath)).isDirectory(),
+    catch: (cause) => new LedgerError({ op: "read", message: String(cause), cause }),
+  }).pipe(
+    Effect.catchIf((err) => isNodeErrorCode(err.cause, "ENOENT"), () => Effect.succeed(false)),
+  );
+
+export const LedgerLiveBase = (root: string = process.cwd()): Layer.Layer<Ledger, never, EventStore> =>
+  Layer.effect(
     Ledger,
-    Ledger.of({
-      append: (entry) =>
-        Effect.tryPromise({
-          try: async () => {
-            const file = ledgerPath(root, entry.sessionId);
-            await fs.mkdir(path.dirname(file), { recursive: true });
-            await withFileLock(file, async () => {
-              await fs.appendFile(file, JSON.stringify(entry) + "\n", "utf8");
-            });
-          },
-          catch: (cause) =>
-            new LedgerError({ op: "append", message: String(cause), cause }),
-        }),
-      read: (sessionId) =>
-        Effect.tryPromise({
-          try: async () => {
+    Effect.gen(function* () {
+      const store = yield* EventStore
+      const readSession = (sessionId: string) => collectStream(store.tail(ledgerStream(root, sessionId), 1_000))
+      return Ledger.of({
+        append: (entry) =>
+          store.append(ledgerStream(root, entry.sessionId), entry).pipe(
+            Effect.mapError((cause) =>
+              new LedgerError({ op: "append", message: String(cause), cause }),
+            ),
+          ),
+        read: (sessionId) =>
+          Effect.gen(function* () {
             if (sessionId !== undefined) {
-              return await readSessionFile(ledgerPath(root, sessionId));
+              return yield* readSession(sessionId).pipe(
+                Effect.mapError((cause) => new LedgerError({ op: "read", message: String(cause), cause })),
+              );
             }
             // Aggregate across every session directory under state/.
-            let dirs: string[] = [];
-            try {
-              dirs = await fs.readdir(stateRoot(root));
-            } catch (err) {
-              if (
-                typeof err === "object" &&
-                err !== null &&
-                (err as { code?: string }).code === "ENOENT"
-              ) {
-                return [];
-              }
-              throw err;
-            }
+            const dirs = yield* Effect.tryPromise({
+              try: () => fs.readdir(stateRoot(root)),
+              catch: (cause) => new LedgerError({ op: "read", message: String(cause), cause }),
+            }).pipe(Effect.catchIf((err) => isNodeErrorCode(err.cause, "ENOENT"), () => Effect.succeed([] as string[])));
             const all: LedgerEntry[] = [];
             for (const d of dirs) {
-              const file = path.join(stateRoot(root), d, "ledger.jsonl");
-              all.push(...(await readSessionFile(file)));
+              const maybeSessionDir = yield* isDirectory(path.join(stateRoot(root), d));
+              if (!maybeSessionDir) continue;
+              all.push(...(yield* readSession(d).pipe(
+                Effect.mapError((cause) => new LedgerError({ op: "read", message: String(cause), cause })),
+              )));
             }
             return all;
-          },
-          catch: (cause) =>
-            new LedgerError({ op: "read", message: String(cause), cause }),
-        }),
+          }),
+      })
     }),
   );
+
+export const LedgerLive = (root: string = process.cwd()): Layer.Layer<Ledger> =>
+  Layer.provide(LedgerLiveBase(root), EventStoreLive)
 
 export const LedgerTest = (): Layer.Layer<Ledger> =>
   Layer.effect(

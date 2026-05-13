@@ -3,7 +3,8 @@ import * as path from "node:path";
 import type { HookPayload } from "../schema/payloads.ts";
 import type { HookDecision } from "../schema/decisions.ts";
 import { SAFE_DEFAULT } from "../schema/decisions.ts";
-import { FileSystem } from "../services/filesystem.ts";
+import { eventStream, PermissionDeniedRecordSchema } from "../schema/events.ts";
+import { collectStream, EventStore } from "../services/event-store.ts";
 import { Project } from "../services/project.ts";
 import { derivePatternKey } from "../policies/permission-patterns.ts";
 
@@ -21,10 +22,13 @@ const REPEAT_WINDOW_MS = 30 * 60 * 1000;
 const REPEAT_THRESHOLD = 3;
 const TAIL_LINES = 100;
 
-const tailLines = (s: string, n: number): string[] => {
-  const lines = s.split("\n").filter((l) => l.length > 0);
-  return lines.slice(Math.max(0, lines.length - n));
-};
+const permissionDeniedStream = (root: string) =>
+  eventStream(
+    "permission-denials",
+    path.join(root, ".claude-hooks", "state", "permission-denials.jsonl"),
+    PermissionDeniedRecordSchema,
+    { maxRecords: TAIL_LINES },
+  );
 
 /**
  * PermissionDenied — appends to <cwd>/.claude-hooks/state/permission-denials.jsonl,
@@ -35,18 +39,12 @@ const tailLines = (s: string, n: number): string[] => {
  */
 export const handlePermissionDenied = (
   payload: HookPayload,
-): Effect.Effect<HookDecision, never, FileSystem | Project> =>
+): Effect.Effect<HookDecision, never, EventStore | Project> =>
   Effect.gen(function* () {
     if (payload._tag !== "PermissionDenied") return SAFE_DEFAULT;
-    const fs = yield* FileSystem;
     const project = yield* Project;
+    const eventStore = yield* EventStore;
     const root = yield* project.root();
-    const ledgerPath = path.join(
-      root,
-      ".claude-hooks",
-      "state",
-      "permission-denials.jsonl",
-    );
     const patternKey = derivePatternKey(payload.tool_name, payload.tool_input);
     const nowMs = Date.now();
     const entry: PermissionDeniedLedgerEntry = {
@@ -59,53 +57,33 @@ export const handlePermissionDenied = (
       ts: new Date(nowMs).toISOString(),
     };
 
-    const result = yield* fs
-      .withLock(
-        ledgerPath,
-        Effect.gen(function* () {
-          const existsE = yield* Effect.either(fs.exists(ledgerPath));
-          const prior =
-            existsE._tag === "Right" && existsE.right
-              ? yield* fs
-                  .readFile(ledgerPath)
-                  .pipe(Effect.catchAll(() => Effect.succeed("")))
-              : "";
-          const next =
-            (prior.length === 0 || prior.endsWith("\n")
-              ? prior
-              : prior + "\n") +
-            JSON.stringify(entry) +
-            "\n";
-          yield* fs.writeFile(ledgerPath, next);
-          return next;
-        }),
-      )
-      .pipe(Effect.catchAll(() => Effect.succeed("")));
-
-    const recentTail = tailLines(result, TAIL_LINES);
-    let count = 0;
-    let skipped = 0;
-    for (const line of recentTail) {
-      try {
-        const obj = JSON.parse(line) as Partial<PermissionDeniedLedgerEntry>;
-        if (
-          obj.tool_name === payload.tool_name &&
-          obj.pattern_key === patternKey &&
-          typeof obj.ts === "string"
-        ) {
-          const ts = Date.parse(obj.ts);
-          if (!Number.isNaN(ts) && nowMs - ts <= REPEAT_WINDOW_MS) {
-            count += 1;
-          }
-        }
-      } catch {
-        skipped += 1;
-      }
-    }
-    if (skipped > 0) {
-      process.stderr.write(
-        `permission-denied: skipped ${skipped} malformed ledger lines\n`,
+    const stream = permissionDeniedStream(root);
+    const recentRecords = yield* eventStore
+      .append(stream, entry)
+      .pipe(
+        Effect.zipRight(collectStream(eventStore.tail(stream, TAIL_LINES))),
+        Effect.catchAll((err) =>
+          Effect.sync(() => {
+            process.stderr.write(
+              `permission-denied: event-store append/tail failed: ${String(err).slice(0, 160)}\n`,
+            );
+            return [] as ReadonlyArray<PermissionDeniedLedgerEntry>;
+          }),
+        ),
       );
+
+    let count = 0;
+    for (const obj of recentRecords) {
+      if (
+        obj.tool_name === payload.tool_name &&
+        obj.pattern_key === patternKey &&
+        typeof obj.ts === "string"
+      ) {
+        const ts = Date.parse(obj.ts);
+        if (!Number.isNaN(ts) && nowMs - ts <= REPEAT_WINDOW_MS) {
+          count += 1;
+        }
+      }
     }
 
     if (count >= REPEAT_THRESHOLD) {

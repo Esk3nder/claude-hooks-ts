@@ -1,7 +1,7 @@
 #!/usr/bin/env bun
-import { spawnSync } from "node:child_process"
 import * as fs from "node:fs"
 import * as path from "node:path"
+import { runCommandLive } from "../src/services/command-runner.ts"
 
 const platform =
   process.platform === "darwin"
@@ -15,7 +15,7 @@ const target = `bun-${platform}-${arch}`
 const outfile = path.join("dist", `claude-hook-${platform}-${arch}`)
 
 fs.mkdirSync("dist", { recursive: true })
-const r = spawnSync(
+const result = await runCommandLive(
   "bun",
   [
     "build",
@@ -26,9 +26,13 @@ const r = spawnSync(
     "src/dispatcher.ts",
     `--outfile=${outfile}`,
   ],
-  { stdio: "inherit" },
+  { timeoutMs: 120_000 },
 )
-if (r.status !== 0) process.exit(r.status ?? 1)
+if (result.stdout.length > 0) process.stdout.write(result.stdout)
+if (result.stderr.length > 0) process.stderr.write(result.stderr)
+if (result.exitCode !== 0 || result.timedOut) {
+  process.exit(result.exitCode > 0 ? result.exitCode : 1)
+}
 
 const stat = fs.statSync(outfile)
 console.log(`built ${outfile} (${(stat.size / 1024 / 1024).toFixed(1)} MB)`)

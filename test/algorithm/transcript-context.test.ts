@@ -88,6 +88,27 @@ describe("getRecentContext — the classifier verbatim port", () => {
     }
   })
 
+  test("reads a bounded tail of large transcript files", () => {
+    const root = mkdtempSync(join(tmpdir(), "ctx-"))
+    try {
+      const file = join(root, "transcript.jsonl")
+      writeFileSync(
+        file,
+        [
+          JSON.stringify({ type: "user", message: { content: "old turn outside tail" } }),
+          JSON.stringify({ type: "assistant", message: { content: "x".repeat(80 * 1024) } }),
+          JSON.stringify({ type: "user", message: { content: "recent turn" } }),
+        ].join("\n"),
+        "utf8",
+      )
+      const out = getRecentContext(file)
+      expect(out).toContain("recent turn")
+      expect(out).not.toContain("old turn outside tail")
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
   test("user content sliced to 200 chars", () => {
     const root = mkdtempSync(join(tmpdir(), "ctx-"))
     try {

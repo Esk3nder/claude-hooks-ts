@@ -91,6 +91,25 @@ describe("withFileLock parallel JSONL writes", () => {
     }
   });
 
+  test("old lock owned by a live process is not treated as stale", async () => {
+    const file = tmpFile("live-owner.jsonl");
+    const lockPath = `${file}.lock`;
+    fs.writeFileSync(lockPath, JSON.stringify({ pid: process.pid, createdAt: Date.now() - 60_000 }));
+    const past = (Date.now() - 60_000) / 1000;
+    fs.utimesSync(lockPath, past, past);
+    try {
+      await expect(
+        withFileLock(file, async () => undefined, {
+          staleMs: 1_000,
+          timeoutMs: 200,
+        }),
+      ).rejects.toThrow(/timeout/i);
+      expect(fs.existsSync(lockPath)).toBe(true);
+    } finally {
+      fs.unlinkSync(lockPath);
+    }
+  });
+
   test("callback failure is not retried as lock contention", async () => {
     const file = tmpFile("body-error.jsonl");
     let attempts = 0;

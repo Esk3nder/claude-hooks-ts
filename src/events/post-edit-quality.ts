@@ -193,15 +193,17 @@ export const handlePostToolUse = (
 
     // Branch (a): Edit/Write on an ISA file → checkpoint, no probes, no formatter.
     if (isIsaEdit && file !== null) {
-      yield* Effect.sync(() => {
-        try {
-          runCheckpoint(file, isaRoot)
-        } catch (err) {
+      yield* Effect.tryPromise({
+        try: async () => {
+          await runCheckpoint(file, isaRoot)
+        },
+        catch: (err) => {
           process.stderr.write(
             `[checkpoint] uncaught: ${String(err)}\n`,
           )
-        }
-      })
+          return new Error(String(err))
+        },
+      }).pipe(Effect.catchAll(() => Effect.succeed(undefined)))
       return finishWithWarning(warningContext)
     }
 

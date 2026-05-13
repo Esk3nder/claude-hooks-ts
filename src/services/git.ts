@@ -1,5 +1,6 @@
 import { Context, Effect, Layer } from "effect"
 import { GitError } from "../schema/errors.ts"
+import { CommandRunner } from "./command-runner.ts"
 
 export interface GitApi {
   readonly currentBranch: (cwd?: string) => Effect.Effect<string, GitError>
@@ -9,41 +10,39 @@ export interface GitApi {
 
 export class Git extends Context.Tag("Git")<Git, GitApi>() {}
 
-const runGit = (args: string[], cwd?: string) =>
-  Effect.tryPromise({
-    try: async () => {
-      const opts: Parameters<typeof Bun.spawn>[1] = {
-        stdout: "pipe",
-        stderr: "pipe",
+const runGit = (runner: CommandRunner["Type"], args: string[], cwd?: string) =>
+  runner.run("git", args, cwd === undefined ? { timeoutMs: 5_000 } : { cwd, timeoutMs: 5_000 }).pipe(
+    Effect.flatMap((result) => {
+      if (result.exitCode !== 0) {
+        const msg = (
+          result.stderr.trim() ||
+          `git ${args.join(" ")} exited ${result.exitCode}`
+        ).slice(0, 500)
+        return Effect.fail(
+          new GitError({ op: args.join(" "), message: msg, cause: result }),
+        )
       }
-      if (cwd !== undefined) opts.cwd = cwd
-      const proc = Bun.spawn(["git", ...args], opts)
-      const [stdout, stderr] = await Promise.all([
-        new Response(proc.stdout as ReadableStream).text(),
-        new Response(proc.stderr as ReadableStream).text(),
-      ])
-      const exit = await proc.exited
-      if (exit !== 0) {
-        const msg = (stderr.trim() || `git ${args.join(" ")} exited ${exit}`)
-          .slice(0, 500)
-        throw new Error(msg)
-      }
-      return stdout.trim()
-    },
-    catch: (cause) =>
-      new GitError({ op: args.join(" "), message: String(cause), cause }),
-  })
+      return Effect.succeed(result.stdout.trim())
+    }),
+    Effect.mapError((cause) =>
+      cause instanceof GitError
+        ? cause
+        : new GitError({ op: args.join(" "), message: String(cause), cause }),
+    ),
+  )
 
-export const GitLive = Layer.succeed(
+export const GitLive = Layer.effect(
   Git,
-  Git.of({
-    currentBranch: (cwd) => runGit(["rev-parse", "--abbrev-ref", "HEAD"], cwd),
-    isDirty: (cwd) =>
-      runGit(["status", "--porcelain"], cwd).pipe(
-        Effect.map((out) => out.length > 0),
-      ),
-    headSha: (cwd) => runGit(["rev-parse", "HEAD"], cwd),
-  }),
+  Effect.map(CommandRunner, (runner) =>
+    Git.of({
+      currentBranch: (cwd) => runGit(runner, ["rev-parse", "--abbrev-ref", "HEAD"], cwd),
+      isDirty: (cwd) =>
+        runGit(runner, ["status", "--porcelain"], cwd).pipe(
+          Effect.map((out) => out.length > 0),
+        ),
+      headSha: (cwd) => runGit(runner, ["rev-parse", "HEAD"], cwd),
+    }),
+  ),
 )
 
 export const GitTest = (

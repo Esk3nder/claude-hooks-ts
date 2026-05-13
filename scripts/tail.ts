@@ -98,7 +98,7 @@ const tailIterator = async function* (
 
   // Follow.
   while (!abortSignal.aborted) {
-    await new Promise((r) => setTimeout(r, pollMs))
+    await Effect.runPromise(Effect.sleep(`${pollMs} millis`))
     if (abortSignal.aborted) break
     await refreshFiles()
     for (const t of tails) {
@@ -193,15 +193,25 @@ export const runTail = (
   args: Args,
   opts: { pollMs?: number; color?: boolean } = {},
 ): Effect.Effect<void> =>
-  Effect.gen(function* () {
+  Effect.scoped(Effect.gen(function* () {
     const pollMs = opts.pollMs ?? 200
     const color = opts.color ?? Boolean(process.stdout.isTTY)
     const abortSignal = { aborted: false }
-    const onSigint = () => {
-      abortSignal.aborted = true
-    }
-    process.on("SIGINT", onSigint)
-    process.on("SIGTERM", onSigint)
+    yield* Effect.acquireRelease(
+      Effect.sync(() => {
+        const onSignal = () => {
+          abortSignal.aborted = true
+        }
+        process.on("SIGINT", onSignal)
+        process.on("SIGTERM", onSignal)
+        return onSignal
+      }),
+      (onSignal) =>
+        Effect.sync(() => {
+          process.removeListener("SIGINT", onSignal)
+          process.removeListener("SIGTERM", onSignal)
+        }),
+    )
 
     const stream = Stream.fromAsyncIterable(
       tailIterator(args, pollMs, abortSignal),
@@ -227,9 +237,7 @@ export const runTail = (
     )
 
     yield* stream.pipe(Effect.catchAll(() => Effect.void))
-    process.removeListener("SIGINT", onSigint)
-    process.removeListener("SIGTERM", onSigint)
-  })
+  }))
 
 // Only run when invoked directly (allows clean import in tests).
 const isMain = (() => {

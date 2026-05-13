@@ -29,6 +29,7 @@ import {
   parseVerifyMapYaml,
   verifyMapPathFor,
 } from "../src/policies/verify-map.ts";
+import { runCommandLive } from "../src/services/command-runner.ts";
 
 interface CliArgs {
   target: string;
@@ -285,33 +286,20 @@ const checkDispatcherRoundtrip = async (
     argv.unshift("bash");
   }
   try {
-    const proc = Bun.spawn(argv, {
-      stdin: "pipe",
-      stdout: "pipe",
-      stderr: "pipe",
-    });
-    proc.stdin.write(SYNTHETIC_PAYLOAD);
-    await proc.stdin.end();
     const timeoutMs = 5000;
-    const exitPromise = proc.exited;
-    const timeout = new Promise<"timeout">((resolve) =>
-      setTimeout(() => resolve("timeout"), timeoutMs),
-    );
-    const winner = await Promise.race([exitPromise, timeout]);
-    if (winner === "timeout") {
-      try {
-        proc.kill();
-      } catch {
-        // ignore
-      }
+    const run = await runCommandLive(argv[0]!, argv.slice(1), {
+      stdin: SYNTHETIC_PAYLOAD,
+      timeoutMs,
+    });
+    if (run.timedOut) {
       return {
         name: "dispatcher round-trip",
         status: "FAIL",
         detail: "5s timeout",
       };
     }
-    const code = proc.exitCode ?? -1;
-    const stdout = await new Response(proc.stdout).text();
+    const code = run.exitCode;
+    const stdout = run.stdout;
     if (code !== 0) {
       return {
         name: "dispatcher round-trip",
@@ -398,10 +386,10 @@ const checkOtelEndpoint = async (
   if (Option.isNone(config.otelEndpoint)) return null;
   const ep = Redacted.value(config.otelEndpoint.value);
   try {
-    const ctrl = new AbortController();
-    const timer = setTimeout(() => ctrl.abort(), 1000);
-    const res = await fetch(ep, { method: "HEAD", signal: ctrl.signal });
-    clearTimeout(timer);
+    const res = await fetch(ep, {
+      method: "HEAD",
+      signal: AbortSignal.timeout(1000),
+    });
     if (res.status >= 200 && res.status < 300) {
       return {
         name: "OTel endpoint",

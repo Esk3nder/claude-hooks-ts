@@ -17,8 +17,9 @@
 
 import { Context, Effect, Layer } from "effect"
 import * as crypto from "node:crypto"
-import * as fs from "node:fs/promises"
 import * as path from "node:path"
+import { ClassifierTelemetryRecordSchema, eventStream } from "../schema/events.ts"
+import { EventStore, EventStoreLive } from "./event-store.ts"
 import type { Mode, Tier, ClassificationSource } from "./inference.ts"
 
 export interface ClassifierTelemetryRecord {
@@ -82,6 +83,11 @@ const telemetryPath = (root: string): string =>
     "mode-classifier.jsonl",
   )
 
+const classifierTelemetryStream = (root: string) =>
+  eventStream("classifier-telemetry", telemetryPath(root), ClassifierTelemetryRecordSchema, {
+    maxRecords: 5_000,
+  })
+
 /**
  * Live impl — appends a JSON line to the destination file. implements canonical behavior
  * defensive "skip if serialization contains a newline" guard so a single
@@ -90,22 +96,28 @@ const telemetryPath = (root: string): string =>
 export const ClassifierTelemetryLive = (
   root: string = process.cwd(),
 ): Layer.Layer<ClassifierTelemetry> =>
-  Layer.succeed(
+  Layer.provide(ClassifierTelemetryLiveBase(root), EventStoreLive)
+
+export const ClassifierTelemetryLiveBase = (
+  root: string = process.cwd(),
+): Layer.Layer<ClassifierTelemetry, never, EventStore> =>
+  Layer.effect(
     ClassifierTelemetry,
-    ClassifierTelemetry.of({
-      append: (record) =>
-        Effect.tryPromise({
-          try: async () => {
-            const serialized = JSON.stringify(record)
-            // the classifier: skip if serialization contains a literal newline
-            // (defensive — some prompt_excerpt values could carry one).
-            if (serialized.includes("\n")) return
-            const file = telemetryPath(root)
-            await fs.mkdir(path.dirname(file), { recursive: true })
-            await fs.appendFile(file, `${serialized}\n`, "utf8")
-          },
-          catch: () => undefined,
-        }).pipe(Effect.catchAll(() => Effect.succeed(undefined))),
+    Effect.gen(function* () {
+      const store = yield* EventStore
+      const stream = classifierTelemetryStream(root)
+      return ClassifierTelemetry.of({
+        append: (record) =>
+          store.append(stream, record).pipe(
+            Effect.catchAll((err) =>
+              Effect.sync(() => {
+                process.stderr.write(
+                  `classifier-telemetry: append failed: ${String(err).slice(0, 160)}\n`,
+                )
+              }),
+            ),
+          ),
+      })
     }),
   )
 

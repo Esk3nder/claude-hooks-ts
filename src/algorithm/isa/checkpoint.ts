@@ -27,11 +27,11 @@
  */
 
 import { existsSync, readFileSync, writeFileSync } from "node:fs"
-import { execFileSync } from "node:child_process"
 import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path"
 import { homedir } from "node:os"
 import { parseCriteriaList, type CriterionEntry } from "./criteria.ts"
 import { parseFrontmatter } from "./frontmatter.ts"
+import { runCommandLive } from "../../services/command-runner.ts"
 
 /** the classifier — git command timeout. */
 export const GIT_TIMEOUT_MS = 5000
@@ -125,18 +125,27 @@ export const saveState = (stateFile: string, state: CheckpointState): void => {
   }
 }
 
-/** the classifier — synchronous git invocation via execFileSync. */
-const gitRun = (repo: string, args: ReadonlyArray<string>): string =>
-  execFileSync("git", ["-C", repo, ...args], {
-    encoding: "utf-8",
-    timeout: GIT_TIMEOUT_MS,
-    stdio: ["ignore", "pipe", "pipe"],
+/** the classifier — git invocation through the shared scoped command runner. */
+const gitRun = async (repo: string, args: ReadonlyArray<string>): Promise<string> => {
+  const result = await runCommandLive("git", args, {
+    cwd: repo,
+    timeoutMs: GIT_TIMEOUT_MS,
+    stdoutMaxBytes: 1_000_000,
+    stderrMaxBytes: 1_000_000,
   })
+  if (result.exitCode !== 0 || result.timedOut) {
+    const detail = result.timedOut
+      ? `timeout after ${GIT_TIMEOUT_MS}ms`
+      : (result.stderr.trim() || result.stdout.trim() || `exit ${result.exitCode}`)
+    throw new Error(detail)
+  }
+  return result.stdout
+}
 
 /** the classifier. */
-export const isGitRepo = (repo: string): boolean => {
+export const isGitRepo = async (repo: string): Promise<boolean> => {
   try {
-    gitRun(repo, ["rev-parse", "--git-dir"])
+    await gitRun(repo, ["rev-parse", "--git-dir"])
     return true
   } catch {
     return false
@@ -144,9 +153,9 @@ export const isGitRepo = (repo: string): boolean => {
 }
 
 /** the classifier — `git status --porcelain` truthiness. */
-export const hasChanges = (repo: string): boolean => {
+export const hasChanges = async (repo: string): Promise<boolean> => {
   try {
-    return gitRun(repo, ["status", "--porcelain"]).trim().length > 0
+    return (await gitRun(repo, ["status", "--porcelain"])).trim().length > 0
   } catch {
     return false
   }
@@ -173,9 +182,9 @@ export const isPathInside = (parent: string, child: string): boolean => {
  * relative to HEAD? Caller must have verified the file is inside the repo —
  * git errors loudly on `--` paths outside the repo.
  */
-export const hasChangesForFile = (repo: string, file: string): boolean => {
+export const hasChangesForFile = async (repo: string, file: string): Promise<boolean> => {
   try {
-    return gitRun(repo, ["status", "--porcelain", "--", file]).trim().length > 0
+    return (await gitRun(repo, ["status", "--porcelain", "--", file])).trim().length > 0
   } catch {
     return false
   }
@@ -199,16 +208,26 @@ export const commitInRepo = (
   slug: string,
   description: string,
   isaFilePath: string,
-): string | null => {
+): Promise<string | null> => {
+  return commitInRepoEffect(repo, iscId, slug, description, isaFilePath)
+}
+
+const commitInRepoEffect = async (
+  repo: string,
+  iscId: string,
+  slug: string,
+  description: string,
+  isaFilePath: string,
+): Promise<string | null> => {
   try {
     // Scope the add to the ISA file only. Caller must have verified the
     // ISA is inside the repo (isPathInside) — otherwise git errors out.
     // The previous `git add -A` design swallowed any pending unrelated
     // work into the ISC commit (and, with --no-verify, bypassed
     // pre-commit secret scans).
-    gitRun(repo, ["add", "--", isaFilePath])
+    await gitRun(repo, ["add", "--", isaFilePath])
     const subject = `${iscId} (${slug}): ${sanitizeMessage(description)}`
-    gitRun(repo, [
+    await gitRun(repo, [
       "commit",
       "-m",
       subject,
@@ -216,11 +235,11 @@ export const commitInRepo = (
       "--no-verify",
       "--no-gpg-sign",
     ])
-    const sha = gitRun(repo, ["rev-parse", "HEAD"]).trim()
+    const sha = (await gitRun(repo, ["rev-parse", "HEAD"])).trim()
     return sha
   } catch (err) {
-    const e = err as { stderr?: { toString?: () => string }; message?: string }
-    const detail = e.stderr?.toString?.() ?? e.message ?? String(err)
+    const e = err as { message?: string }
+    const detail = e.message ?? String(err)
     process.stderr.write(
       `[checkpoint] commit failed in ${repo} for ${iscId}: ${detail}\n`,
     )
@@ -269,7 +288,12 @@ export interface CheckpointResult {
 export const runCheckpoint = (
   isaFilePath: string,
   root: string = process.cwd(),
-): CheckpointResult => {
+): Promise<CheckpointResult> => runCheckpointEffect(isaFilePath, root)
+
+const runCheckpointEffect = async (
+  isaFilePath: string,
+  root: string,
+): Promise<CheckpointResult> => {
   const empty = (skipped: CheckpointResult["skipped"]): CheckpointResult => ({
     iscIds: [],
     commits: [],
@@ -321,7 +345,7 @@ export const runCheckpoint = (
         process.stderr.write(`[checkpoint] repo not found: ${repo}\n`)
         continue
       }
-      if (!isGitRepo(repo)) {
+      if (!(await isGitRepo(repo))) {
         process.stderr.write(`[checkpoint] not a git repo: ${repo}\n`)
         continue
       }
@@ -331,8 +355,8 @@ export const runCheckpoint = (
         )
         continue
       }
-      if (!hasChangesForFile(repo, isaFilePath)) continue
-      const sha = commitInRepo(repo, isc.id, slug, isc.description, isaFilePath)
+      if (!(await hasChangesForFile(repo, isaFilePath))) continue
+      const sha = await commitInRepoEffect(repo, isc.id, slug, isc.description, isaFilePath)
       if (sha !== null) {
         lastCommitSha[repo] = sha
         commits.push({ iscId: isc.id, repo, sha })

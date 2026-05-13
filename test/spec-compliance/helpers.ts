@@ -22,6 +22,8 @@ import { ClassifierTelemetryTest } from "../../src/services/classifier-telemetry
 import { RedactTest } from "../../src/services/redact.ts"
 import { BudgetTest } from "../../src/services/budget.ts"
 import { TracingLive } from "../../src/services/tracing.ts"
+import { EventStoreTest } from "../../src/services/event-store.ts"
+import { CommandRunnerTest } from "../../src/services/command-runner.ts"
 
 export const SPEC_ROOT = "/tmp/claude-hooks-ts-spec"
 
@@ -30,6 +32,8 @@ export const makeSpecLayer = () => {
 
   return Layer.mergeAll(
     FileSystemTest(),
+    EventStoreTest(),
+    CommandRunnerTest(),
     ProjectTest({ root: SPEC_ROOT }),
     SessionStateTest(),
     ApprovalsTest(),

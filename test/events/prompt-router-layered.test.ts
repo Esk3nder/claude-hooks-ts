@@ -9,6 +9,7 @@ import {
   type Classification,
 } from "../../src/services/inference.ts"
 import { ClassifierTelemetryTest } from "../../src/services/classifier-telemetry.ts"
+import { CommandRunnerTest } from "../../src/services/command-runner.ts"
 
 const decode = (raw: unknown) => Schema.decodeUnknownSync(HookPayload)(raw)
 
@@ -38,6 +39,7 @@ const runHandler = async (
       Effect.provide(layer),
       Effect.provide(ClaudeSubprocessTest()),
       Effect.provide(ClassifierTelemetryTest().layer),
+      Effect.provide(CommandRunnerTest()),
     ),
   )
   const out = decision as {

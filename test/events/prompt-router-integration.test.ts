@@ -26,6 +26,7 @@ import {
   type ClassifyOptions,
 } from "../../src/services/inference.ts"
 import { ClassifierTelemetryTest } from "../../src/services/classifier-telemetry.ts"
+import { CommandRunnerTest } from "../../src/services/command-runner.ts"
 
 const decode = (raw: unknown) => Schema.decodeUnknownSync(HookPayload)(raw)
 
@@ -78,6 +79,7 @@ const runE2E = async (input: {
       Effect.provide(subprocLayer),
       Effect.provide(SessionStateTest()),
       Effect.provide(tel.layer),
+      Effect.provide(CommandRunnerTest()),
     ),
   )
   const out = decision as {

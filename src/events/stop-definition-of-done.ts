@@ -1,7 +1,5 @@
 import { Effect } from "effect"
-import { execFile } from "node:child_process"
 import { existsSync } from "node:fs"
-import { promisify } from "node:util"
 import type { HookPayload } from "../schema/payloads.ts"
 import type { HookDecision } from "../schema/decisions.ts"
 import { SAFE_DEFAULT } from "../schema/decisions.ts"
@@ -15,8 +13,7 @@ import {
   selectVerifyCommand,
   tailOf,
 } from "../policies/verify-map.ts"
-
-const execFileAsync = promisify(execFile)
+import { runCommandLive, runShellCommandLive } from "../services/command-runner.ts"
 const REGEN_TIMEOUT_MS = 10_000
 // Total wall-clock budget the Stop handler is willing to spend. Sits under
 // the dispatcher Stop cap (28_000 ms) and the installer's external 30_000 ms
@@ -143,10 +140,9 @@ export const handleStop = (
         process.stderr.write(
           `[verify-map] running (timeoutMs=${selectedVerify.timeoutMs}): ${cmdPreview.slice(0, 200)}${cmdPreview.length > 200 ? "..." : ""}\n`,
         )
-        // runVerifyCommand is internally fault-tolerant — it converts
-        // both successful exits and Node `execFile` errors into a
-        // VerifyRunResult, so this Effect should never fail. But if the
-        // runtime layer itself rejects (effect scheduler issue,
+        // runVerifyCommand is internally fault-tolerant: it converts
+        // successful exits and command-runner failures into a
+        // VerifyRunResult. If the runtime layer itself rejects,
         // unexpected exception), don't swallow silently — log the cause
         // and fall through to the reminder block.
         const result = yield* Effect.tryPromise({
@@ -275,8 +271,8 @@ export const handleStop = (
         const remaining = STOP_BUDGET_MS - elapsed
         // Require REGEN_TIMEOUT_MS + 1s safety margin so a regen that
         // runs to its own timeout still leaves headroom for state I/O
-        // and the SIGTERM/exit handshake before we hit the dispatcher
-        // cap (which would turn our decision into SAFE_DEFAULT).
+        // and command-runner cleanup before we hit the dispatcher cap
+        // (which would turn our decision into SAFE_DEFAULT).
         const REGEN_SAFETY_MARGIN_MS = 1_000
         if (remaining < REGEN_TIMEOUT_MS + REGEN_SAFETY_MARGIN_MS) {
           process.stderr.write(
@@ -284,7 +280,7 @@ export const handleStop = (
           )
           continue
         }
-        // F6: log what we're about to run BEFORE exec so users have a paper
+        // F6: log what we're about to run before execution so users have a paper
         // trail of what their regenerate.yaml is doing on their behalf.
         // Truncate the command preview at 160 chars to keep the line scannable.
         const cmdPreview = Array.isArray(rule.command)
@@ -299,10 +295,22 @@ export const handleStop = (
               ? { cmd: rule.command[0] ?? "", argv: rule.command.slice(1) }
               : { cmd: "sh", argv: ["-c", rule.command as string] }
             if (args.cmd.length === 0) return
-            await execFileAsync(args.cmd, args.argv as string[], {
-              cwd: currentCwd,
-              timeout: REGEN_TIMEOUT_MS,
-            })
+            const result = Array.isArray(rule.command)
+              ? await runCommandLive(args.cmd, args.argv as string[], {
+                  cwd: currentCwd,
+                  timeoutMs: REGEN_TIMEOUT_MS,
+                })
+              : await runShellCommandLive(rule.command as string, {
+                  cwd: currentCwd,
+                  timeoutMs: REGEN_TIMEOUT_MS,
+                })
+            if (result.exitCode !== 0 || result.timedOut) {
+              throw new Error(
+                result.timedOut
+                  ? `timeout ${REGEN_TIMEOUT_MS}ms`
+                  : `exit ${result.exitCode}: ${result.stderr || result.stdout}`,
+              )
+            }
           },
           catch: (cause) => {
             process.stderr.write(

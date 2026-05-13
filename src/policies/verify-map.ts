@@ -39,13 +39,10 @@
  * compose them into one wrapper script (e.g. `verify:changed`).
  */
 
-import { execFile } from "node:child_process"
 import { existsSync, readFileSync } from "node:fs"
 import { join } from "node:path"
-import { promisify } from "node:util"
 import { normalizePathPattern } from "./path-utils.ts"
-
-const execFileAsync = promisify(execFile)
+import { runCommandLive, runShellCommandLive } from "../services/command-runner.ts"
 
 const VERIFY_MAP_SUBPATH = [".claude-hooks", "verify-map.yaml"] as const
 
@@ -289,50 +286,23 @@ export const runVerifyCommand = async (
   }
 
   try {
-    const { stdout, stderr } = await execFileAsync(exec.cmd, exec.argv, {
-      cwd,
-      timeout: rule.timeoutMs,
-      // 10 MB cap on captured output. Generous enough for verbose
-      // `bun test` failures with stack traces; cheap enough to not
-      // matter for the typical pass case. If exceeded, execFile rejects
-      // with ERR_CHILD_PROCESS_STDIO_MAXBUFFER and we fall into catch.
-      maxBuffer: 10_000_000,
-    })
-    // execFile defaults to utf-8 encoding so TypeScript narrows
-    // stdout/stderr to `string`; `String()` is a defensive identity
-    // for that case and silently coerces a Buffer (via its toString)
-    // if Node's behavior ever changes under us.
+    const result = Array.isArray(rule.command)
+      ? await runCommandLive(exec.cmd, exec.argv, { cwd, timeoutMs: rule.timeoutMs })
+      : await runShellCommandLive(rule.command as string, { cwd, timeoutMs: rule.timeoutMs })
     return {
-      exitCode: 0,
-      stdout: String(stdout),
-      stderr: String(stderr),
-      timedOut: false,
-      durationMs: Date.now() - startedAt,
+      exitCode: result.exitCode,
+      stdout: result.stdout,
+      stderr: result.stderr,
+      timedOut: result.timedOut,
+      durationMs: result.durationMs,
       commandPreview,
     }
   } catch (err) {
-    const e = err as {
-      code?: number
-      killed?: boolean
-      signal?: string
-      stdout?: string | Buffer
-      stderr?: string | Buffer
-      message?: string
-    }
-    const stdout = typeof e.stdout === "string" ? e.stdout : (e.stdout?.toString("utf-8") ?? "")
-    const stderr = typeof e.stderr === "string" ? e.stderr : (e.stderr?.toString("utf-8") ?? "")
-    // Node sets `error.killed = true` ONLY when its own timeout
-    // mechanism kills the child (via `options.timeout`). A child that
-    // exits non-zero on its own leaves `killed === false`. Don't gate
-    // on `e.signal === "SIGTERM"` — that misses cases where
-    // `killSignal` is overridden or the platform delivers a different
-    // signal name.
-    const timedOut = e.killed === true
     return {
-      exitCode: typeof e.code === "number" ? e.code : -1,
-      stdout,
-      stderr: stderr.length > 0 ? stderr : (e.message ?? ""),
-      timedOut,
+      exitCode: -1,
+      stdout: "",
+      stderr: String(err),
+      timedOut: false,
       durationMs: Date.now() - startedAt,
       commandPreview,
     }

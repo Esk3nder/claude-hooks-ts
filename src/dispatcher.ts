@@ -68,6 +68,8 @@ import type { ClaudeSubprocess } from "./services/claude-subprocess.ts"
 import type { Inference } from "./services/inference.ts"
 import type { ClassifierTelemetry } from "./services/classifier-telemetry.ts"
 import type { Redact } from "./services/redact.ts"
+import type { EventStore } from "./services/event-store.ts"
+import type { CommandRunner } from "./services/command-runner.ts"
 
 type AppServices =
   | FileSystem
@@ -83,6 +85,8 @@ type AppServices =
   | Inference
   | ClassifierTelemetry
   | Redact
+  | EventStore
+  | CommandRunner
   | RuntimeConfigService
   | HookFailure
 

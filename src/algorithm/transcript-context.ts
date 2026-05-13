@@ -15,13 +15,43 @@
  * lives.
  */
 
-import { existsSync, readFileSync } from "node:fs"
+import { closeSync, existsSync, fstatSync, openSync, readSync } from "node:fs"
 
 const DEFAULT_MAX_TURNS = 6
+const DEFAULT_MAX_TRANSCRIPT_BYTES = 64 * 1024
 
 interface Turn {
   readonly role: "User" | "Assistant"
   readonly text: string
+}
+
+const readTailSync = (
+  filePath: string,
+  maxBytes: number = DEFAULT_MAX_TRANSCRIPT_BYTES,
+): string => {
+  if (maxBytes <= 0 || !existsSync(filePath)) return ""
+  const fd = openSync(filePath, "r")
+  try {
+    const stat = fstatSync(fd)
+    const length = Math.min(stat.size, maxBytes)
+    if (length <= 0) return ""
+    const start = Math.max(0, stat.size - length)
+    const buffer = Buffer.alloc(length)
+    let offset = 0
+    while (offset < length) {
+      const read = readSync(fd, buffer, offset, length - offset, start + offset)
+      if (read === 0) break
+      offset += read
+    }
+    let text = buffer.subarray(0, offset).toString("utf8")
+    if (start > 0) {
+      const firstNewline = text.indexOf("\n")
+      text = firstNewline === -1 ? "" : text.slice(firstNewline + 1)
+    }
+    return text
+  } finally {
+    closeSync(fd)
+  }
 }
 
 /**
@@ -41,7 +71,7 @@ export const getRecentContext = (
 ): string => {
   try {
     if (!transcriptPath || !existsSync(transcriptPath)) return ""
-    const content = readFileSync(transcriptPath, "utf-8")
+    const content = readTailSync(transcriptPath)
     const lines = content.trim().split("\n")
     const turns: Turn[] = []
 

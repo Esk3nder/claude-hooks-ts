@@ -5,7 +5,8 @@ import * as os from "node:os"
 import * as path from "node:path"
 import { handleWorktreeRemove } from "../../src/events/worktree-remove.ts"
 import { HookPayload } from "../../src/schema/payloads.ts"
-import { FileSystem, FileSystemTest } from "../../src/services/filesystem.ts"
+import { CommandRunnerTest } from "../../src/services/command-runner.ts"
+import { EventStoreLive } from "../../src/services/event-store.ts"
 import { ProjectTest } from "../../src/services/project.ts"
 
 const decode = (raw: unknown) => Schema.decodeUnknownSync(HookPayload)(raw)
@@ -30,9 +31,11 @@ afterEach(() => {
 
 describe("handleWorktreeRemove", () => {
   test("ledger entry + SAFE_DEFAULT", async () => {
+    const root = mkTmp()
     const layer = Layer.mergeAll(
-      FileSystemTest(),
-      ProjectTest({ root: "/proj" }),
+      CommandRunnerTest(),
+      EventStoreLive,
+      ProjectTest({ root }),
     )
     const payload = decode({
       _tag: "WorktreeRemove",
@@ -42,9 +45,9 @@ describe("handleWorktreeRemove", () => {
     })
     const program = Effect.gen(function* () {
       const d = yield* handleWorktreeRemove(payload)
-      const fs = yield* FileSystem
-      const c = yield* fs.readFile(
-        "/proj/.claude-hooks/state/worktree-remove.jsonl",
+      const c = fs.readFileSync(
+        path.join(root, ".claude-hooks", "state", "worktree-remove.jsonl"),
+        "utf8",
       )
       return { d, c }
     })
@@ -74,7 +77,8 @@ describe("handleWorktreeRemove", () => {
     )
 
     const layer = Layer.mergeAll(
-      FileSystemTest(),
+      CommandRunnerTest(),
+      EventStoreLive,
       ProjectTest({ root: mainRepo }),
     )
     const payload = decode({
