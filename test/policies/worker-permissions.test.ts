@@ -152,6 +152,61 @@ describe("worker permission policy", () => {
     if (decision.kind === "deny") expect(decision.reason).toContain("fail-closed")
   })
 
+  test("bare subagent tool payloads pass through when no WorkerRun exists", async () => {
+    const decision = await Effect.runPromise(
+      evaluateWorkerToolPermission({
+        _tag: "PreToolUse",
+        hook_event_name: "PreToolUse",
+        session_id: "session-1",
+        agent_id: "bare-agent",
+        tool_name: "Bash",
+        tool_input: {
+          command: "grep -R TODO src",
+        },
+        cwd: "/repo",
+      }).pipe(
+        Effect.provide(
+          Layer.mergeAll(
+            RuntimeConfigTest(),
+            workerRunsWith([workerRun({ worker_id: "session-1:worker-active" })]),
+          ),
+        ),
+      ),
+    )
+
+    expect(decision.kind).toBe("passthrough")
+  })
+
+  test("package worker CLI bypasses active-worker correlation lockout", async () => {
+    const commands = [
+      "./bin/claude-hooks-workers list --json",
+      "./bin/claude-hooks-workers cancel session-1:worker-1 --reason killed",
+      "bun run scripts/workers.ts list --json",
+    ]
+
+    for (const command of commands) {
+      const decision = await Effect.runPromise(
+        evaluateWorkerToolPermission({
+          _tag: "PreToolUse",
+          hook_event_name: "PreToolUse",
+          session_id: "session-1",
+          tool_name: "Bash",
+          tool_input: { command },
+          cwd: "/repo",
+        }).pipe(
+          Effect.provide(
+            Layer.mergeAll(
+              RuntimeConfigTest(),
+              workerRunsWith([workerRun({ worker_id: "session-1:worker-active" })]),
+            ),
+          ),
+        ),
+      )
+
+      expect(decision.kind).toBe("passthrough")
+    }
+  })
+
   test("worker id from runtime config correlates spawned worker tool use", async () => {
     const decision = await Effect.runPromise(
       evaluateWorkerToolPermission({
@@ -239,6 +294,32 @@ describe("worker permission policy", () => {
         tool_name: "Bash",
         tool_input: {
           command: "cat docs/out-of-scope.md",
+        },
+        cwd: "/repo",
+      }).pipe(
+        Effect.provide(
+          Layer.mergeAll(
+            RuntimeConfigTest(),
+            workerRunsWith([workerRun({ agent_type: "Explore", mode: "read-only" })]),
+          ),
+        ),
+      ),
+    )
+
+    expect(decision.kind).toBe("deny")
+    if (decision.kind === "deny") expect(decision.reason).toContain("read-only")
+  })
+
+  test("contracted read-only workers remain constrained to allowlisted Bash", async () => {
+    const decision = await Effect.runPromise(
+      evaluateWorkerToolPermission({
+        _tag: "PreToolUse",
+        hook_event_name: "PreToolUse",
+        session_id: "session-1",
+        worker_id: "worker-1",
+        tool_name: "Bash",
+        tool_input: {
+          command: "grep -R TODO src",
         },
         cwd: "/repo",
       }).pipe(

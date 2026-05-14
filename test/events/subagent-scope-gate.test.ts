@@ -112,7 +112,7 @@ describe("VAL-M4-003 subagent-scope-gate", () => {
     expect(d).toEqual({})
   })
 
-  test("missing output → block for investigative role", async () => {
+  test("missing output without worker ledger → block for investigative role", async () => {
     const d = await Effect.runPromise(runContractedStop("Explore", undefined))
     if ("decision" in d) {
       expect(d.decision).toBe("block")

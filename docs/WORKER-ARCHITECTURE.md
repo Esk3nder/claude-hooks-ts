@@ -33,6 +33,8 @@ when the supervisor is called, and all launches go through the existing
      confidence / next-action / risk language.
    - Requires strict `WorkerResult` JSON and records completed or blocked
      lifecycle state.
+   - Cancels contracted workers that stop without output, so externally killed
+     subagents do not leave active runs that lock the parent.
    - Blocks write-worker outputs that report file changes without a captured
      isolated patch.
 
@@ -49,9 +51,13 @@ when the supervisor is called, and all launches go through the existing
 6. Correlated `PreToolUse`
    - If a tool event carries `agent_id`, `task_id`, or `worker_id`, role
      permissions are enforced against the active `WorkerRun`.
+   - If a bare subagent has no matching `WorkerRun`, the worker policy passes
+     through and lets Claude Code's normal permissions decide.
    - Read-only / unknown workers cannot use write tools and cannot run
      destructive Bash.
    - Write workers can edit only inside their assigned scope.
+   - The `claude-hooks-workers` CLI is always allowed through this gate so users
+     can inspect and cancel worker state from inside a locked session.
 
 ## Worker output contract
 

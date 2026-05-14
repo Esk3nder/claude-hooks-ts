@@ -19,7 +19,8 @@ import {
 } from "./path-utils.ts"
 import { lookupRole } from "./subagent-roles.ts"
 import { loadRuntimeConfig } from "../services/runtime-config.ts"
-import { WorkerRuns, scopedWorkerRunId } from "../services/worker-runs.ts"
+import { splitShellWords } from "../services/shell-words.ts"
+import { WorkerRuns, scopedWorkerRunId, type WorkerRunsApi } from "../services/worker-runs.ts"
 import type { WorkerRun } from "../schema/worker-run.ts"
 
 type PreToolUsePayload = Schema.Schema.Type<typeof PreToolUse>
@@ -50,8 +51,26 @@ const FIND_MUTATION_RE = /(?:^|\s)-(?:delete|exec|execdir|ok|okdir|fls|fprint|fp
 const isActiveWorker = (run: WorkerRun): boolean =>
   run.status === "queued" || run.status === "running" || run.status === "blocked"
 
+const MISSING_OUTPUT_BLOCK_RE = /\bworker output was missing\b/i
+
+const isRecoverableMissingOutputShrapnel = (run: WorkerRun): boolean =>
+  run.status === "blocked" && MISSING_OUTPUT_BLOCK_RE.test(run.blocked_reason ?? "")
+
 const hasShellControlOperator = (command: string): boolean =>
   /(?:&&|\|\||;|\||>|<|`|\$\(|\n|\r)/.test(command)
+
+const isPackageWorkerCliCommand = (command: string): boolean => {
+  const normalized = command.replace(/\s+/g, " ").trim()
+  if (normalized.length === 0 || hasShellControlOperator(normalized)) return false
+  const words = splitShellWords(normalized)
+  const commandName = words[0]
+  if (commandName === undefined) return false
+  const basename = path.basename(commandName)
+  if (basename === "claude-hooks-workers") return true
+  if (basename !== "bun" || words[1] !== "run") return false
+  const script = words[2]?.replace(/\\/g, "/")
+  return script === "scripts/workers.ts" || script?.endsWith("/scripts/workers.ts") === true
+}
 
 const isAllowlistedReadOnlyBash = (command: string): boolean => {
   const normalized = command.replace(/\s+/g, " ").trim()
@@ -160,6 +179,28 @@ const bashMutationDecision = (command: string): PolicyDecision => {
   return PASSTHROUGH
 }
 
+const cancelRecoverableWorkerShrapnel = (
+  runs: WorkerRunsApi,
+  activeRuns: ReadonlyArray<WorkerRun>,
+): Effect.Effect<ReadonlyArray<WorkerRun>> =>
+  Effect.gen(function* () {
+    const staleRuns = activeRuns.filter(isRecoverableMissingOutputShrapnel)
+    if (staleRuns.length === 0) return activeRuns
+    const outcomes = yield* Effect.forEach(
+      staleRuns,
+      (run) =>
+        runs
+          .cancel(run.worker_id, "worker stopped without output; treating as cancelled")
+          .pipe(Effect.either),
+      { concurrency: "unbounded" },
+    )
+    const cancelledIds = new Set<string>()
+    for (let index = 0; index < staleRuns.length; index += 1) {
+      if (outcomes[index]?._tag === "Right") cancelledIds.add(staleRuns[index]!.worker_id)
+    }
+    return activeRuns.filter((run) => !cancelledIds.has(run.worker_id))
+  })
+
 const failClosedForUncorrelatedWrite = (
   payload: PreToolUsePayload,
   activeRuns: ReadonlyArray<WorkerRun>,
@@ -180,6 +221,7 @@ const failClosedForUncorrelatedWrite = (
       reason: "Bash input had no worker correlation and could not be decoded while active workers exist.",
     }
   }
+  if (isPackageWorkerCliCommand(decoded.right.command)) return PASSTHROUGH
   if (
     isAllowlistedReadOnlyBash(decoded.right.command) &&
     !WHOLE_REPO_BASH_RE.test(decoded.right.command.replace(/\s+/g, " ").trim())
@@ -208,12 +250,30 @@ const firstNonBlank = (
 export const workerIdForToolPayload = (
   payload: PreToolUsePayload,
 ): string | undefined => {
+  const ids = workerCorrelationIdsForToolPayload(payload)
+  return firstNonBlank(ids.workerId, ids.agentId, ids.taskId)
+}
+
+const workerCorrelationIdsForToolPayload = (
+  payload: PreToolUsePayload,
+): {
+  readonly workerId?: string
+  readonly agentId?: string
+  readonly taskId?: string
+} => {
   const extended = payload as PreToolUsePayload & {
     readonly worker_id?: string
     readonly agent_id?: string
     readonly task_id?: string
   }
-  return firstNonBlank(extended.worker_id, extended.agent_id, extended.task_id)
+  const workerId = firstNonBlank(extended.worker_id)
+  const agentId = firstNonBlank(extended.agent_id)
+  const taskId = firstNonBlank(extended.task_id)
+  return {
+    ...(workerId === undefined ? {} : { workerId }),
+    ...(agentId === undefined ? {} : { agentId }),
+    ...(taskId === undefined ? {} : { taskId }),
+  }
 }
 
 const bashDecisionForReadOnlyWorker = (
@@ -228,6 +288,7 @@ const bashDecisionForReadOnlyWorker = (
       reason: `Worker ${run.worker_id} (${run.agent_type}) is read-only; Bash input could not be decoded for safety review.`,
     }
   }
+  if (isPackageWorkerCliCommand(decoded.right.command)) return PASSTHROUGH
   const mutation = bashMutationDecision(decoded.right.command)
   if (mutation.kind === "deny" || mutation.kind === "ask") {
     return {
@@ -267,6 +328,7 @@ const failClosedForStateUnavailable = (
       reason: `Could not verify ${workerLabel} permissions; Bash input could not be decoded.`,
     }
   }
+  if (isPackageWorkerCliCommand(decoded.right.command)) return PASSTHROUGH
   const mutation = bashMutationDecision(decoded.right.command)
   if (mutation.kind === "passthrough" && isAllowlistedReadOnlyBash(decoded.right.command)) {
     return PASSTHROUGH
@@ -441,6 +503,7 @@ const evaluateRunToolUse = (
         reason: `Worker ${run.worker_id} (${run.agent_type}) Bash input could not be decoded for scope enforcement.`,
       }
     }
+    if (isPackageWorkerCliCommand(decoded.right.command)) return PASSTHROUGH
     if (isAllowlistedReadOnlyBash(decoded.right.command)) {
       const cwd = typeof payload.cwd === "string" && payload.cwd.length > 0
         ? payload.cwd
@@ -514,7 +577,9 @@ export const evaluateWorkerToolPermission = (
     const configuredWorkerId = Option.isSome(config.workerIdOverride)
       ? config.workerIdOverride.value
       : undefined
-    const workerId = workerIdForToolPayload(payload) ?? configuredWorkerId
+    const payloadIds = workerCorrelationIdsForToolPayload(payload)
+    const payloadWorkerId = firstNonBlank(payloadIds.workerId, payloadIds.agentId, payloadIds.taskId)
+    const workerId = payloadWorkerId ?? configuredWorkerId
     if (workerId === undefined) {
       const activeRunsResult = yield* runs.value
         .forSession(payload.session_id, 1_000)
@@ -522,7 +587,7 @@ export const evaluateWorkerToolPermission = (
       if (activeRunsResult._tag === "Left") {
         return failClosedForStateUnavailable(payload)
       }
-      const activeRuns = activeRunsResult.right
+      const activeRuns = yield* cancelRecoverableWorkerShrapnel(runs.value, activeRunsResult.right)
       return failClosedForUncorrelatedWrite(payload, activeRuns)
     }
     const scopedResult = yield* runs.value
@@ -544,7 +609,16 @@ export const evaluateWorkerToolPermission = (
       return failClosedForStateUnavailable(payload, workerId)
     }
     const run = scoped ?? direct ?? agentResult?.right ?? null
-    if (run === null) return failClosedForStateUnavailable(payload, workerId)
+    if (run === null) {
+      if (
+        configuredWorkerId === undefined &&
+        payloadIds.workerId === undefined &&
+        firstNonBlank(payloadIds.agentId, payloadIds.taskId) !== undefined
+      ) {
+        return PASSTHROUGH
+      }
+      return failClosedForStateUnavailable(payload, workerId)
+    }
     if (run.status === "completed" || run.status === "failed" || run.status === "cancelled") {
       return failClosedForStateUnavailable(payload, workerId)
     }

@@ -39,7 +39,7 @@ const startPayload = (
 const stopPayload = (
   agentType: string,
   agentId: string,
-  output: string,
+  output?: string,
 ): NormalizedSubagentStop =>
   decode({
     _tag: "SubagentStop",
@@ -47,7 +47,7 @@ const stopPayload = (
     session_id: "session-1",
     agent_type: agentType,
     agent_id: agentId,
-    output,
+    ...(output === undefined ? {} : { output }),
     cwd: "/repo",
   }) as NormalizedSubagentStop
 
@@ -179,6 +179,34 @@ describe("worker runtime hook integration", () => {
     }
     expect(result.latest?.status).toBe("blocked")
     expect(result.latest?.blocked_reason).toContain("WorkerResult")
+  })
+
+  test("SubagentStop cancels workers that stop without output", async () => {
+    const result = await Effect.runPromise(
+      Effect.gen(function* () {
+        yield* handleSubagentStart(startPayload("Explore", "agent-killed"))
+        const decision = yield* handleSubagentStop(
+          stopPayload("Explore", "agent-killed"),
+        )
+        const runs = yield* WorkerRuns
+        const parentWriteDecision = yield* handlePreToolUse(
+          uncorrelatedPreTool("Write", {
+            file_path: "src/allowed/file.ts",
+            content: "parent recovered",
+          }),
+        )
+        return {
+          decision,
+          latest: yield* runs.get("session-1:agent-killed"),
+          parentWriteDecision,
+        }
+      }).pipe(Effect.provide(AppTest)),
+    )
+
+    expect(result.decision).toEqual({})
+    expect(result.latest?.status).toBe("cancelled")
+    expect(result.latest?.failure_reason).toContain("stopped without output")
+    expect(result.parentWriteDecision).toEqual({})
   })
 
   test("SubagentStop records unstructured read-only output when structured results are optional", async () => {
@@ -350,6 +378,41 @@ describe("worker runtime hook integration", () => {
       expect(output.permissionDecision).toBe("deny")
       expect(output.permissionDecisionReason).toContain("no worker correlation")
     }
+  })
+
+  test("legacy missing-output blocked runs are cancelled instead of locking parent tools", async () => {
+    const result = await Effect.runPromise(
+      Effect.gen(function* () {
+        const runs = yield* WorkerRuns
+        yield* runs.createQueued({
+          worker_id: "session-1:agent-legacy",
+          session_id: "session-1",
+          agent_id: "agent-legacy",
+          agent_type: "Explore",
+          mode: "read-only",
+          prompt_hash: "prompt-hash",
+          scope: "src/allowed/**",
+        })
+        yield* runs.markBlocked(
+          "session-1:agent-legacy",
+          "worker output was missing; strict WorkerResult JSON is required",
+        )
+        const decision = yield* handlePreToolUse(
+          uncorrelatedPreTool("Write", {
+            file_path: "src/allowed/file.ts",
+            content: "parent recovered",
+          }),
+        )
+        return {
+          decision,
+          latest: yield* runs.get("session-1:agent-legacy"),
+        }
+      }).pipe(Effect.provide(AppTest)),
+    )
+
+    expect(result.decision).toEqual({})
+    expect(result.latest?.status).toBe("cancelled")
+    expect(result.latest?.failure_reason).toContain("stopped without output")
   })
 
   test("read-only workers cannot run mutating git commands through Bash", async () => {

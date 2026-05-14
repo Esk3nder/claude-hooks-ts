@@ -260,6 +260,8 @@ For brevity, every payload also carries the common fields `session_id`,
   blocks malformed `WorkerResult` JSON and blocks investigative roles that
   return no evidence. Evidence must include a concrete anchor such as
   `file:line` or a command, plus confidence or next-action/risk language.
+  Contracted workers that stop without output are marked `cancelled` instead of
+  being re-prompted for structured JSON.
 
 ## TaskCreated
 
