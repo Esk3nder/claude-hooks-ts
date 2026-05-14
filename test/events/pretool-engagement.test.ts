@@ -224,6 +224,21 @@ describe("PreToolUse engagement gate — wiring", () => {
     }
   })
 
+  test("engagement_required + Bash pwd before ISA exists → allowed", async () => {
+    const { root, cleanup } = stage()
+    try {
+      const out = await runPretool(
+        root,
+        "Bash",
+        { command: "pwd" },
+        ENGAGED_STATE,
+      )
+      expect(out.hookSpecificOutput?.permissionDecision).not.toBe("deny")
+    } finally {
+      cleanup()
+    }
+  })
+
   test("engagement_required + Bash mkdir of UNRELATED dir → denied", async () => {
     const { root, cleanup } = stage()
     try {

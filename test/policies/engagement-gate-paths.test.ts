@@ -119,6 +119,17 @@ describe("evaluateEngagementGate (deepened) — passthrough", () => {
     expect(v.kind).toBe("passthrough")
   })
 
+  test("Bash pwd before ISA exists → passthrough", () => {
+    const v = evaluateEngagementGate({
+      currentCwd: root,
+      sessionRoot: root,
+      record: engagedRecord(),
+      toolName: "Bash",
+      toolInput: { command: "pwd" },
+    })
+    expect(v.kind).toBe("passthrough")
+  })
+
   test("Read during engagement → passthrough", () => {
     const v = evaluateEngagementGate({
       currentCwd: root,

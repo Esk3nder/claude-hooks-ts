@@ -28,6 +28,7 @@
  *     at `<sessionRoot>/ISA.md` if it exists on disk.
  *   - Bash mkdir: the parent of the expected per-task ISA (absolute) OR
  *     the relative spelling of that parent when `currentCwd === sessionRoot`.
+ *   - Bash pwd: harmless cwd discovery before writing the ISA.
  *
  * Other tools (Read / Glob / Grep / LS / TodoWrite / Task / Skill / etc.)
  * always pass through during engagement. Unknown tools (third-party MCP)
@@ -77,11 +78,14 @@ const commandFromInput = (input: unknown): string | null => {
 }
 
 /**
- * Allowed Bash forms during engagement: only `mkdir` of an explicitly
- * accepted directory (or a no-arg / bare `mkdir`/`mkdir -p`). Anything
- * else — `sudo mkdir`, chained commands, mkdir of unrelated paths — is
- * denied.
+ * Allowed Bash forms during engagement: only `pwd` for cwd discovery and
+ * `mkdir` of an explicitly accepted directory (or a no-arg / bare `mkdir` /
+ * `mkdir -p`). Anything else — `sudo mkdir`, chained commands, mkdir of
+ * unrelated paths — is denied.
  */
+const isAllowedDiagnosticBash = (cmd: string): boolean =>
+  cmd.trim() === "pwd"
+
 const isAllowedMkdir = (
   cmd: string,
   acceptedDirs: ReadonlyArray<string>,
@@ -132,6 +136,7 @@ const denyReason = (
     `  - Read / LS / Glob / Grep for inspection\n` +
     `  - Write to the expected ISA path above\n` +
     `  - Edit / MultiEdit to that path OR an existing <repo>/ISA.md\n` +
+    `  - Bash \`pwd\` for cwd discovery\n` +
     `  - Bash only for \`mkdir -p ${dir}\`\n` +
     `\n` +
     `After the ISA exists, the gate releases automatically and you may ` +
@@ -217,7 +222,10 @@ export const evaluateEngagementGateShallow = (
 
   if (ctx.toolName === "Bash") {
     const cmd = commandFromInput(ctx.toolInput)
-    if (cmd !== null && isAllowedMkdir(cmd, ctx.acceptedMkdirDirs)) {
+    if (
+      cmd !== null &&
+      (isAllowedDiagnosticBash(cmd) || isAllowedMkdir(cmd, ctx.acceptedMkdirDirs))
+    ) {
       return { kind: "passthrough" }
     }
     return {

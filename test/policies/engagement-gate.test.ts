@@ -129,6 +129,15 @@ describe("evaluateEngagementGate — passthrough cases", () => {
     expect(v.kind).toBe("passthrough")
   })
 
+  test("Bash pwd → passthrough for cwd discovery before ISA exists", () => {
+    const v = evaluateEngagementGate({
+      ...baseCtx,
+      toolName: "Bash",
+      toolInput: { command: "pwd" },
+    })
+    expect(v.kind).toBe("passthrough")
+  })
+
   test("Unknown tool name (e.g. MCP tool) → passthrough", () => {
     const v = evaluateEngagementGate({
       ...baseCtx,
@@ -242,6 +251,15 @@ describe("evaluateEngagementGate — deny cases", () => {
       ...baseCtx,
       toolName: "Bash",
       toolInput: { command: `mkdir ${EXPECTED_DIR} && rm -rf /` },
+    })
+    expect(v.kind).toBe("deny")
+  })
+
+  test("Bash 'pwd && rm -rf /' → deny (diagnostic command cannot chain)", () => {
+    const v = evaluateEngagementGate({
+      ...baseCtx,
+      toolName: "Bash",
+      toolInput: { command: "pwd && rm -rf /" },
     })
     expect(v.kind).toBe("deny")
   })
