@@ -17,6 +17,7 @@ import { SessionState } from "../../src/services/session-state.ts"
 import { RuntimeConfigTest } from "../../src/services/runtime-config.ts"
 import { WorkerAggregation } from "../../src/services/worker-aggregation.ts"
 import { WorkerRuns } from "../../src/services/worker-runs.ts"
+import { appendWorkerContract } from "../../src/policies/worker-contract.ts"
 
 const decode = (raw: unknown) => Schema.decodeUnknownSync(NormalizedHookEvent)(raw)
 
@@ -31,7 +32,7 @@ const startPayload = (
     session_id: "session-1",
     agent_type: agentType,
     agent_id: agentId,
-    prompt,
+    prompt: appendWorkerContract(prompt, agentType),
     cwd: "/repo",
   }) as NormalizedSubagentStart
 

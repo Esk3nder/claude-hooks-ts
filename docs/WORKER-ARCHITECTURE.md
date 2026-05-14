@@ -18,6 +18,7 @@ when the supervisor is called, and all launches go through the existing
    - Does not block valid launches.
 
 2. `SubagentStart`
+   - Applies only when the launch prompt carries the worker contract marker.
    - Injects role-specific scope rules into the worker context.
    - Adds a role-specific output contract so the worker returns integrable
      results instead of free-form chatter.
@@ -25,6 +26,8 @@ when the supervisor is called, and all launches go through the existing
      present.
 
 3. `SubagentStop`
+   - Passes bare, non-contracted subagents through without worker-output
+     enforcement.
    - Requires investigative workers to return concrete evidence.
    - Evidence must include an anchor such as `file:line` or a command plus
      confidence / next-action / risk language.

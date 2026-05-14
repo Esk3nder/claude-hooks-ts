@@ -234,7 +234,9 @@ For brevity, every payload also carries the common fields `session_id`,
     task_id?: string
   }
   ```
-- Output: `ContextInjection` with role-specific scope rule and output contract.
+- Output: `ContextInjection` with role-specific scope rule and output contract
+  only when the start payload prompt carries the `claude-hooks` worker marker.
+  Bare subagents pass through unchanged.
 
 ## SubagentStop
 
@@ -254,9 +256,10 @@ For brevity, every payload also carries the common fields `session_id`,
     result?: string
   }
   ```
-- Output: `StopDecision` block when an investigative role returns no evidence.
-  Evidence must include a concrete anchor such as `file:line` or a command, plus
-  confidence or next-action/risk language.
+- Output: no-op for bare subagents. For contracted workers, `StopDecision`
+  blocks malformed `WorkerResult` JSON and blocks investigative roles that
+  return no evidence. Evidence must include a concrete anchor such as
+  `file:line` or a command, plus confidence or next-action/risk language.
 
 ## TaskCreated
 

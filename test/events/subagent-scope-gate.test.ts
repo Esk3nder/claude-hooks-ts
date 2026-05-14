@@ -9,12 +9,23 @@ import {
   type NormalizedSubagentStart,
 } from "../../src/schema/normalized.ts"
 import { SessionStateTest } from "../../src/services/session-state.ts"
+import { appendWorkerContract } from "../../src/policies/worker-contract.ts"
 
 const decode = (raw: unknown) => Schema.decodeUnknownSync(NormalizedHookEvent)(raw)
 const decodeStart = (raw: unknown): NormalizedSubagentStart =>
   decode(raw) as NormalizedSubagentStart
 
 const startPayload = (agent_type: string) =>
+  decodeStart({
+    _tag: "SubagentStart",
+    session_id: "s",
+    hook_event_name: "SubagentStart",
+    agent_type,
+    agent_id: "a1",
+    prompt: appendWorkerContract("do the thing", agent_type),
+  })
+
+const bareStartPayload = (agent_type: string) =>
   decodeStart({
     _tag: "SubagentStart",
     session_id: "s",
@@ -34,7 +45,22 @@ const stopPayload = (agent_type: string, output: string | undefined) =>
     ...(output === undefined ? {} : { output }),
   })
 
+const runContractedStop = (agent_type: string, output: string | undefined) =>
+  Effect.gen(function* () {
+    yield* handleSubagentStart(startPayload(agent_type))
+    return yield* handleSubagentStop(stopPayload(agent_type, output))
+  }).pipe(Effect.provide(SessionStateTest()))
+
 describe("VAL-M4-003 subagent-scope-gate", () => {
+  test("bare subagent start is left untouched", async () => {
+    const d = await Effect.runPromise(
+      handleSubagentStart(bareStartPayload("Explore")).pipe(
+        Effect.provide(SessionStateTest()),
+      ),
+    )
+    expect(d).toEqual({})
+  })
+
   test("Explore start injects read-only scope rule", async () => {
     const d = await Effect.runPromise(
       handleSubagentStart(startPayload("Explore")).pipe(
@@ -63,11 +89,7 @@ describe("VAL-M4-003 subagent-scope-gate", () => {
   })
 
   test("investigative subagent stop without evidence → block", async () => {
-    const d = await Effect.runPromise(
-      handleSubagentStop(stopPayload("Explore", "ok done")).pipe(
-        Effect.provide(SessionStateTest()),
-      ),
-    )
+    const d = await Effect.runPromise(runContractedStop("Explore", "ok done"))
     expect("decision" in d).toBe(true)
     if ("decision" in d) {
       expect(d.decision).toBe("block")
@@ -77,31 +99,33 @@ describe("VAL-M4-003 subagent-scope-gate", () => {
 
   test("investigative subagent stop with evidence → no-op", async () => {
     const d = await Effect.runPromise(
-      handleSubagentStop(
-        stopPayload("Explore", "found bug at src/foo.ts:42 — confidence: high"),
-      ).pipe(Effect.provide(SessionStateTest())),
+      runContractedStop(
+        "Explore",
+        "found bug at src/foo.ts:42 — confidence: high",
+      ),
     )
     expect(d).toEqual({})
   })
 
   test("non-investigative subagent stop never blocks", async () => {
-    const d = await Effect.runPromise(
-      handleSubagentStop(stopPayload("general-purpose", "done")).pipe(
-        Effect.provide(SessionStateTest()),
-      ),
-    )
+    const d = await Effect.runPromise(runContractedStop("general-purpose", "done"))
     expect(d).toEqual({})
   })
 
   test("missing output → block for investigative role", async () => {
-    const d = await Effect.runPromise(
-      handleSubagentStop(stopPayload("Explore", undefined)).pipe(
-        Effect.provide(SessionStateTest()),
-      ),
-    )
+    const d = await Effect.runPromise(runContractedStop("Explore", undefined))
     if ("decision" in d) {
       expect(d.decision).toBe("block")
     }
+  })
+
+  test("bare investigative subagent stop is left untouched", async () => {
+    const d = await Effect.runPromise(
+      handleSubagentStop(stopPayload("Explore", "Halting.")).pipe(
+        Effect.provide(SessionStateTest()),
+      ),
+    )
+    expect(d).toEqual({})
   })
 
   test("legacy subagent_type / result fields still work (backward compat)", async () => {
@@ -123,6 +147,7 @@ describe("VAL-M4-003 subagent-scope-gate", () => {
   test("investigative subagent stop still blocks after a prior missing-evidence block", async () => {
     const payload = stopPayload("Explore", "ok done")
     const program = Effect.gen(function* () {
+      yield* handleSubagentStart(startPayload("Explore"))
       const first = yield* handleSubagentStop(payload)
       const second = yield* handleSubagentStop(payload)
       return { first, second }
@@ -139,22 +164,16 @@ describe("VAL-M4-003 subagent-scope-gate", () => {
 
   test("planner stop with judgment-only output (no file:line) passes", async () => {
     const d = await Effect.runPromise(
-      handleSubagentStop(
-        stopPayload(
-          "planner",
-          "Recommendation: split auth module. Risk: session migration. Next steps: draft RFC.",
-        ),
-      ).pipe(Effect.provide(SessionStateTest())),
+      runContractedStop(
+        "planner",
+        "Recommendation: split auth module. Risk: session migration. Next steps: draft RFC.",
+      ),
     )
     expect(d).toEqual({})
   })
 
   test("planner stop with empty output still blocks", async () => {
-    const d = await Effect.runPromise(
-      handleSubagentStop(stopPayload("architect", "ok")).pipe(
-        Effect.provide(SessionStateTest()),
-      ),
-    )
+    const d = await Effect.runPromise(runContractedStop("architect", "ok"))
     expect("decision" in d).toBe(true)
     if ("decision" in d) expect(d.decision).toBe("block")
   })

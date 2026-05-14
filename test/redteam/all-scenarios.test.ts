@@ -13,6 +13,7 @@ import { handleSubagentStart } from "../../src/events/subagent-scope-gate.ts"
 import { HookPayload } from "../../src/schema/payloads.ts"
 import { NormalizedHookEvent } from "../../src/schema/normalized.ts"
 import { SessionStateTest } from "../../src/services/session-state.ts"
+import { appendWorkerContract } from "../../src/policies/worker-contract.ts"
 
 const REPO_ROOT = path.resolve(__dirname, "..", "..")
 const DISPATCHER = path.join(REPO_ROOT, "src", "dispatcher.ts")
@@ -196,6 +197,7 @@ describe("Red-team scenarios (10/10)", () => {
           session_id: "rt8",
           subagent_type: "Explore",
           task_id: "t1",
+          prompt: appendWorkerContract("Find evidence.", "Explore"),
         }),
       ).pipe(Effect.provide(SessionStateTest())),
     )
