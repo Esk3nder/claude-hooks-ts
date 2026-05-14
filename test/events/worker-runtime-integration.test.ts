@@ -39,7 +39,7 @@ const startPayload = (
 const stopPayload = (
   agentType: string,
   agentId: string,
-  output: string,
+  output?: string,
 ): NormalizedSubagentStop =>
   decode({
     _tag: "SubagentStop",
@@ -47,7 +47,7 @@ const stopPayload = (
     session_id: "session-1",
     agent_type: agentType,
     agent_id: agentId,
-    output,
+    ...(output === undefined ? {} : { output }),
     cwd: "/repo",
   }) as NormalizedSubagentStop
 
@@ -179,6 +179,31 @@ describe("worker runtime hook integration", () => {
     }
     expect(result.latest?.status).toBe("blocked")
     expect(result.latest?.blocked_reason).toContain("WorkerResult")
+  })
+
+  test("SubagentStop without output cancels the worker and releases parent tools", async () => {
+    const result = await Effect.runPromise(
+      Effect.gen(function* () {
+        yield* handleSubagentStart(startPayload("Explore", "agent-killed"))
+        const stopDecision = yield* handleSubagentStop(
+          stopPayload("Explore", "agent-killed"),
+        )
+        const runs = yield* WorkerRuns
+        const latest = yield* runs.get("session-1:agent-killed")
+        const parentWriteDecision = yield* handlePreToolUse(
+          uncorrelatedPreTool("Write", {
+            file_path: "src/allowed/file.ts",
+            content: "parent can continue",
+          }),
+        )
+        return { stopDecision, latest, parentWriteDecision }
+      }).pipe(Effect.provide(AppTest)),
+    )
+
+    expect(result.stopDecision).toEqual({})
+    expect(result.latest?.status).toBe("cancelled")
+    expect(result.latest?.failure_reason).toContain("stopped without output")
+    expect(result.parentWriteDecision).toEqual({})
   })
 
   test("SubagentStop records unstructured read-only output when structured results are optional", async () => {

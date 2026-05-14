@@ -256,10 +256,12 @@ For brevity, every payload also carries the common fields `session_id`,
     result?: string
   }
   ```
-- Output: no-op for bare subagents. For contracted workers, `StopDecision`
-  blocks malformed `WorkerResult` JSON and blocks investigative roles that
-  return no evidence. Evidence must include a concrete anchor such as
-  `file:line` or a command, plus confidence or next-action/risk language.
+- Output: no-op for bare subagents. For contracted workers, missing output
+  records the run as `cancelled` so killed or timed-out subagents do not leave
+  the parent locked. Non-empty malformed `WorkerResult` JSON still blocks, as
+  do investigative roles that return no evidence. Evidence must include a
+  concrete anchor such as `file:line` or a command, plus confidence or
+  next-action/risk language.
 
 ## TaskCreated
 

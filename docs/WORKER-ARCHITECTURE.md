@@ -28,6 +28,9 @@ when the supervisor is called, and all launches go through the existing
 3. `SubagentStop`
    - Passes bare, non-contracted subagents through without worker-output
      enforcement.
+   - Treats contracted subagent stops with no output as `cancelled`, which
+     prevents killed or timed-out subagents from leaving unresolved worker
+     records that block the parent.
    - Requires investigative workers to return concrete evidence.
    - Evidence must include an anchor such as `file:line` or a command plus
      confidence / next-action / risk language.
