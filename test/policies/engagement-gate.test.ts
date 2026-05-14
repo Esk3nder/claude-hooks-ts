@@ -291,6 +291,24 @@ describe("evaluateEngagementGate — deny cases", () => {
     expect(v.kind).toBe("deny")
   })
 
+  test("Bash rg --pre → deny (ripgrep preprocessor can mutate)", () => {
+    const v = evaluateEngagementGate({
+      ...baseCtx,
+      toolName: "Bash",
+      toolInput: { command: "rg --pre 'python3 -c \"print(1)\"' needle src" },
+    })
+    expect(v.kind).toBe("deny")
+  })
+
+  test("Bash rg --config → deny (config can enable preprocessors)", () => {
+    const v = evaluateEngagementGate({
+      ...baseCtx,
+      toolName: "Bash",
+      toolInput: { command: "rg --config .ripgreprc needle src" },
+    })
+    expect(v.kind).toBe("deny")
+  })
+
   test("Bash claude-hooks-workers cancel → deny (worker mutation is not inspection)", () => {
     const v = evaluateEngagementGate({
       ...baseCtx,

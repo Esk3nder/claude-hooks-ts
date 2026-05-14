@@ -96,6 +96,7 @@ describe("WorkerRunsLive", () => {
             isolation: "worktree",
             patch_path: "/tmp/worker-1.patch",
           })
+          yield* runs.markIntegrationRejected("worker-1", "patch does not apply", "2026-05-13T00:02:30.000Z")
           yield* runs.markIntegrated("worker-1", "2026-05-13T00:03:00.000Z")
           return yield* runs.get("worker-1")
         }).pipe(Effect.provide(WorkerRunsLive(root)), Effect.provide(EventStoreLive)),

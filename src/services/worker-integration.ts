@@ -233,6 +233,16 @@ const applyPatchAndMarkIntegrated = (
     ),
   )
 
+const markRejectedThenFail = (
+  runs: WorkerRuns["Type"],
+  workerId: string,
+  cause: WorkerRunError | EventStoreError,
+): Effect.Effect<never, WorkerRunError | EventStoreError> =>
+  runs.markIntegrationRejected(workerId, summarizeCause(cause)).pipe(
+    Effect.catchAll(() => Effect.void),
+    Effect.zipRight(Effect.fail(cause)),
+  )
+
 const integrationLockPath = (repoRoot: string): string =>
   path.join(repoRoot, ".claude-hooks", "state", "workers", "integration-apply")
 
@@ -268,6 +278,7 @@ export const WorkerIntegrationLiveBase: Layer.Layer<
                       integrationLockPath(repoRoot),
                       ensureCleanWorkspace(runner, workerId, repoRoot).pipe(
                         Effect.zipRight(runGitApply(runner, workerId, repoRoot, ["apply", "--check", run.patch_path!])),
+                        Effect.catchAll((cause) => markRejectedThenFail(runs, workerId, cause)),
                         Effect.zipRight(
                           opts.checkOnly === true
                             ? Effect.void

@@ -759,6 +759,23 @@ describe("Stop engagement absence-is-failure gate", () => {
     }
   })
 
+  test("engagement_required + no ISA + rg preprocessor command → blocks", async () => {
+    const { root, cleanup } = stage()
+    try {
+      const out = await runStop(root, {
+        engagement_required: true,
+        last_mode: "ALGORITHM",
+        last_tier: 3,
+        expected_isa_path: ".claude-hooks/work/test-stop/ISA.md",
+        commands_run: ["rg --pre 'python3 -c \"print(1)\"' needle src"],
+      })
+      expect(out.decision).toBe("block")
+      expect(out.reason ?? "").toContain("ALGORITHM E3")
+    } finally {
+      cleanup()
+    }
+  })
+
   test("engagement_required + no ISA + write-worker contract start → blocks", async () => {
     const { root, cleanup } = stage()
     try {

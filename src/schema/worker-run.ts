@@ -19,7 +19,7 @@ export const WorkerIsolation = Schema.Literal("none", "serial", "worktree", "pat
 
 export type WorkerIsolation = Schema.Schema.Type<typeof WorkerIsolation>
 
-export const WorkerIntegrationStatus = Schema.Literal("pending", "applied")
+export const WorkerIntegrationStatus = Schema.Literal("pending", "applied", "rejected")
 
 export type WorkerIntegrationStatus = Schema.Schema.Type<typeof WorkerIntegrationStatus>
 

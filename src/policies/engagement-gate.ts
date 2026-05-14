@@ -99,11 +99,48 @@ const hasUnquotedShellControl = (cmd: string): boolean => {
   return quote !== null
 }
 
+const shellWords = (cmd: string): ReadonlyArray<string> | null => {
+  const words: string[] = []
+  let current = ""
+  let quote: "'" | "\"" | null = null
+  for (let i = 0; i < cmd.length; i += 1) {
+    const ch = cmd.charAt(i)
+    if (ch === "'" || ch === "\"") {
+      quote = quote === ch ? null : quote === null ? ch : quote
+      continue
+    }
+    if (quote === null && /\s/.test(ch)) {
+      if (current.length > 0) {
+        words.push(current)
+        current = ""
+      }
+      continue
+    }
+    current += ch
+  }
+  if (quote !== null) return null
+  if (current.length > 0) words.push(current)
+  return words
+}
+
+const isSafeRipgrepInspection = (trimmed: string): boolean => {
+  const words = shellWords(trimmed)
+  if (words === null || words[0] !== "rg") return false
+  return !words.slice(1).some((word) =>
+    word === "--pre" ||
+    word.startsWith("--pre=") ||
+    word === "--pre-glob" ||
+    word.startsWith("--pre-glob=") ||
+    word === "--config" ||
+    word.startsWith("--config=")
+  )
+}
+
 const isAllowedReadOnlyInspectionBash = (cmd: string): boolean => {
   const trimmed = cmd.trim()
   if (hasUnquotedShellControl(trimmed)) return false
   if (trimmed === "pwd") return true
-  if (trimmed === "rg" || trimmed.startsWith("rg ")) return true
+  if (isSafeRipgrepInspection(trimmed)) return true
   return (
     trimmed === "./bin/claude-hooks-workers list" ||
     trimmed === "./bin/claude-hooks-workers list --json"

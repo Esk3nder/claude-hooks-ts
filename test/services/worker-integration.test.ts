@@ -266,11 +266,17 @@ describe("WorkerIntegrationLive", () => {
       Effect.gen(function* () {
         yield* seedCompleted(root)
         const integration = yield* WorkerIntegration
-        return yield* integration.applyWorkerPatch("worker-1").pipe(Effect.either)
+        const result = yield* integration.applyWorkerPatch("worker-1").pipe(Effect.either)
+        const runs = yield* WorkerRuns
+        const latest = yield* runs.get("worker-1")
+        return { result, latest }
       }).pipe(Effect.provide(layer)),
     )
 
-    expect(exit._tag).toBe("Left")
+    expect(exit.result._tag).toBe("Left")
+    expect(exit.latest?.status).toBe("completed")
+    expect(exit.latest?.integration_status).toBe("rejected")
+    expect(exit.latest?.failure_reason).toContain("patch does not apply")
     expect(commands).toEqual([
       "git status --porcelain",
       `git apply --check ${join(root, ".claude-hooks", "state", "workers", "patches", "worker-1.patch")}`,
@@ -295,14 +301,19 @@ describe("WorkerIntegrationLive", () => {
       Effect.gen(function* () {
         yield* seedCompleted(root)
         const integration = yield* WorkerIntegration
-        return yield* integration.applyWorkerPatch("worker-1").pipe(Effect.either)
+        const result = yield* integration.applyWorkerPatch("worker-1").pipe(Effect.either)
+        const runs = yield* WorkerRuns
+        const latest = yield* runs.get("worker-1")
+        return { result, latest }
       }).pipe(Effect.provide(layer)),
     )
 
-    expect(exit._tag).toBe("Left")
+    expect(exit.result._tag).toBe("Left")
     expect(commands).toEqual(["git status --porcelain"])
-    if (exit._tag === "Left") {
-      expect(exit.left.message).toContain("parent workspace has changes")
+    expect(exit.latest?.integration_status).toBe("rejected")
+    expect(exit.latest?.failure_reason).toContain("parent workspace has changes")
+    if (exit.result._tag === "Left") {
+      expect(exit.result.left.message).toContain("parent workspace has changes")
     }
   })
 })

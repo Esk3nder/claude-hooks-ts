@@ -47,6 +47,7 @@ export interface WorkerRunsApi {
     metadata?: WorkerRunCompletionMetadata,
   ) => Effect.Effect<WorkerRunType, WorkerRunError | EventStoreError>
   readonly markIntegrated: (workerId: string, at?: string) => Effect.Effect<WorkerRunType, WorkerRunError | EventStoreError>
+  readonly markIntegrationRejected: (workerId: string, reason: string, at?: string) => Effect.Effect<WorkerRunType, WorkerRunError | EventStoreError>
   readonly fail: (workerId: string, reason: string, at?: string) => Effect.Effect<WorkerRunType, WorkerRunError | EventStoreError>
   readonly cancel: (workerId: string, reason: string, at?: string) => Effect.Effect<WorkerRunType, WorkerRunError | EventStoreError>
   readonly get: (workerId: string) => Effect.Effect<WorkerRunType | null, EventStoreError>
@@ -415,10 +416,35 @@ export const WorkerRunsLive = (root: string = process.cwd()): Layer.Layer<Worker
                 workerError("worker-runs.markIntegrated", "worker completed without a captured patch", workerId),
               )
             }
+            const { failure_reason: _failureReason, ...base } = run
             return yield* appendRun({
-              ...run,
+              ...base,
               integration_status: "applied",
               integrated_at: at,
+            })
+          })),
+        markIntegrationRejected: (workerId, reason, at = nowIso()) =>
+          guarded(Effect.gen(function* () {
+            const run = yield* requireLatest(workerId, "worker-runs.markIntegrationRejected")
+            if (run.status !== "completed") {
+              return yield* Effect.fail(
+                workerError("worker-runs.markIntegrationRejected", `worker run is ${run.status}, not completed`, workerId),
+              )
+            }
+            if (run.mode !== "write-allowed") {
+              return yield* Effect.fail(
+                workerError("worker-runs.markIntegrationRejected", "read-only worker has no patch to integrate", workerId),
+              )
+            }
+            if (run.patch_path === undefined || run.patch_path.trim().length === 0) {
+              return yield* Effect.fail(
+                workerError("worker-runs.markIntegrationRejected", "worker completed without a captured patch", workerId),
+              )
+            }
+            return yield* appendRun({
+              ...run,
+              integration_status: "rejected",
+              failure_reason: reason.slice(0, 500),
             })
           })),
         fail: (workerId, reason, at = nowIso()) =>
