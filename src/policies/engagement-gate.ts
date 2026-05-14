@@ -28,7 +28,8 @@
  *     at `<sessionRoot>/ISA.md` if it exists on disk.
  *   - Bash mkdir: the parent of the expected per-task ISA (absolute) OR
  *     the relative spelling of that parent when `currentCwd === sessionRoot`.
- *   - Bash pwd: harmless cwd discovery before writing the ISA.
+ *   - Bash inspection: harmless cwd/repo/worker-state discovery before
+ *     writing the ISA (`pwd`, `rg ...`, `claude-hooks-workers list`).
  *
  * Other tools (Read / Glob / Grep / LS / TodoWrite / Task / Skill / etc.)
  * always pass through during engagement. Unknown tools (third-party MCP)
@@ -78,13 +79,36 @@ const commandFromInput = (input: unknown): string | null => {
 }
 
 /**
- * Allowed Bash forms during engagement: only `pwd` for cwd discovery and
- * `mkdir` of an explicitly accepted directory (or a no-arg / bare `mkdir` /
- * `mkdir -p`). Anything else — `sudo mkdir`, chained commands, mkdir of
+ * Allowed Bash forms during engagement: only read-only inspection commands
+ * (`pwd`, `rg ...`, `claude-hooks-workers list`) and `mkdir` of an explicitly
+ * accepted directory (or a no-arg / bare `mkdir` / `mkdir -p`). Anything else
+ * — `sudo mkdir`, chained commands, worker mutation commands, mkdir of
  * unrelated paths — is denied.
  */
-const isAllowedDiagnosticBash = (cmd: string): boolean =>
-  cmd.trim() === "pwd"
+const hasUnquotedShellControl = (cmd: string): boolean => {
+  let quote: "'" | "\"" | null = null
+  for (let i = 0; i < cmd.length; i += 1) {
+    const ch = cmd.charAt(i)
+    if (ch === "\n" || ch === "\r" || ch === "`" || ch === "$") return true
+    if (ch === "'" || ch === "\"") {
+      quote = quote === ch ? null : quote === null ? ch : quote
+      continue
+    }
+    if (quote === null && /[;&|<>]/.test(ch)) return true
+  }
+  return quote !== null
+}
+
+const isAllowedReadOnlyInspectionBash = (cmd: string): boolean => {
+  const trimmed = cmd.trim()
+  if (hasUnquotedShellControl(trimmed)) return false
+  if (trimmed === "pwd") return true
+  if (trimmed === "rg" || trimmed.startsWith("rg ")) return true
+  return (
+    trimmed === "./bin/claude-hooks-workers list" ||
+    trimmed === "./bin/claude-hooks-workers list --json"
+  )
+}
 
 const isAllowedMkdir = (
   cmd: string,
@@ -92,7 +116,7 @@ const isAllowedMkdir = (
 ): boolean => {
   const trimmed = cmd.trim()
   // Reject anything with shell control characters that could chain a write.
-  if (/[;&|`$<>]/.test(trimmed)) return false
+  if (hasUnquotedShellControl(trimmed)) return false
   if (trimmed === "mkdir" || trimmed === "mkdir -p") return true
   for (const dir of acceptedDirs) {
     const normalized = dir.replace(/\/$/, "")
@@ -136,7 +160,7 @@ const denyReason = (
     `  - Read / LS / Glob / Grep for inspection\n` +
     `  - Write to the expected ISA path above\n` +
     `  - Edit / MultiEdit to that path OR an existing <repo>/ISA.md\n` +
-    `  - Bash \`pwd\` for cwd discovery\n` +
+    `  - Bash \`pwd\`, \`rg ...\`, or \`./bin/claude-hooks-workers list [--json]\` for read-only inspection\n` +
     `  - Bash only for \`mkdir -p ${dir}\`\n` +
     `\n` +
     `After the ISA exists, the gate releases automatically and you may ` +
@@ -224,7 +248,7 @@ export const evaluateEngagementGateShallow = (
     const cmd = commandFromInput(ctx.toolInput)
     if (
       cmd !== null &&
-      (isAllowedDiagnosticBash(cmd) || isAllowedMkdir(cmd, ctx.acceptedMkdirDirs))
+      (isAllowedReadOnlyInspectionBash(cmd) || isAllowedMkdir(cmd, ctx.acceptedMkdirDirs))
     ) {
       return { kind: "passthrough" }
     }

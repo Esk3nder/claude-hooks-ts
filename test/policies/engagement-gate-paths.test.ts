@@ -130,6 +130,30 @@ describe("evaluateEngagementGate (deepened) — passthrough", () => {
     expect(v.kind).toBe("passthrough")
   })
 
+  test("Bash rg before ISA exists → passthrough", () => {
+    const v = evaluateEngagementGate({
+      currentCwd: root,
+      sessionRoot: root,
+      record: engagedRecord(),
+      toolName: "Bash",
+      toolInput: {
+        command: "rg -n \"runGitApply|applyWorkerPatch\" src/services/worker-integration.ts",
+      },
+    })
+    expect(v.kind).toBe("passthrough")
+  })
+
+  test("Bash workers list --json before ISA exists → passthrough", () => {
+    const v = evaluateEngagementGate({
+      currentCwd: root,
+      sessionRoot: root,
+      record: engagedRecord(),
+      toolName: "Bash",
+      toolInput: { command: "./bin/claude-hooks-workers list --json" },
+    })
+    expect(v.kind).toBe("passthrough")
+  })
+
   test("Read during engagement → passthrough", () => {
     const v = evaluateEngagementGate({
       currentCwd: root,

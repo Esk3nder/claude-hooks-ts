@@ -138,6 +138,24 @@ describe("evaluateEngagementGate — passthrough cases", () => {
     expect(v.kind).toBe("passthrough")
   })
 
+  test("Bash rg → passthrough for read-only inspection before ISA exists", () => {
+    const v = evaluateEngagementGate({
+      ...baseCtx,
+      toolName: "Bash",
+      toolInput: { command: "rg -n \"runGitApply|applyWorkerPatch\" src/services/worker-integration.ts" },
+    })
+    expect(v.kind).toBe("passthrough")
+  })
+
+  test("Bash claude-hooks-workers list --json → passthrough for read-only worker inspection", () => {
+    const v = evaluateEngagementGate({
+      ...baseCtx,
+      toolName: "Bash",
+      toolInput: { command: "./bin/claude-hooks-workers list --json" },
+    })
+    expect(v.kind).toBe("passthrough")
+  })
+
   test("Unknown tool name (e.g. MCP tool) → passthrough", () => {
     const v = evaluateEngagementGate({
       ...baseCtx,
@@ -260,6 +278,24 @@ describe("evaluateEngagementGate — deny cases", () => {
       ...baseCtx,
       toolName: "Bash",
       toolInput: { command: "pwd && rm -rf /" },
+    })
+    expect(v.kind).toBe("deny")
+  })
+
+  test("Bash 'rg ... && rm -rf /' → deny (inspection command cannot chain)", () => {
+    const v = evaluateEngagementGate({
+      ...baseCtx,
+      toolName: "Bash",
+      toolInput: { command: "rg foo src && rm -rf /" },
+    })
+    expect(v.kind).toBe("deny")
+  })
+
+  test("Bash claude-hooks-workers cancel → deny (worker mutation is not inspection)", () => {
+    const v = evaluateEngagementGate({
+      ...baseCtx,
+      toolName: "Bash",
+      toolInput: { command: "./bin/claude-hooks-workers cancel worker-1" },
     })
     expect(v.kind).toBe("deny")
   })
