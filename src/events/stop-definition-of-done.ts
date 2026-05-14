@@ -32,6 +32,48 @@ const RESEARCH_BLOCK_REASON =
 const STATE_READ_BLOCK_REASON =
   "Hook state could not be read, so verification status is unknown. Re-run the smallest relevant verification command, then try Stop again."
 
+const hasUnquotedShellControl = (cmd: string): boolean => {
+  let quote: "'" | "\"" | null = null
+  for (let i = 0; i < cmd.length; i += 1) {
+    const ch = cmd.charAt(i)
+    if (ch === "\n" || ch === "\r" || ch === "`" || ch === "$") return true
+    if (ch === "'" || ch === "\"") {
+      quote = quote === ch ? null : quote === null ? ch : quote
+      continue
+    }
+    if (quote === null && /[;&|<>]/.test(ch)) return true
+  }
+  return quote !== null
+}
+
+const isPreIsaInspectionCommand = (cmd: string): boolean => {
+  const trimmed = cmd.trim()
+  if (hasUnquotedShellControl(trimmed)) return false
+  if (trimmed === "pwd") return true
+  if (trimmed === "rg" || trimmed.startsWith("rg ")) return true
+  return (
+    trimmed === "./bin/claude-hooks-workers list" ||
+    trimmed === "./bin/claude-hooks-workers list --json"
+  )
+}
+
+const isInspectionOnlyEngagement = (record: {
+  readonly files_read: ReadonlyArray<string>
+  readonly files_changed: ReadonlyArray<string>
+  readonly commands_run: ReadonlyArray<string>
+  readonly commands_failed: ReadonlyArray<string>
+  readonly tests_run: ReadonlyArray<string>
+  readonly subagent_starts: ReadonlyArray<string>
+}): boolean =>
+  (record.files_read.length > 0 ||
+    record.commands_run.length > 0 ||
+    record.subagent_starts.length > 0) &&
+  record.files_changed.length === 0 &&
+  record.commands_failed.length === 0 &&
+  record.tests_run.length === 0 &&
+  !record.subagent_starts.some((entry) => entry.endsWith(":worker-contract")) &&
+  record.commands_run.every(isPreIsaInspectionCommand)
+
 const reportStateWriteFailure = (
   sessionId: string,
   op: string,
@@ -229,7 +271,7 @@ export const handleStop = (
       // must NOT — that's the bug this resolver fixes.
       const activeIsa = resolveActiveIsa({ sessionRoot, record })
       const hasAnyIsa = activeIsa !== null && existsSync(activeIsa)
-      if (!hasAnyIsa) {
+      if (!hasAnyIsa && !isInspectionOnlyEngagement(record)) {
         yield* state
           .update(payload.session_id, { stop_blocked_once: true })
           .pipe(Effect.catchAll((cause) => reportStateWriteFailure(sid, "stop-blocked-once", cause)))

@@ -720,6 +720,80 @@ describe("Stop engagement absence-is-failure gate", () => {
     }
   })
 
+  test("engagement_required + no ISA + read-only smoke commands only → does NOT block", async () => {
+    const { root, cleanup } = stage()
+    try {
+      const out = await runStop(root, {
+        engagement_required: true,
+        last_mode: "ALGORITHM",
+        last_tier: 3,
+        expected_isa_path: ".claude-hooks/work/test-stop/ISA.md",
+        commands_run: [
+          "pwd",
+          "rg -n \"runGitApply|applyWorkerPatch\" src/services/worker-integration.ts",
+          "./bin/claude-hooks-workers list --json",
+        ],
+        subagent_starts: ["explore-agent"],
+        subagent_stops: ["explore-agent"],
+      })
+      expect(out).toEqual({})
+    } finally {
+      cleanup()
+    }
+  })
+
+  test("engagement_required + no ISA + read-only smoke command with chaining → blocks", async () => {
+    const { root, cleanup } = stage()
+    try {
+      const out = await runStop(root, {
+        engagement_required: true,
+        last_mode: "ALGORITHM",
+        last_tier: 3,
+        expected_isa_path: ".claude-hooks/work/test-stop/ISA.md",
+        commands_run: ["rg foo src && rm -rf /"],
+      })
+      expect(out.decision).toBe("block")
+      expect(out.reason ?? "").toContain("ALGORITHM E3")
+    } finally {
+      cleanup()
+    }
+  })
+
+  test("engagement_required + no ISA + write-worker contract start → blocks", async () => {
+    const { root, cleanup } = stage()
+    try {
+      const out = await runStop(root, {
+        engagement_required: true,
+        last_mode: "ALGORITHM",
+        last_tier: 3,
+        expected_isa_path: ".claude-hooks/work/test-stop/ISA.md",
+        commands_run: ["pwd"],
+        subagent_starts: ["worker-agent", "worker-agent:worker-contract"],
+      })
+      expect(out.decision).toBe("block")
+      expect(out.reason ?? "").toContain("ALGORITHM E3")
+    } finally {
+      cleanup()
+    }
+  })
+
+  test("engagement_required + no ISA + file changes → blocks even with inspection commands", async () => {
+    const { root, cleanup } = stage()
+    try {
+      const out = await runStop(root, {
+        engagement_required: true,
+        last_mode: "ALGORITHM",
+        last_tier: 3,
+        expected_isa_path: ".claude-hooks/work/test-stop/ISA.md",
+        commands_run: ["pwd"],
+        files_changed: [join(root, "src", "changed.ts")],
+      })
+      expect(out.decision).toBe("block")
+    } finally {
+      cleanup()
+    }
+  })
+
   test("engagement_required + project ISA exists → gate does NOT fire (presence satisfies)", async () => {
     const { root, cleanup } = stage()
     try {
