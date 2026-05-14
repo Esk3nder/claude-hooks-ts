@@ -5,6 +5,7 @@ import { NO_DECISION } from "../schema/decisions.ts"
 import { Approvals } from "../services/approvals.ts"
 import { Project } from "../services/project.ts"
 import { derivePatternKey } from "../policies/permission-patterns.ts"
+import { reportHookFailure } from "../services/hook-failure.ts"
 
 /**
  * PermissionRequest autopilot.
@@ -36,7 +37,24 @@ export const handlePermissionRequest = (
 
     const lookup = yield* approvals
       .lookup(cwd, pattern)
-      .pipe(Effect.catchAll(() => Effect.succeed(null)))
+      .pipe(
+        Effect.catchAll((cause) =>
+          reportHookFailure({
+            kind: "state_read_failed",
+            event: "PermissionRequest",
+            sessionId: payload.session_id,
+            cause,
+            fallbackDecision: NO_DECISION,
+            hookSafe: true,
+            context: {
+              op: "approvals.lookup",
+              cwd,
+              tool_name: payload.tool_name,
+              pattern,
+            },
+          }).pipe(Effect.as(null)),
+        ),
+      )
 
     // A "pending" record is not a resolved decision; treat it as no decision.
     const resolved =
@@ -50,7 +68,25 @@ export const handlePermissionRequest = (
       // Claude Code's normal permission dialog.
       yield* approvals
         .record({ cwd, pattern, status: "pending", recordedAt: Date.now() })
-        .pipe(Effect.catchAll(() => Effect.succeed(undefined as void)))
+        .pipe(
+          Effect.catchAll((cause) =>
+            reportHookFailure({
+              kind: "state_write_failed",
+              event: "PermissionRequest",
+              sessionId: payload.session_id,
+              cause,
+              fallbackDecision: NO_DECISION,
+              hookSafe: true,
+              context: {
+                op: "approvals.record",
+                cwd,
+                tool_name: payload.tool_name,
+                pattern,
+                status: "pending",
+              },
+            }),
+          ),
+        )
       return NO_DECISION
     }
 

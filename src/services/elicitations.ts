@@ -55,9 +55,7 @@ export const elicitationSignature = (value: unknown): string =>
   crypto.createHash("sha1").update(signatureInput(value)).digest("hex").slice(0, 16)
 
 const sanitizeReplayContent = (content: unknown): unknown =>
-  typeof content === "string" || Array.isArray(content)
-    ? redactForPersistence(content, "content")
-    : redactForPersistence(content)
+  redactForPersistence(content, "content")
 
 const sanitizeElicitationRecord = (record: ElicitationRecord): ElicitationRecord =>
   record.content === undefined

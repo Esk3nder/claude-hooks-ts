@@ -20,9 +20,13 @@ const postCompact = (sid: string, trigger?: string) =>
   });
 
 describe("handlePostCompact", () => {
-  test("appends ledger entry, returns NO_DECISION", async () => {
+  test("appends ledger entry with the actual latest snapshot path", async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "chts-postcompact-"));
     try {
+      const snapshotDir = path.join(root, ".claude-hooks", "state", "compact-snapshots");
+      fs.mkdirSync(snapshotDir, { recursive: true });
+      const snapshotPath = path.join(snapshotDir, "sid-1-manual-none-2026-01-01T00_00_00.000Z.md");
+      fs.writeFileSync(snapshotPath, "## Active ISAs\n\n  (none)\n", "utf8");
       const layer = Layer.mergeAll(EventStoreLive, ProjectTest({ root }));
       const decision = await Effect.runPromise(
         handlePostCompact(postCompact("sid-1", "auto")).pipe(Effect.provide(layer)),
@@ -31,10 +35,11 @@ describe("handlePostCompact", () => {
         path.join(root, ".claude-hooks", "state", "postcompact-ledger.jsonl"),
         "utf8",
       );
-      expect(decision).toEqual({});
+      const out = decision as { hookSpecificOutput?: { additionalContext?: string } };
+      expect(out.hookSpecificOutput?.additionalContext).toContain("Rehydrated ISA context");
       expect(content).toContain('"session_id":"sid-1"');
       expect(content).toContain('"trigger":"auto"');
-      expect(content).toContain('"snapshot_path"');
+      expect(JSON.parse(content.trim()).snapshot_path).toBe(snapshotPath);
       expect(content.endsWith("\n")).toBe(true);
     } finally {
       fs.rmSync(root, { recursive: true, force: true });

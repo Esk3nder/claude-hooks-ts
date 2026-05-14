@@ -421,6 +421,51 @@ describe("WorkerQueueLive", () => {
     }
   })
 
+  test("serializes persisted claims so concurrent runners do not take the same replayed job", async () => {
+    const root = mkdtempSync(join(tmpdir(), "chts-workers-"))
+    try {
+      const job = {
+        id: "job-concurrent-claim",
+        queue: "default",
+        payload: { kind: "safe-control-job" },
+        enqueuedAt: Date.now(),
+        attempts: 0,
+      }
+
+      await Effect.runPromise(
+        Effect.gen(function* () {
+          const queue = yield* WorkerQueue
+          yield* queue.offer(job)
+        }).pipe(
+          Effect.provide(WorkerQueueLive(root)),
+          Effect.provide(EventStoreLive),
+          Effect.provide(RuntimeConfigTest()),
+        ),
+      )
+
+      const takeOnce = () =>
+        Effect.runPromise(
+          Effect.gen(function* () {
+            const queue = yield* WorkerQueue
+            return yield* queue.take.pipe(Effect.timeoutOption("100 millis"))
+          }).pipe(
+            Effect.provide(WorkerQueueLive(root)),
+            Effect.provide(EventStoreLive),
+            Effect.provide(RuntimeConfigTest()),
+          ),
+        )
+
+      const results = await Promise.all([takeOnce(), takeOnce()])
+      const claimed = results
+        .filter(Option.isSome)
+        .map((result) => result.value.id)
+
+      expect(claimed).toEqual(["job-concurrent-claim"])
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
   test("treats legacy claims without leaseUntil as stale after the default lease", async () => {
     const root = mkdtempSync(join(tmpdir(), "chts-workers-"))
     try {

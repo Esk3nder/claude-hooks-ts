@@ -12,6 +12,7 @@ import {
   type WorkerRun as WorkerRunType,
 } from "../schema/worker-run.ts"
 import { EventStore, collectStream } from "./event-store.ts"
+import { logWarning } from "./diagnostics.ts"
 
 const MAX_WORKER_RUN_RECORDS = 5_000
 
@@ -228,7 +229,15 @@ export const WorkerRunsLive = (root: string = process.cwd()): Layer.Layer<Worker
         )
       const appendRun = (run: WorkerRunType) =>
         store.append(stream, run).pipe(
-          Effect.zipRight(store.compact(stream.name).pipe(Effect.catchAll(() => Effect.void))),
+          Effect.zipRight(
+            store.compact(stream.name).pipe(
+              Effect.catchAll((cause) =>
+                logWarning(
+                  `[worker-runs] compact failed after append; keeping uncompacted ledger: ${cause.message}`,
+                ),
+              ),
+            ),
+          ),
           Effect.as(run),
         )
       const sameObservedRun = (left: WorkerRunType, right: WorkerRunType): boolean =>

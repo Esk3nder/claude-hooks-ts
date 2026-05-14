@@ -11,6 +11,7 @@ import {
 } from "../schema/events.ts"
 import { WorkerJobPayload } from "../schema/worker-run.ts"
 import { collectStream, containsRedactedPersistenceMarker, EventStore, redactForPersistence } from "./event-store.ts"
+import { FileLock, FileLockPlatformLive } from "./file-lock.ts"
 import { durationMillis, RuntimeConfigService } from "./runtime-config.ts"
 import { logWarning } from "./diagnostics.ts"
 import { DEFAULT_POLICY } from "./policy-config.ts"
@@ -179,6 +180,13 @@ export const WorkerQueueLive = (
   queueName: string = "default",
   capacity?: number,
 ): Layer.Layer<WorkerQueue, never, EventStore | RuntimeConfigService> =>
+  Layer.provide(WorkerQueueLiveBase(root, queueName, capacity), FileLockPlatformLive)
+
+export const WorkerQueueLiveBase = (
+  root: string = process.cwd(),
+  queueName: string = "default",
+  capacity?: number,
+): Layer.Layer<WorkerQueue, never, EventStore | RuntimeConfigService | FileLock> =>
   Layer.effect(
     WorkerQueue,
     Effect.gen(function* () {
@@ -194,6 +202,7 @@ export const WorkerQueueLive = (
       const queue = yield* Queue.bounded<WorkerJob>(Math.max(1, Math.floor(resolvedCapacity)))
       const gate = yield* Effect.makeSemaphore(1)
       const store = yield* EventStore
+      const locks = yield* FileLock
       const stream = workerJobsStream(root, queueName)
       const claims = workerJobClaimsStream(root, queueName)
       const offerError = (message: string) =>
@@ -302,20 +311,55 @@ export const WorkerQueueLive = (
         }
         return active.size
       })
-      const take = ensureRecovered.pipe(Effect.zipRight(Queue.take(queue))).pipe(
-        Effect.flatMap((job) =>
-              store.append(claims, {
+      const claimLockPath = `${claims.path}.claim`
+      const offerLockPath = `${stream.path}.offer`
+      const claimJob = (job: WorkerJob): Effect.Effect<boolean, EventStoreError> =>
+        locks
+          .withLock(
+            claimLockPath,
+            Effect.gen(function* () {
+              const claimedAt = Date.now()
+              const state = latestClaimState(
+                yield* collectStream(store.tail(claims, CLAIM_RECORD_LIMIT)),
+                claimedAt,
+                defaultLeaseMs,
+              )
+              if (state.completed.has(job.id)) return false
+              if (state.leased.has(job.id) && !state.stale.has(job.id)) return false
+              yield* store.append(claims, {
                 id: job.id,
                 queue: job.queue,
-                claimedAt: Date.now(),
-                leaseUntil: Date.now() + jobLeaseMs(job, defaultLeaseMs, defaultMaxAttempts),
-              }).pipe(
-                Effect.zipRight(refillReplayBacklog),
-                Effect.as(job),
-            Effect.catchAll((cause) =>
-              Queue.offer(queue, job).pipe(
-                Effect.catchAll(() => Effect.void),
-                Effect.zipRight(Effect.fail(claimError("failed to claim worker job", cause))),
+                claimedAt,
+                leaseUntil: claimedAt + jobLeaseMs(job, defaultLeaseMs, defaultMaxAttempts),
+              })
+              return true
+            }),
+          )
+          .pipe(
+            Effect.mapError((cause) =>
+              cause instanceof EventStoreError
+                ? cause
+                : claimError("failed to lock worker job claim ledger", cause),
+            ),
+          )
+      const take: Effect.Effect<WorkerJob, EventStoreError> = Effect.suspend(() =>
+        ensureRecovered.pipe(Effect.zipRight(Queue.take(queue))).pipe(
+          Effect.flatMap((job) =>
+            claimJob(job).pipe(
+              Effect.flatMap((claimed) =>
+                claimed
+                  ? refillReplayBacklog.pipe(Effect.as(job))
+                  : refillReplayBacklog.pipe(Effect.zipRight(take)),
+              ),
+              Effect.catchAll((cause) =>
+                Queue.offer(queue, job).pipe(
+                  Effect.catchAll((requeueCause) =>
+                    queueWarning(
+                      `failed to requeue worker job after claim failure: job=${job.id} cause=${String(requeueCause).slice(0, 160)}`,
+                    ),
+                  ),
+                  Effect.zipRight(Effect.fail(claimError("failed to claim worker job", cause))),
+                ),
               ),
             ),
           ),
@@ -332,30 +376,41 @@ export const WorkerQueueLive = (
         offer: (job) =>
           gate.withPermits(1)(
             Effect.uninterruptible(
-              ensureRecovered.pipe(
-                Effect.zipRight(
-                  job.queue !== queueName
-                    ? Effect.fail(offerError(`worker job queue mismatch: expected ${queueName}, got ${job.queue}`))
-                    : activePersistedJobCount,
+              locks
+                .withLock(
+                  offerLockPath,
+                  ensureRecovered.pipe(
+                    Effect.zipRight(
+                      job.queue !== queueName
+                        ? Effect.fail(offerError(`worker job queue mismatch: expected ${queueName}, got ${job.queue}`))
+                        : activePersistedJobCount,
+                    ),
+                    Effect.flatMap((activeCount) =>
+                      activeCount >= resolvedCapacity
+                        ? Effect.fail(offerError("worker queue is full"))
+                        : Queue.isFull(queue),
+                    ),
+                    Effect.flatMap((full) =>
+                      full
+                        ? Effect.fail(offerError("worker queue is full"))
+                        : store.append(stream, job).pipe(
+                            Effect.zipRight(Queue.offer(queue, job)),
+                            Effect.flatMap((offered) =>
+                              offered
+                                ? Effect.void
+                                : Effect.fail(offerError("worker queue is shutdown")),
+                            ),
+                          ),
+                    ),
+                  ),
+                )
+                .pipe(
+                  Effect.mapError((cause) =>
+                    cause instanceof EventStoreError
+                      ? cause
+                      : offerError(`failed to lock worker queue offer ledger: ${String(cause)}`),
+                  ),
                 ),
-                Effect.flatMap((activeCount) =>
-                  activeCount >= resolvedCapacity
-                    ? Effect.fail(offerError("worker queue is full"))
-                    : Queue.isFull(queue),
-                ),
-                Effect.flatMap((full) =>
-                  full
-                    ? Effect.fail(offerError("worker queue is full"))
-                    : store.append(stream, job).pipe(
-                        Effect.zipRight(Queue.offer(queue, job)),
-                        Effect.flatMap((offered) =>
-                          offered
-                            ? Effect.void
-                            : Effect.fail(offerError("worker queue is shutdown")),
-                        ),
-                      ),
-                ),
-              ),
             ),
           ),
         take,

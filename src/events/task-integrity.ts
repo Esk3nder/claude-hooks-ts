@@ -11,7 +11,7 @@ import {
   type ResolveActiveIsaRecord,
 } from "../algorithm/isa/lifecycle.ts"
 import { SessionState } from "../services/session-state.ts"
-import { logWarning } from "../services/diagnostics.ts"
+import { reportHookFailure } from "../services/hook-failure.ts"
 import { WorkerAggregation } from "../services/worker-aggregation.ts"
 import { loadRuntimeConfig } from "../services/runtime-config.ts"
 import type { WorkerIntegrationSummary } from "../schema/worker-run.ts"
@@ -109,18 +109,37 @@ const evaluateWorkerCompletion = (
 
     const parentLookup = yield* aggregation.value.summarizeParent(taskId).pipe(Effect.either)
     if (parentLookup._tag === "Left") {
-      return yield* logWarning(
-        `[TaskCompleted] worker aggregation parent lookup failed: task=${taskId} cause=${String(parentLookup.left).slice(0, 160)}`,
-      ).pipe(Effect.as(workerCompletionStateReadFailure("task", taskId)))
+      const reason = workerCompletionStateReadFailure("task", taskId)
+      return yield* reportHookFailure({
+        kind: "state_read_failed",
+        event: "TaskCompleted",
+        sessionId,
+        cause: parentLookup.left,
+        fallbackDecision: { decision: "block", reason },
+        hookSafe: true,
+        context: {
+          op: "worker-aggregation.summarizeParent",
+          parent_task_id: taskId,
+        },
+      }).pipe(Effect.as(reason))
     }
     const parentSummary = parentLookup.right
     let summary: WorkerIntegrationSummary = parentSummary
     if (summary.workers_total === 0) {
       const sessionLookup = yield* aggregation.value.summarizeSession(sessionId).pipe(Effect.either)
       if (sessionLookup._tag === "Left") {
-        return yield* logWarning(
-          `[TaskCompleted] worker aggregation session lookup failed: sid=${sessionId} cause=${String(sessionLookup.left).slice(0, 160)}`,
-        ).pipe(Effect.as(workerCompletionStateReadFailure("session", sessionId)))
+        const reason = workerCompletionStateReadFailure("session", sessionId)
+        return yield* reportHookFailure({
+          kind: "state_read_failed",
+          event: "TaskCompleted",
+          sessionId,
+          cause: sessionLookup.left,
+          fallbackDecision: { decision: "block", reason },
+          hookSafe: true,
+          context: {
+            op: "worker-aggregation.summarizeSession",
+          },
+        }).pipe(Effect.as(reason))
       }
       summary = sessionLookup.right
     }
@@ -238,13 +257,20 @@ export const handleTaskCompleted = (
     const sid = payload.session_id
     const recordResult = yield* state.get(sid).pipe(Effect.either)
     if (recordResult._tag === "Left") {
-      yield* logWarning(
-        `[TaskCompleted] session-state op=get failed: sid=${sid} cause=${String(recordResult.left).slice(0, 160)}`,
-      )
-      return {
+      const fallback: HookDecision = {
         decision: "block",
         reason: `Task marked complete but session state could not be read (session=${sid}); retry after state is readable.`,
-      } satisfies HookDecision
+      }
+      yield* reportHookFailure({
+        kind: "state_read_failed",
+        event: "TaskCompleted",
+        sessionId: sid,
+        cause: recordResult.left,
+        fallbackDecision: fallback,
+        hookSafe: true,
+        context: { op: "session-state.get" },
+      })
+      return fallback
     }
     const record = recordResult.right
     const currentCwd =

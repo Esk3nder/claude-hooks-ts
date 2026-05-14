@@ -3,6 +3,7 @@ import * as path from "node:path"
 import { EventStoreError, WorkerRunError } from "../schema/errors.ts"
 import type { WorkerIntegrationApplyResult, WorkerRun } from "../schema/worker-run.ts"
 import { CommandRunner } from "./command-runner.ts"
+import { FileLock, FileLockPlatformLive } from "./file-lock.ts"
 import { WorkerRuns } from "./worker-runs.ts"
 
 export interface WorkerIntegrationApplyOptions {
@@ -232,16 +233,20 @@ const applyPatchAndMarkIntegrated = (
     ),
   )
 
-export const WorkerIntegrationLive: Layer.Layer<
+const integrationLockPath = (repoRoot: string): string =>
+  path.join(repoRoot, ".claude-hooks", "state", "workers", "integration-apply")
+
+export const WorkerIntegrationLiveBase: Layer.Layer<
   WorkerIntegration,
   never,
-  WorkerRuns | CommandRunner
+  WorkerRuns | CommandRunner | FileLock
 > =
   Layer.effect(
     WorkerIntegration,
     Effect.gen(function* () {
       const runs = yield* WorkerRuns
       const runner = yield* CommandRunner
+      const locks = yield* FileLock
       return WorkerIntegration.of({
         applyWorkerPatch: (workerId, opts = {}) =>
           runs.get(workerId).pipe(
@@ -258,21 +263,32 @@ export const WorkerIntegrationLive: Layer.Layer<
                 :
               repoRootForPatch(workerId, run.patch_path!).pipe(
                 Effect.flatMap((repoRoot) =>
-                  ensureCleanWorkspace(runner, workerId, repoRoot).pipe(
-                    Effect.zipRight(runGitApply(runner, workerId, repoRoot, ["apply", "--check", run.patch_path!])),
-                    Effect.zipRight(
-                      opts.checkOnly === true
-                        ? Effect.void
-                        : applyPatchAndMarkIntegrated(runner, runs, workerId, repoRoot, run.patch_path!),
+                  locks
+                    .withLock(
+                      integrationLockPath(repoRoot),
+                      ensureCleanWorkspace(runner, workerId, repoRoot).pipe(
+                        Effect.zipRight(runGitApply(runner, workerId, repoRoot, ["apply", "--check", run.patch_path!])),
+                        Effect.zipRight(
+                          opts.checkOnly === true
+                            ? Effect.void
+                            : applyPatchAndMarkIntegrated(runner, runs, workerId, repoRoot, run.patch_path!),
+                        ),
+                        Effect.as({
+                          worker_id: workerId,
+                          patch_path: run.patch_path!,
+                          applied: opts.checkOnly !== true,
+                          check_only: opts.checkOnly === true,
+                          final_verification_required: true,
+                        }),
+                      ),
+                    )
+                    .pipe(
+                      Effect.mapError((cause) =>
+                        cause instanceof WorkerRunError || cause instanceof EventStoreError
+                          ? cause
+                          : workerError("worker-integration.lock", summarizeCause(cause), workerId, cause),
+                      ),
                     ),
-                    Effect.as({
-                      worker_id: workerId,
-                      patch_path: run.patch_path!,
-                      applied: opts.checkOnly !== true,
-                      check_only: opts.checkOnly === true,
-                      final_verification_required: true,
-                    }),
-                  ),
                 ),
               ),
             ),
@@ -280,3 +296,10 @@ export const WorkerIntegrationLive: Layer.Layer<
       })
     }),
   )
+
+export const WorkerIntegrationLive: Layer.Layer<
+  WorkerIntegration,
+  never,
+  WorkerRuns | CommandRunner
+> =
+  Layer.provide(WorkerIntegrationLiveBase, FileLockPlatformLive)

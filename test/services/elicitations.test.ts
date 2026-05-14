@@ -28,7 +28,7 @@ describe("Elicitations (test layer)", () => {
     expect(r).toBeNull()
   })
 
-  test("record + lookup roundtrip", async () => {
+  test("record + lookup redacts replay content", async () => {
     const sig = elicitationSignature({ prompt: "ok?" })
     const r = await Effect.runPromise(Effect.gen(function* () {
       const e = yield* Elicitations
@@ -36,7 +36,8 @@ describe("Elicitations (test layer)", () => {
       return yield* e.lookup("/repo", "mcp.foo", "ask", sig)
     }).pipe(Effect.provide(ElicitationsTest())))
     expect(r?.action).toBe("accept")
-    expect((r?.content as { yes: boolean }).yes).toBe(true)
+    expect((r?.content as { redacted?: boolean }).redacted).toBe(true)
+    expect(JSON.stringify(r?.content)).not.toContain("yes")
   })
 
   test("pending request roundtrip", async () => {
@@ -82,7 +83,7 @@ describe("Elicitations (test layer)", () => {
 })
 
 describe("ElicitationsLive replay content", () => {
-  test("preserves safe response fields while redacting nested sensitive fields", async () => {
+  test("redacts object replay content before persistence", async () => {
     const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "elicitations-live-"))
     try {
       const sig = elicitationSignature({ prompt: "ok?" })
@@ -95,12 +96,11 @@ describe("ElicitationsLive replay content", () => {
         return yield* e.lookup(cwd, "mcp.foo", "ask", sig)
       }).pipe(Effect.provide(ElicitationsLive)))
 
-      expect((result?.content as { answer?: string }).answer).toBe("yes")
-      expect((result?.content as { prompt?: { redacted?: boolean } }).prompt?.redacted).toBe(true)
+      expect((result?.content as { redacted?: boolean }).redacted).toBe(true)
 
       const persisted = await fs.readFile(ledger(cwd), "utf8")
-      expect(persisted).toContain("yes")
       expect(persisted).toContain("redacted")
+      expect(persisted).not.toContain("yes")
       expect(persisted).not.toContain("do not persist this nested prompt")
     } finally {
       await fs.rm(cwd, { recursive: true, force: true })
@@ -235,8 +235,8 @@ describe("Elicitations.gc (Live impl)", () => {
     }).pipe(Effect.provide(ElicitationsLive)))
 
     const raw = await fs.readFile(ledger(projectA), "utf8")
-    expect(raw).toContain("yes")
     expect(raw).toContain("redacted")
+    expect(raw).not.toContain("yes")
     expect(raw).not.toContain("legacy raw prompt must not survive")
   })
 })

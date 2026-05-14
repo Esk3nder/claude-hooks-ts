@@ -19,6 +19,7 @@ import { durationMillis, loadRuntimeConfig } from "./runtime-config.ts"
 import { WorkerQueue } from "./worker-queue.ts"
 import { hashWorkerPrompt, WorkerRuns } from "./worker-runs.ts"
 import { safeStateSegment } from "./state-paths.ts"
+import { logWarning } from "./diagnostics.ts"
 
 export interface WorkerExecutionJob extends WorkerJobPayloadType {
   readonly worker_id: string
@@ -657,7 +658,11 @@ export const WorkerSupervisorLive: Layer.Layer<
                       runs
                         .cancel(workerId, `enqueue failed: ${summarizeWorkerFailure(cause)}`)
                         .pipe(
-                          Effect.catchAll(() => Effect.void),
+                          Effect.catchAll((cancelCause) =>
+                            logWarning(
+                              `[worker-supervisor] failed to cancel worker after enqueue failure: worker=${workerId} cause=${summarizeWorkerFailure(cancelCause)}`,
+                            ),
+                          ),
                           Effect.zipRight(
                             Effect.fail(
                               cause instanceof WorkerRunError

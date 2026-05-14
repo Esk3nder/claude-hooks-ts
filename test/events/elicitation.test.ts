@@ -21,7 +21,7 @@ describe("handleElicitation", () => {
     expect(out?.action).toBe("decline")
   })
 
-  test("lookup hit (accept) -> accept with stored content", async () => {
+  test("lookup hit with recorded accept content does not auto-accept redacted replay data", async () => {
     const sig = elicitationSignature({ prompt: "?" })
     const program = Effect.gen(function* () {
       const e = yield* Elicitations
@@ -30,9 +30,7 @@ describe("handleElicitation", () => {
     })
     const layer = Layer.mergeAll(ProjectTest({ root: "/proj" }), PolicyConfigTest({ elicitationDenylist: [] }), ElicitationsTest())
     const d = await Effect.runPromise(program.pipe(Effect.provide(layer)))
-    const out = (d as { hookSpecificOutput?: { action?: string; content?: { ok: number } } }).hookSpecificOutput
-    expect(out?.action).toBe("accept")
-    expect(out?.content?.ok).toBe(1)
+    expect(d).toEqual({})
   })
 
   test("lookup hit with redacted content does not auto-accept unreplayable data", async () => {

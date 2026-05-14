@@ -301,7 +301,13 @@ export const runWorkersDetailed = async (
           yield* queue.offer(jobForRetry(run, queued.worker_id, args.prompt!)).pipe(
             Effect.catchAll((cause) =>
               runs.cancel(queued.worker_id, `retry enqueue failed: ${String(cause)}`).pipe(
-                Effect.catchAll(() => Effect.void),
+                Effect.catchAll((cancelCause) =>
+                  Effect.fail(
+                    new Error(
+                      `retry enqueue failed: ${String(cause)}; also failed to cancel queued retry worker: ${String(cancelCause)}`,
+                    ),
+                  ),
+                ),
                 Effect.zipRight(Effect.fail(cause)),
               ),
             ),
