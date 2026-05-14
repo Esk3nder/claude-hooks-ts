@@ -50,7 +50,15 @@ bun run build:bin                 # produces dist/claude-hook-<platform>-<arch>
 claude-hooks-install --apply      # auto-detects the binary, wires it directly
 ```
 
-Cuts dispatcher cold-start by ~3x, paid on every tool call. On macOS the installer falls back to `bun run` automatically since unsigned compiled binaries are killed by Gatekeeper. Force the `bun run` path anywhere with `--no-binary`.
+Cuts dispatcher cold-start by ~3x, paid on every tool call.
+
+On macOS the compiled binary is unsigned and Gatekeeper may quarantine it, in which case every wired hook silently no-ops and `claude-hooks-doctor` reports `(missing)`. If that happens, switch to the bash shim:
+
+```bash
+claude-hooks-install --no-binary --apply
+```
+
+The shim (`bin/claude-hook`) is a small wrapper that `exec bun run`s the dispatcher and is not subject to Gatekeeper. You can also use `--no-binary` proactively on macOS to avoid the compile step. Linux installs default to the compiled binary.
 
 ---
 

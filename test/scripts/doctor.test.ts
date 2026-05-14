@@ -114,14 +114,17 @@ describe("doctor CLI", () => {
 
   test("FAIL when wired hook command points at missing script", async () => {
     const target = path.join(tmpDir, "settings.json");
-    writeSettingsWithDispatcher(
-      target,
-      path.join(tmpDir, "does-not-exist", "claude-hook"),
-    );
+    const missingPath = path.join(tmpDir, "does-not-exist", "claude-hook");
+    writeSettingsWithDispatcher(target, missingPath);
     const res = await runDoctor(["--target", target, "--cwd", tmpDir]);
     const text = stripAnsi(res.stdout);
     expect(text).toContain("[FAIL] wired hook commands resolve");
     expect(text).toContain("missing");
+    // Diagnostic must include the raw command so parser/writer skew is obvious
+    // from one line of output (regression guard against pre-fix behavior where
+    // doctor only showed the parsed path).
+    expect(text).toContain("raw command:");
+    expect(text).toContain(missingPath);
     expect(res.code).toBe(1);
   });
 

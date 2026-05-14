@@ -211,7 +211,9 @@ const checkWiredCommands = (entries: WiredEntry[]): CheckResult => {
   const broken: string[] = [];
   for (const e of entries) {
     if (!fs.existsSync(e.scriptPath)) {
-      broken.push(`${e.event}: ${e.scriptPath} (missing)`);
+      // Include the raw command so cross-version skew (parser-out-of-sync-with-writer)
+      // is obvious from one line of output instead of indistinguishable from a missing file.
+      broken.push(`${e.event}: ${e.scriptPath} (missing) [raw command: ${e.command}]`);
       continue;
     }
     if (!isExecutable(e.scriptPath)) {
@@ -219,7 +221,7 @@ const checkWiredCommands = (entries: WiredEntry[]): CheckResult => {
       if (e.scriptPath.endsWith(".ts")) {
         continue;
       }
-      broken.push(`${e.event}: ${e.scriptPath} (not executable)`);
+      broken.push(`${e.event}: ${e.scriptPath} (not executable) [raw command: ${e.command}]`);
     }
   }
   if (broken.length > 0) {
