@@ -1,5 +1,8 @@
 import { describe, expect, test } from "bun:test"
-import { Effect, Schema } from "effect"
+import { Effect, Layer, Schema } from "effect"
+import { mkdtempSync, rmSync } from "node:fs"
+import { tmpdir } from "node:os"
+import { join } from "node:path"
 import {
   handleSubagentStart,
   handleSubagentStop,
@@ -9,6 +12,9 @@ import {
   type NormalizedSubagentStart,
 } from "../../src/schema/normalized.ts"
 import { SessionStateTest } from "../../src/services/session-state.ts"
+import { EventStoreLive } from "../../src/services/event-store.ts"
+import { RuntimeConfigTest } from "../../src/services/runtime-config.ts"
+import { WorkerRuns, WorkerRunsLive, scopedWorkerRunId } from "../../src/services/worker-runs.ts"
 import { appendWorkerContract } from "../../src/policies/worker-contract.ts"
 
 const decode = (raw: unknown) => Schema.decodeUnknownSync(NormalizedHookEvent)(raw)
@@ -110,6 +116,71 @@ describe("VAL-M4-003 subagent-scope-gate", () => {
   test("non-investigative subagent stop never blocks", async () => {
     const d = await Effect.runPromise(runContractedStop("general-purpose", "done"))
     expect(d).toEqual({})
+  })
+
+  test("native write worker with reported changes stays blocked without captured patch", async () => {
+    const root = mkdtempSync(join(tmpdir(), "chts-subagent-scope-"))
+    try {
+      const output = JSON.stringify({
+        summary: "changed files",
+        files_relevant: [],
+        changes_made: [
+          {
+            path: "src/services/worker-integration.ts",
+            summary: "edited worker integration",
+          },
+        ],
+        commands_run: [],
+        verification: [
+          {
+            check: "manual",
+            status: "passed",
+            evidence: "reported by worker",
+          },
+        ],
+        risks: [],
+        blockers: [],
+        confidence: "high",
+      })
+      const workerId = scopedWorkerRunId("s", "a1")
+      const layer = Layer.mergeAll(
+        SessionStateTest(),
+        Layer.provide(WorkerRunsLive(root), EventStoreLive),
+        RuntimeConfigTest(),
+      )
+
+      const result = await Effect.runPromise(
+        Effect.gen(function* () {
+          const runs = yield* WorkerRuns
+          yield* runs.createQueued({
+            worker_id: workerId,
+            session_id: "s",
+            agent_id: "a1",
+            agent_type: "general-purpose",
+            mode: "write-allowed",
+            prompt_hash: "prompt-hash",
+            scope: "src/**",
+          })
+          yield* runs.markRunning(workerId)
+          const decision = yield* handleSubagentStop(stopPayload("general-purpose", output))
+          return {
+            decision,
+            latest: yield* runs.get(workerId),
+          }
+        }).pipe(Effect.provide(layer)),
+      )
+
+      expect("decision" in result.decision).toBe(true)
+      if ("decision" in result.decision) {
+        expect(result.decision.decision).toBe("block")
+        expect(result.decision.reason).toContain("captured isolated patch")
+      }
+      expect(result.latest?.status).toBe("blocked")
+      expect(result.latest?.isolation).toBeUndefined()
+      expect(result.latest?.patch_path).toBeUndefined()
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
   })
 
   test("missing output without worker ledger → block for investigative role", async () => {

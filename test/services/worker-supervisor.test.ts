@@ -14,6 +14,8 @@ import {
   WorkerExecutorTest,
   WorkerSupervisor,
   WorkerSupervisorLive,
+  WorkerSupervisorLiveBase,
+  type WorkerExecutionJob,
 } from "../../src/services/worker-supervisor.ts"
 import { ClaudeSubprocessTest, type ClaudeSpawnOptions } from "../../src/services/claude-subprocess.ts"
 import type { WorkerResult } from "../../src/schema/worker-run.ts"
@@ -454,6 +456,56 @@ describe("WorkerSupervisorLive", () => {
     )
 
     expect(completed.map((run) => run.worker_id)).toEqual(["worker-only"])
+  })
+
+  test("queued jobs without cwd execute from the supervisor root", async () => {
+    const root = mkdtempSync(join(tmpdir(), "chts-worker-root-"))
+    let capturedJob: WorkerExecutionJob | undefined
+    try {
+      const layer = Layer.provideMerge(
+        WorkerSupervisorLiveBase(root),
+        Layer.mergeAll(
+          Layer.provideMerge(
+            Layer.mergeAll(WorkerQueueLive(root), WorkerRunsLive(root)),
+            Layer.mergeAll(EventStoreLive, RuntimeConfigTest({ workerRetryLimit: 0 })),
+          ),
+          WorkerExecutorTest((job) => {
+            capturedJob = job
+            return result()
+          }),
+          CommandRunnerTest(),
+          RuntimeConfigTest({ workerRetryLimit: 0 }),
+        ),
+      )
+
+      const completed = await Effect.runPromise(
+        Effect.gen(function* () {
+          const queue = yield* WorkerQueue
+          const supervisor = yield* WorkerSupervisor
+          yield* queue.offer({
+            id: "worker-recovered",
+            queue: "default",
+            enqueuedAt: Date.now(),
+            attempts: 0,
+            payload: {
+              worker_id: "worker-recovered",
+              session_id: "session-1",
+              agent_type: "executor",
+              mode: "write-allowed",
+              prompt: "run from the queue root",
+              scope: "src/**",
+            },
+          })
+          return yield* supervisor.runOne
+        }).pipe(Effect.provide(layer)),
+      )
+
+      expect(completed.status).toBe("completed")
+      expect(capturedJob?.cwd).toBe(root)
+      expect(capturedJob?.state_root).toBe(root)
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
   })
 
   test("worktree isolation runs write workers in a temporary worktree and captures a patch", async () => {

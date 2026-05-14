@@ -122,6 +122,7 @@ describe("scripts/workers.ts", () => {
 
       const persisted = readFileSync(join(root, ".claude-hooks", "state", "workers", "default.jsonl"), "utf8")
       expect(persisted).toContain("worker-2-retry-")
+      expect(persisted).toContain(`"cwd":"${root}"`)
       expect(persisted).toContain("redacted")
       expect(persisted).not.toContain(prompt)
 

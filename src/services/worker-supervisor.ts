@@ -484,11 +484,13 @@ export const WorkerExecutorTest = (
     }),
   )
 
-export const WorkerSupervisorLive: Layer.Layer<
+export const WorkerSupervisorLiveBase = (
+  root: string = process.cwd(),
+): Layer.Layer<
   WorkerSupervisor,
   never,
   WorkerQueue | WorkerRuns | WorkerExecutor | CommandRunner
-> =
+> =>
   Layer.effect(
     WorkerSupervisor,
     Effect.gen(function* () {
@@ -541,11 +543,13 @@ export const WorkerSupervisorLive: Layer.Layer<
           }
           const timeoutMs = positiveInt(payload.timeout_ms, durationMillis(config.workerDefaultTimeoutMs))
           const maxAttempts = positiveInt(payload.max_attempts, config.workerRetryLimit + 1)
+          const executionCwd = payload.cwd ?? root
           const executionJob: WorkerExecutionJob = {
             ...payload,
+            cwd: executionCwd,
+            state_root: executionCwd,
             worker_id: workerId,
             timeout_ms: timeoutMs,
-            ...(payload.cwd === undefined ? {} : { state_root: payload.cwd }),
           }
           const execute: Effect.Effect<WorkerExecutionOutcome, WorkerRunError> =
             payload.mode === "write-allowed" &&
@@ -710,3 +714,9 @@ export const WorkerSupervisorLive: Layer.Layer<
       })
     }),
   )
+
+export const WorkerSupervisorLive: Layer.Layer<
+  WorkerSupervisor,
+  never,
+  WorkerQueue | WorkerRuns | WorkerExecutor | CommandRunner
+> = WorkerSupervisorLiveBase()

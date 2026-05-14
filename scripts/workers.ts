@@ -22,7 +22,7 @@ import { WorkerQueue, WorkerQueueLive } from "../src/services/worker-queue.ts"
 import { ClaudeSubprocessLive } from "../src/services/claude-subprocess.ts"
 import { CommandRunnerPlatformLive } from "../src/services/command-runner.ts"
 import { WorkerIntegration, WorkerIntegrationLive } from "../src/services/worker-integration.ts"
-import { WorkerExecutorLive, WorkerSupervisor, WorkerSupervisorLive } from "../src/services/worker-supervisor.ts"
+import { WorkerExecutorLive, WorkerSupervisor, WorkerSupervisorLiveBase } from "../src/services/worker-supervisor.ts"
 import {
   hashWorkerPrompt,
   WorkerRuns,
@@ -179,7 +179,7 @@ const dataLayer = (cwd: string) => {
   const claude = Layer.provide(ClaudeSubprocessLive, CommandRunnerPlatformLive)
   const executor = Layer.provide(WorkerExecutorLive, claude)
   const supervisor = Layer.provide(
-    WorkerSupervisorLive,
+    WorkerSupervisorLiveBase(cwd),
     Layer.mergeAll(eventBacked, executor, CommandRunnerPlatformLive),
   )
   return Layer.mergeAll(eventBacked, integration, supervisor)
@@ -207,7 +207,7 @@ const print = (out: Output, json: boolean, value: unknown, text: string): void =
 const retryWorkerId = (workerId: string): string =>
   `${workerId}-retry-${Date.now().toString(36)}-${crypto.randomBytes(4).toString("hex")}`
 
-const jobForRetry = (run: WorkerRun, workerId: string, prompt: string): WorkerJob => {
+const jobForRetry = (run: WorkerRun, workerId: string, prompt: string, cwd: string): WorkerJob => {
   const payload: WorkerJobPayload = {
     session_id: run.session_id,
     agent_type: run.agent_type,
@@ -218,6 +218,7 @@ const jobForRetry = (run: WorkerRun, workerId: string, prompt: string): WorkerJo
     ...(run.parent_task_id === undefined ? {} : { parent_task_id: run.parent_task_id }),
     ...(run.agent_id === undefined ? {} : { agent_id: run.agent_id }),
     worker_id: workerId,
+    cwd,
   }
   return {
     id: workerId,
@@ -298,7 +299,7 @@ export const runWorkersDetailed = async (
             prompt_hash: hashWorkerPrompt(args.prompt!),
             scope: run.scope,
           })
-          yield* queue.offer(jobForRetry(run, queued.worker_id, args.prompt!)).pipe(
+          yield* queue.offer(jobForRetry(run, queued.worker_id, args.prompt!, args.cwd)).pipe(
             Effect.catchAll((cause) =>
               runs.cancel(queued.worker_id, `retry enqueue failed: ${String(cause)}`).pipe(
                 Effect.catchAll((cancelCause) =>
