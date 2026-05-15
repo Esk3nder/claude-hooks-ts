@@ -8,6 +8,8 @@
 
 **Tradeoff:** Strongest signal (the hook fires every turn, can't be forgotten). Requires editing the classifier output in `claude-hooks-ts`. Real work, real test surface.
 
+**Status:** Done — `UserPromptSubmit` now nudges Agent delegation for repo/synthesis research workflows and unknown prompts with multi-file investigation cues.
+
 ## PR46 Follow-Up Runtime Backlog
 
 - [x] **Preserve selected cwd when running queued workers:** default worker execution jobs to the supervisor / CLI queue root when the persisted payload omits `cwd`, and persist `cwd` on retry-created jobs.
@@ -17,9 +19,9 @@
 - [x] **ISA re-mandated on follow-up turn in same session:** `UserPromptSubmit` should detect an existing ISA at the requested path, skip "MANDATORY FIRST ACTION" wording, tell the agent to update the existing ISA, and avoid wording that semantically demotes `phase: complete` back to `phase: observe`.
 - [x] **Work directories accumulate without archive:** add `SessionStart` or `Stop` cleanup that moves stale `.claude-hooks/work/<uuid>/` directories into `.claude-hooks/archive/` when older than the configured retention window or marked `phase: complete`.
 - [x] **Duplicate dirty-files lists:** make `SessionStart` summarize stale work directories instead of reprinting the same untracked `.claude-hooks/work/*` list already present in the environment preamble.
-- **False-positive task-tool reminders:** suppress "Task tools haven't been used recently" when background agents are active, recent `TaskCreate` exists in the parent harness, or an in-flight ISA already covers the work units.
+- **False-positive task-tool reminders:** suppress "Task tools haven't been used recently" when background agents are active, recent `TaskCreate` exists in the parent harness, or an in-flight ISA already covers the work units. **Status:** Blocked in this repo; no reminder source or text exists in `src/`, `bin/`, `scripts/`, `test/`, or `docs/`.
 - [x] **Subagent return-format inconsistency:** update the global general-purpose subagent prompt skeleton to require direct markdown final answers, not ad hoc JSON envelopes with `output`, `report_markdown`, `deliverable`, or `deliverable_markdown` variants.
-- **ISA frontmatter telemetry:** extend mandatory ISA frontmatter with `classifier_mode`, `classifier_tier`, and `classifier_reason` so Stop can verify the artifact matches the classifier route.
-- **Reminder channel layering:** emit hook reminders outside assistant tool-result `<output>` blocks so reminders cannot be mistaken for stdout/stderr from the preceding tool.
-- **Stale git-status snapshot:** avoid re-presenting SessionStart-time git status snapshots on later `UserPromptSubmit` turns; either refresh explicitly or label the snapshot once.
-- **Hook-reminder priority resolver:** when the ISA gate is active, suppress lower-priority nudges such as TaskCreate reminders because the ISA is the active task tracker for that run.
+- [x] **ISA frontmatter telemetry:** extend mandatory ISA frontmatter with `classifier_mode`, `classifier_tier`, and `classifier_reason` so Stop can verify the artifact matches the classifier route.
+- **Reminder channel layering:** emit hook reminders outside assistant tool-result `<output>` blocks so reminders cannot be mistaken for stdout/stderr from the preceding tool. **Status:** Blocked in this repo; reminder/tool-result channel placement is host-layer behavior and no local emitter was found.
+- **Stale git-status snapshot:** avoid re-presenting SessionStart-time git status snapshots on later `UserPromptSubmit` turns; either refresh explicitly or label the snapshot once. **Status:** Blocked in this repo; the repeated snapshot text is not emitted by the local hook code.
+- **Hook-reminder priority resolver:** when the ISA gate is active, suppress lower-priority nudges such as TaskCreate reminders because the ISA is the active task tracker for that run. **Status:** Blocked in this repo; depends on the same host-layer reminder source as the false-positive TaskCreate nudge.

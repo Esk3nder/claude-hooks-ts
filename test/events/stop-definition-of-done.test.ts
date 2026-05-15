@@ -1,5 +1,8 @@
 import { describe, expect, test } from "bun:test"
 import { Effect, Layer, Schema } from "effect"
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs"
+import { tmpdir } from "node:os"
+import { join } from "node:path"
 import { handleStop } from "../../src/events/stop-definition-of-done.ts"
 import { FsError } from "../../src/schema/errors.ts"
 import { HookPayload } from "../../src/schema/payloads.ts"
@@ -185,5 +188,70 @@ describe("handleStop (definition of done)", () => {
     expect((result.first as { decision?: string }).decision).toBe("block")
     expect(result.afterFirst.stop_blocked_once).toBe(true)
     expect(result.second).toEqual({})
+  })
+
+  test("blocks complete engaged ISA when classifier telemetry mismatches session route", async () => {
+    const root = mkdtempSync(join(tmpdir(), "stop-isa-telemetry-"))
+    try {
+      const isaPath = join(root, ".claude-hooks", "work", "sid-telemetry", "ISA.md")
+      mkdirSync(join(root, ".claude-hooks", "work", "sid-telemetry"), { recursive: true })
+      writeFileSync(
+        isaPath,
+        [
+          "---",
+          "effort: advanced",
+          "phase: complete",
+          "classifier_mode: NATIVE",
+          "classifier_tier: E2",
+          "classifier_reason: stale route",
+          "---",
+          "",
+          "## Problem",
+          "x",
+          "## Vision",
+          "x",
+          "## Out of Scope",
+          "x",
+          "## Constraints",
+          "x",
+          "## Goal",
+          "x",
+          "## Criteria",
+          "- [x] ISC-1",
+          "## Features",
+          "x",
+          "## Test Strategy",
+          "x",
+          "## Verification",
+          "- ISC-1: done",
+        ].join("\n"),
+      )
+      const layer = SessionStateTest(
+        new Map([
+          [
+            "sid-telemetry",
+            {
+              ...EMPTY_SESSION_STATE,
+              engagement_required: true,
+              session_root: root,
+              expected_isa_path: ".claude-hooks/work/sid-telemetry/ISA.md",
+              expected_isa_path_absolute: isaPath,
+              last_mode: "ALGORITHM",
+              last_tier: 3,
+            },
+          ],
+        ]),
+      )
+      const d = await Effect.runPromise(
+        handleStop(stop("sid-telemetry")).pipe(Effect.provide(layer)),
+      )
+      const out = d as { decision?: string; reason?: string }
+      expect(out.decision).toBe("block")
+      expect(out.reason ?? "").toContain("classifier telemetry")
+      expect(out.reason ?? "").toContain("classifier_mode")
+      expect(out.reason ?? "").toContain("classifier_tier")
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
   })
 })

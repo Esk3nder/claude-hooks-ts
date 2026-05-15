@@ -75,6 +75,9 @@ const initGitRepo = (dir: string): void => {
 const ISA_E3_BODY = `---
 effort: advanced
 phase: observe
+classifier_mode: ALGORITHM
+classifier_tier: E3
+classifier_reason: integration fixture
 ---
 
 ## Problem

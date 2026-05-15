@@ -29,6 +29,17 @@ import { detectSessionRoot } from "../services/project-root.ts"
 import { safeResolvePath } from "../services/path-resolution.ts"
 import { reportHookFailure } from "../services/hook-failure.ts"
 
+const UNKNOWN_MULTI_FILE_CUES =
+  /\b(multi[- ]file|across files|whole repo|entire repo|codebase-wide|several files|many files|map relationships|trace|investigat(?:e|ion)|audit)\b/i
+
+const shouldPreferAgentDelegation = (
+  workflow: string,
+  prompt: string,
+): boolean =>
+  workflow === "research.repo" ||
+  workflow === "research.synthesis" ||
+  (workflow === "unknown" && UNKNOWN_MULTI_FILE_CUES.test(prompt))
+
 /**
  * UserPromptSubmit handler — TWO classifiers, layered (B4) — with the full
  * this package feature set: transcript context, telemetry, prompt sanitization,
@@ -116,7 +127,10 @@ export const handleUserPromptSubmit = (
     // Step 4 — mode classifier with context.
     const classification = yield* classify(payload.prompt, { context })
     const modeLine = renderClassificationLine(classification)
-    const workflowLine = `Detected workflow: ${workflow}. ${playbook}`
+    const delegationNudge = shouldPreferAgentDelegation(workflow, payload.prompt)
+      ? " Prefer Agent delegation for this turn."
+      : ""
+    const workflowLine = `Detected workflow: ${workflow}. ${playbook}${delegationNudge}`
     const plan = planEngagement(classification, sessionId)
 
     // Step 4b — engagement bookkeeping. Stop / PostToolUse gates read
@@ -166,6 +180,8 @@ export const handleUserPromptSubmit = (
               engagement_required: true,
               expected_isa_path: plan.isaPath,
               expected_isa_path_absolute: expectedIsaPathAbsolute,
+              last_mode: classification.mode,
+              last_tier: classification.tier,
             },
           })
         : null

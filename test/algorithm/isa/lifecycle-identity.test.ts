@@ -60,6 +60,8 @@ describe("handlePostToolUseIsaEffects — session-scoped ISA identity", () => {
         engagement_required: true,
         expected_isa_path_absolute: expectedAbs,
         expected_isa_path: ".claude-hooks/work/current-slug/ISA.md",
+        last_mode: "ALGORITHM",
+        last_tier: 3,
       } as const
 
       // Call the lifecycle helper directly with the session record so the

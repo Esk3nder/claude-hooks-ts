@@ -49,6 +49,7 @@ export interface EngagementPlan {
   readonly tier: 3 | 4 | 5
   readonly isaPath: string
   readonly effort: string
+  readonly classifierReason: string
   readonly sections: ReadonlyArray<IsaSectionName>
 }
 
@@ -72,6 +73,7 @@ export const planEngagement = (
     tier,
     isaPath: expectedIsaPathFor(sessionId),
     effort: EFFORT_BY_TIER[tier],
+    classifierReason: c.reason,
     sections: REQUIRED_SECTIONS_BY_TIER[tier],
   }
 }
@@ -94,7 +96,10 @@ export const renderEngagementDirective = (
         `(or, if a project ISA exists at \`<repo>/ISA.md\`, append to it). ` +
         `Do not probe with implementation tools just to discover this gate; ` +
         `write the ISA first after any explicitly-requested pre-ISA inspection. ` +
-        `Minimum frontmatter: \`effort: ${plan.effort}\`, \`phase: observe\`. `
+        `Minimum frontmatter: \`effort: ${plan.effort}\`, ` +
+        `\`phase: observe\`, \`classifier_mode: ALGORITHM\`, ` +
+        `\`classifier_tier: E${plan.tier}\`, ` +
+        `\`classifier_reason: ${plan.classifierReason}\`. `
       : `UPDATE EXISTING ISA: update the active ISA at \`${activeIsaPath}\`. ` +
         `Do not create a second ISA, and do not reset \`phase: complete\` back ` +
         `to \`phase: observe\` unless the criteria are genuinely reopened. `
@@ -121,7 +126,11 @@ export const renderEngagementDirective = (
  */
 export type ResolveActiveIsaRecord = Pick<
   SessionStateRecord,
-  "engagement_required" | "expected_isa_path_absolute" | "expected_isa_path"
+  | "engagement_required"
+  | "expected_isa_path_absolute"
+  | "expected_isa_path"
+  | "last_mode"
+  | "last_tier"
 >
 
 export interface ResolveActiveIsaInput {
@@ -280,6 +289,37 @@ export const checkStopReadiness = (
 
   const phase = (fm["phase"] ?? "").toLowerCase().trim()
   if (phase !== "complete") return { _tag: "noop" }
+
+  if (input.record?.engagement_required === true) {
+    const expectedTier =
+      typeof input.record.last_tier === "number"
+        ? `E${input.record.last_tier}`
+        : null
+    const actualMode = (fm["classifier_mode"] ?? "").trim()
+    const actualTier = (fm["classifier_tier"] ?? "").trim().toUpperCase()
+    const actualReason = (fm["classifier_reason"] ?? "").trim()
+    const expectedMode = input.record.last_mode ?? null
+    const problems: string[] = []
+    if (expectedMode !== null && actualMode !== expectedMode) {
+      problems.push(`classifier_mode expected ${expectedMode}, got ${actualMode || "<missing>"}`)
+    }
+    if (expectedTier !== null && actualTier !== expectedTier) {
+      problems.push(`classifier_tier expected ${expectedTier}, got ${actualTier || "<missing>"}`)
+    }
+    if (actualReason.length === 0) {
+      problems.push("classifier_reason is missing")
+    }
+    if (problems.length > 0) {
+      return {
+        _tag: "block",
+        reason:
+          `ISA at ${isaPath} declares phase: complete but classifier telemetry ` +
+          `does not match the engaged route: ${problems.join("; ")}. ` +
+          `Update the frontmatter telemetry or roll the phase back to a ` +
+          `non-complete state before declaring done.`,
+      }
+    }
+  }
 
   // Phase claims complete — apply both gates.
   const tier = parseTier(fm)

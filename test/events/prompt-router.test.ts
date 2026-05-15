@@ -97,11 +97,37 @@ describe("handleUserPromptSubmit", () => {
     expect(ctx).toContain("ISA_PATH=.claude-hooks/work/abc-123/ISA.md")
     expect(ctx).toContain("FIRST ACTION NOW")
     expect(ctx).toContain("Do not probe with implementation tools")
+    expect(ctx).toContain("`classifier_mode: ALGORITHM`")
+    expect(ctx).toContain("`classifier_tier: E3`")
+    expect(ctx).toContain("`classifier_reason: test default → ALGORITHM E3`")
     expect(ctx).toContain("Required sections for E3:")
     expect(ctx).toContain("Problem")
     expect(ctx).toContain("Out of Scope")
     expect(ctx).toContain("Test Strategy")
     expect(ctx).toContain("absence is treated as failure")
+  })
+
+  test("repo investigation workflow nudges toward Agent delegation", async () => {
+    const payload = decode({
+      _tag: "UserPromptSubmit",
+      session_id: "agent-nudge",
+      hook_event_name: "UserPromptSubmit",
+      prompt: "Where in the codebase is the worker enforcement gate defined?",
+    })
+    const d = await Effect.runPromise(
+      handleUserPromptSubmit(payload).pipe(
+        Effect.provide(SessionStateTest()),
+        Effect.provide(inferenceLayer),
+        Effect.provide(subprocLayer),
+        Effect.provide(ClassifierTelemetryTest().layer),
+        Effect.provide(CommandRunnerTest()),
+      ),
+    )
+    const ctx = (
+      d as { hookSpecificOutput: { additionalContext: string } }
+    ).hookSpecificOutput.additionalContext
+    expect(ctx).toContain("Detected workflow: research.repo")
+    expect(ctx).toContain("Prefer Agent delegation for this turn.")
   })
 
   test("existing expected ISA → directive says to update without phase demotion", async () => {
