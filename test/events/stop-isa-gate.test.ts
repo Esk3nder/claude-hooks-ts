@@ -1002,11 +1002,16 @@ describe("Stop engagement absence-is-failure gate", () => {
   // P2a — Stop absence reason names the absolute ISA path so the model
   // can write unambiguously even when the shell cwd has drifted since
   // engagement.
-  test("absence reason includes the absolute expected-ISA path when state has one", async () => {
+  test("absence reason includes the normalized absolute expected-ISA path", async () => {
     const { root, cleanup } = stage()
     try {
-      const absolutePath =
-        "/some/absolute/path/.claude-hooks/work/test-stop/ISA.md"
+      const absolutePath = join(
+        root,
+        ".claude-hooks",
+        "work",
+        "test-stop",
+        "ISA.md",
+      )
       const out = await runStop(root, {
         engagement_required: true,
         last_mode: "ALGORITHM",
@@ -1019,6 +1024,33 @@ describe("Stop engagement absence-is-failure gate", () => {
         ".claude-hooks/work/test-stop/ISA.md",
       )
       expect(out.reason ?? "").toContain(absolutePath)
+    } finally {
+      cleanup()
+    }
+  })
+
+  test("absence reason does not echo corrupt expected_isa_path_absolute", async () => {
+    const { root, cleanup } = stage()
+    try {
+      const corruptAbsolute =
+        "/tmp/outside/.claude-hooks/work/test-stop/ISA.md"
+      const normalizedAbsolute = join(
+        root,
+        ".claude-hooks",
+        "work",
+        "test-stop",
+        "ISA.md",
+      )
+      const out = await runStop(root, {
+        engagement_required: true,
+        last_mode: "ALGORITHM",
+        last_tier: 3,
+        expected_isa_path: ".claude-hooks/work/test-stop/ISA.md",
+        expected_isa_path_absolute: corruptAbsolute,
+      })
+      expect(out.decision).toBe("block")
+      expect(out.reason ?? "").toContain(normalizedAbsolute)
+      expect(out.reason ?? "").not.toContain(corruptAbsolute)
     } finally {
       cleanup()
     }

@@ -128,12 +128,16 @@ const recordSingleToolUseEvidence = (
     } else if (payload.tool_name === "Bash") {
       const cmd = commandFromInput(payload.tool_input)
       if (cmd !== null) {
+        const hasResponse = response !== undefined && response !== null
         entries.push({ key: "commands_run", value: cmd })
         if (!success) entries.push({ key: "commands_failed", value: cmd })
         if (isVerificationCommand(cmd)) {
           entries.push({ key: "tests_run", value: cmd })
-          verification = success ? "passed" : "failed"
-          if (!success) nextRequiredAction = "Read the failure output and fix the failing assertion."
+          verification = success && hasResponse ? "passed" : "failed"
+          if (!success || !hasResponse) {
+            if (success) entries.push({ key: "commands_failed", value: cmd })
+            nextRequiredAction = "Read the failure output and fix the failing assertion."
+          }
         } else if (!success) {
           nextRequiredAction = "Investigate the failed command before continuing."
         }

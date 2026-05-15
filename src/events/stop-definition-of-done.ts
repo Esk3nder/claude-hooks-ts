@@ -5,6 +5,7 @@ import type { HookDecision } from "../schema/decisions.ts"
 import { NO_DECISION } from "../schema/decisions.ts"
 import { SessionState } from "../services/session-state.ts"
 import { checkStopReadiness, resolveActiveIsa } from "../algorithm/isa/lifecycle.ts"
+import { resolveExpectedIsaAbsolute } from "../algorithm/isa/path-contract.ts"
 import { loadRegenerateRules, matchRules } from "../policies/regenerate.ts"
 import { expandPathMatchCandidates } from "../policies/path-utils.ts"
 import {
@@ -222,7 +223,7 @@ export const handleStop = (
           record.expected_isa_path ?? "<.claude-hooks/work/<slug>/ISA.md>"
         // Surface the frozen absolute path alongside the relative one so
         // the model can write to it unambiguously even from a drifted cwd.
-        const expectedAbs = record.expected_isa_path_absolute
+        const expectedAbs = resolveExpectedIsaAbsolute(sessionRoot, record)
         const expectedDisplay =
           expectedAbs !== null && expectedAbs !== expectedRel
             ? `\`${expectedRel}\` (absolute: \`${expectedAbs}\`)`

@@ -60,8 +60,10 @@ export interface EngagementDirectiveOptions {
 /**
  * Decide whether the classification demands an ISA engagement and, if so,
  * return everything the directive renderer needs. Returns `null` for
- * MINIMAL, NATIVE, or ALGORITHM tier < 3 — the caller treats `null` as
- * "no engagement directive line, engagement_required = false".
+ * MINIMAL, NATIVE, or ALGORITHM tier < 3. Callers may still preserve an
+ * already-active engagement from earlier in the same session; `null` only
+ * means this prompt does not start a new engagement or render a new
+ * directive.
  */
 export const planEngagement = (
   c: Classification,

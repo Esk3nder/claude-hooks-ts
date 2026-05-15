@@ -78,6 +78,21 @@ describe("handlePostToolBatch", () => {
     expect(r.commands_failed).toContain("bun test")
   })
 
+  test("missing tool response does not mark verification as passed", async () => {
+    const layer = SessionStateTest()
+    const payload = batch("sid-missing-response", [
+      { tool_name: "Bash", tool_input: { command: "bun test" } },
+    ])
+    const program = Effect.gen(function* () {
+      yield* handlePostToolBatch(payload)
+      const s = yield* SessionState
+      return yield* s.get("sid-missing-response")
+    })
+    const r = await Effect.runPromise(program.pipe(Effect.provide(layer)))
+    expect(r.verification_status).toBe("failed")
+    expect(r.commands_failed).toContain("bun test")
+  })
+
   test("failed verification in same batch sets failure-oriented next action", async () => {
     const layer = SessionStateTest()
     const payload = batch("sid-4b", [
@@ -161,6 +176,24 @@ describe("handlePostToolBatch", () => {
     })
     const r = await Effect.runPromise(program.pipe(Effect.provide(layer)))
     expect(r.source_urls).toEqual(["https://example.com/roofing"])
+  })
+
+  test("does not treat URLs in search queries as fetched source evidence", async () => {
+    const layer = SessionStateTest()
+    const payload = batch("sid-query-url-only", [
+      {
+        tool_name: "Web Search",
+        tool_input: { query: "Read https://example.com/roofing" },
+        tool_response: "Did 1 search in 6s",
+      },
+    ])
+    const program = Effect.gen(function* () {
+      yield* handlePostToolBatch(payload)
+      const s = yield* SessionState
+      return yield* s.get("sid-query-url-only")
+    })
+    const r = await Effect.runPromise(program.pipe(Effect.provide(layer)))
+    expect(r.source_urls).toEqual([])
   })
 
   test("does not record dead fetch URLs as usable source evidence", async () => {

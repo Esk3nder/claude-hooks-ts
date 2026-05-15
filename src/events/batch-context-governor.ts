@@ -72,12 +72,17 @@ export const handlePostToolBatch = (
       } else if (entry.tool_name === "Bash") {
         const cmd = commandFromInput(entry.tool_input)
         if (cmd !== null) {
+          const hasResponse =
+            entry.tool_response !== undefined && entry.tool_response !== null
           commandsRun.push(cmd)
           if (!success) commandsFailed.push(cmd)
           if (isVerificationCommand(cmd)) {
             sawVerify = true
             testsRun.push(cmd)
-            if (!success) sawVerifyFail = true
+            if (!success || !hasResponse) {
+              sawVerifyFail = true
+              if (success) commandsFailed.push(cmd)
+            }
           }
         }
       } else if (

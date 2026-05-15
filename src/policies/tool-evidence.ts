@@ -20,6 +20,21 @@ const URL_RE = /https?:\/\/[^\s"'<>)]+/g
 const SOURCE_RESPONSE_FAILURE_RE =
   /\b(?:403 Forbidden|404 Not Found|500 Internal Server Error|502 Bad Gateway|503 Service Unavailable|504 Gateway Timeout|Received 0 bytes|timed out|request failed)\b/i
 
+const normalizeUrlMatch = (url: string): string =>
+  url.replace(/[.,;:!?}\]]+$/g, "")
+
+const uniqueUrlsFromText = (text: string): ReadonlyArray<string> => {
+  const matches = text.match(URL_RE)
+  if (!matches) return []
+  return Array.from(
+    new Set(
+      matches
+        .map(normalizeUrlMatch)
+        .filter((url) => url.length > "https://".length),
+    ),
+  )
+}
+
 export const isVerificationCommand = (cmd: string): boolean =>
   VERIFY_COMMAND_PATTERNS.some((pattern) => pattern.test(cmd))
 
@@ -28,12 +43,11 @@ export const isSourceCollectionTool = (toolName: string): boolean =>
 
 export const urlsFromToolInput = (input: unknown): ReadonlyArray<string> => {
   if (typeof input !== "object" || input === null) return []
-  const obj = input as { url?: unknown; query?: unknown }
+  const obj = input as { url?: unknown }
   const out: string[] = []
-  if (typeof obj.url === "string") out.push(obj.url)
-  if (typeof obj.query === "string") {
-    const matches = obj.query.match(URL_RE)
-    if (matches) out.push(...matches)
+  if (typeof obj.url === "string") {
+    const url = normalizeUrlMatch(obj.url)
+    if (url.length > "https://".length) out.push(url)
   }
   return out
 }
@@ -49,8 +63,7 @@ export const urlsFromToolResponse = (response: unknown): ReadonlyArray<string> =
       return []
     }
   }
-  const matches = text.match(URL_RE)
-  return matches ? Array.from(new Set(matches)) : []
+  return uniqueUrlsFromText(text)
 }
 
 export const isSuccessfulToolResponse = (response: unknown): boolean => {
@@ -61,17 +74,58 @@ export const isSuccessfulToolResponse = (response: unknown): boolean => {
     readonly error?: unknown
     readonly exitCode?: unknown
     readonly exit_code?: unknown
+    readonly is_error?: unknown
+    readonly isError?: unknown
+    readonly interrupted?: unknown
+    readonly timedOut?: unknown
+    readonly timed_out?: unknown
+    readonly status?: unknown
+    readonly statusCode?: unknown
+    readonly status_code?: unknown
   }
   if (obj.success === false) return false
+  if (obj.is_error === true || obj.isError === true) return false
+  if (obj.interrupted === true) return false
+  if (obj.timedOut === true || obj.timed_out === true) return false
   if (obj.error !== undefined && obj.error !== null) return false
   if (typeof obj.exitCode === "number" && obj.exitCode !== 0) return false
   if (typeof obj.exit_code === "number" && obj.exit_code !== 0) return false
+  for (const status of [obj.status, obj.statusCode, obj.status_code]) {
+    if (typeof status === "number" && status >= 400) return false
+    if (typeof status === "string" && /^[45]\d\d\b/.test(status.trim())) {
+      return false
+    }
+  }
   return true
+}
+
+const RESPONSE_METADATA_KEYS: ReadonlySet<string> = new Set([
+  "success",
+  "ok",
+  "exitCode",
+  "exit_code",
+  "status",
+  "statusCode",
+  "status_code",
+  "timedOut",
+  "timed_out",
+])
+
+const hasMeaningfulSourcePayload = (value: unknown): boolean => {
+  if (typeof value === "string") return value.trim().length > 0
+  if (Array.isArray(value)) return value.some(hasMeaningfulSourcePayload)
+  if (typeof value !== "object" || value === null) return false
+  for (const [key, nested] of Object.entries(value)) {
+    if (RESPONSE_METADATA_KEYS.has(key)) continue
+    if (hasMeaningfulSourcePayload(nested)) return true
+  }
+  return false
 }
 
 export const isUsableSourceToolResponse = (response: unknown): boolean => {
   if (!isSuccessfulToolResponse(response)) return false
   if (response === undefined || response === null) return false
+  if (!hasMeaningfulSourcePayload(response)) return false
   const text =
     typeof response === "string"
       ? response

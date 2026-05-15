@@ -25,6 +25,7 @@ import {
   renderEngagementDirective,
   resolveActiveIsa,
 } from "../algorithm/isa/lifecycle.ts"
+import { resolveExpectedIsaAbsolute } from "../algorithm/isa/path-contract.ts"
 import { detectSessionRoot } from "../services/project-root.ts"
 import { safeResolvePath } from "../services/path-resolution.ts"
 import { reportHookFailure } from "../services/hook-failure.ts"
@@ -102,9 +103,27 @@ export const handleUserPromptSubmit = (
     const requiresWebSrc = requiresWebSources(payload.prompt)
     const state = yield* SessionState
     const sessionId = payload.session_id
+    const existing = yield* state
+      .get(sessionId)
+      .pipe(
+        Effect.catchAll((cause) =>
+          reportHookFailure({
+            kind: "state_read_failed",
+            event: "UserPromptSubmit",
+            sessionId,
+            cause,
+            hookSafe: true,
+            context: { op: "existing-read", cwd: payload.cwd },
+          }).pipe(Effect.as(null)),
+        ),
+      )
+    const existingSourceObligationActive =
+      existing?.requires_web_sources === true && existing.source_urls.length === 0
+    const nextRequiresWebSources =
+      requiresWebSrc || existingSourceObligationActive
     const workflowPatch = {
       last_workflow: workflow,
-      requires_web_sources: requiresWebSrc,
+      requires_web_sources: nextRequiresWebSources,
       ...(requiresWebSrc ? { source_urls: [] } : {}),
     }
     yield* state
@@ -148,31 +167,25 @@ export const handleUserPromptSubmit = (
     // `expected_isa_path` stays for display and back-compat; downstream
     // gates prefer `expected_isa_path_absolute`.
     const engagementRequired = plan !== null
-    const existing = yield* state
-      .get(sessionId)
-      .pipe(
-        Effect.catchAll((cause) =>
-          reportHookFailure({
-            kind: "state_read_failed",
-            event: "UserPromptSubmit",
-            sessionId,
-            cause,
-            hookSafe: true,
-            context: { op: "existing-read", cwd: payload.cwd },
-          }).pipe(Effect.as(null)),
-        ),
-      )
     const initialCwd =
       typeof payload.cwd === "string" && payload.cwd.length > 0
         ? payload.cwd
         : process.cwd()
+    const existingEngagementActive = existing?.engagement_required === true
     const sessionRoot = engagementRequired
       ? (existing?.session_root ?? (yield* detectSessionRoot(initialCwd)))
+      : existingEngagementActive
+        ? (existing?.session_root ?? null)
       : null
+    const existingExpectedAbsolute =
+      existingEngagementActive && sessionRoot !== null && existing !== null
+        ? resolveExpectedIsaAbsolute(sessionRoot, existing)
+        : null
     const expectedIsaPathAbsolute =
       engagementRequired && sessionRoot !== null && plan !== null
-        ? (existing?.expected_isa_path_absolute ??
-          safeResolvePath(sessionRoot, plan.isaPath))
+        ? (existingExpectedAbsolute ?? safeResolvePath(sessionRoot, plan.isaPath))
+        : existingEngagementActive
+          ? existingExpectedAbsolute
         : null
     const activeIsaPath =
       engagementRequired && sessionRoot !== null && plan !== null
@@ -192,12 +205,25 @@ export const handleUserPromptSubmit = (
     const additionalContext = engageLine
       ? `${workflowLine}\n${modeLine}\n${engageLine}`
       : `${workflowLine}\n${modeLine}`
+    const nextEngagementRequired = engagementRequired || existingEngagementActive
     yield* state
       .update(sessionId, {
-        last_mode: classification.mode,
-        last_tier: classification.tier,
-        engagement_required: engagementRequired,
-        expected_isa_path: engagementRequired ? plan.isaPath : null,
+        last_mode: engagementRequired
+          ? classification.mode
+          : existingEngagementActive
+            ? (existing?.last_mode ?? classification.mode)
+            : classification.mode,
+        last_tier: engagementRequired
+          ? classification.tier
+          : existingEngagementActive
+            ? (existing?.last_tier ?? classification.tier)
+            : classification.tier,
+        engagement_required: nextEngagementRequired,
+        expected_isa_path: engagementRequired
+          ? plan.isaPath
+          : existingEngagementActive
+            ? (existing?.expected_isa_path ?? null)
+            : null,
         session_root: sessionRoot,
         expected_isa_path_absolute: expectedIsaPathAbsolute,
       })

@@ -18,6 +18,7 @@ import { ClaudeSubprocessTest } from "../../src/services/claude-subprocess.ts"
 import { InferenceTest, FAIL_SAFE } from "../../src/services/inference.ts"
 import { ClassifierTelemetryTest } from "../../src/services/classifier-telemetry.ts"
 import { CommandRunnerTest } from "../../src/services/command-runner.ts"
+import { safeResolvePath } from "../../src/services/path-resolution.ts"
 
 const inferenceLayer = InferenceTest(() => ({
   ...FAIL_SAFE,
@@ -283,6 +284,115 @@ describe("handleUserPromptSubmit", () => {
     expect(record.expected_isa_path).toBe(null)
   })
 
+  test("MINIMAL follow-up does not clear an active ALGORITHM engagement", async () => {
+    const { SessionState } = await import(
+      "../../src/services/session-state.ts"
+    )
+    const minimalLayer = InferenceTest(() => ({
+      mode: "MINIMAL",
+      tier: null,
+      reason: "test minimal",
+      source: "classifier",
+      latencyMs: 0,
+    }))
+    const payload = decode({
+      _tag: "UserPromptSubmit",
+      session_id: "active-engagement",
+      hook_event_name: "UserPromptSubmit",
+      prompt: "ok continue",
+    })
+    const record = await Effect.runPromise(
+      Effect.gen(function* () {
+        yield* handleUserPromptSubmit(payload)
+        const s = yield* SessionState
+        return yield* s.get("active-engagement")
+      }).pipe(
+        Effect.provide(
+          SessionStateTest(
+            new Map([
+              [
+                "active-engagement",
+                {
+                  ...EMPTY_SESSION_STATE,
+                  engagement_required: true,
+                  last_mode: "ALGORITHM",
+                  last_tier: 3,
+                  expected_isa_path:
+                    ".claude-hooks/work/active-engagement/ISA.md",
+                  expected_isa_path_absolute:
+                    "/repo/.claude-hooks/work/active-engagement/ISA.md",
+                  session_root: "/repo",
+                },
+              ],
+            ]),
+          ),
+        ),
+        Effect.provide(minimalLayer),
+        Effect.provide(subprocLayer),
+        Effect.provide(ClassifierTelemetryTest().layer),
+        Effect.provide(CommandRunnerTest()),
+      ),
+    )
+    expect(record.engagement_required).toBe(true)
+    expect(record.last_mode).toBe("ALGORITHM")
+    expect(record.last_tier).toBe(3)
+    expect(record.expected_isa_path).toBe(
+      ".claude-hooks/work/active-engagement/ISA.md",
+    )
+  })
+
+  test("repeated engagement repairs corrupt expected_isa_path_absolute", async () => {
+    const { SessionState } = await import(
+      "../../src/services/session-state.ts"
+    )
+    const root = mkdtempSync(join(tmpdir(), "chts-router-abs-"))
+    try {
+      const payload = decode({
+        _tag: "UserPromptSubmit",
+        session_id: "repair-abs",
+        hook_event_name: "UserPromptSubmit",
+        cwd: root,
+        prompt: "build the thing",
+      })
+      const record = await Effect.runPromise(
+        Effect.gen(function* () {
+          yield* handleUserPromptSubmit(payload)
+          const s = yield* SessionState
+          return yield* s.get("repair-abs")
+        }).pipe(
+          Effect.provide(
+            SessionStateTest(
+              new Map([
+                [
+                  "repair-abs",
+                  {
+                    ...EMPTY_SESSION_STATE,
+                    engagement_required: true,
+                    last_mode: "ALGORITHM",
+                    last_tier: 3,
+                    expected_isa_path: ".claude-hooks/work/repair-abs/ISA.md",
+                    expected_isa_path_absolute:
+                      "/tmp/outside/.claude-hooks/work/repair-abs/ISA.md",
+                    session_root: root,
+                  },
+                ],
+              ]),
+            ),
+          ),
+          Effect.provide(inferenceLayer),
+          Effect.provide(subprocLayer),
+          Effect.provide(ClassifierTelemetryTest().layer),
+          Effect.provide(CommandRunnerTest()),
+        ),
+      )
+      expect(record.expected_isa_path_absolute).toBe(
+        safeResolvePath(root, ".claude-hooks/work/repair-abs/ISA.md"),
+      )
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
   test("MINIMAL → no ISA engagement directive", async () => {
     const minimalLayer = InferenceTest(() => ({
       mode: "MINIMAL",
@@ -436,6 +546,100 @@ electricity price trends. Cite the sources in the page footer.`,
     )
     expect(record.requires_web_sources).toBe(true)
     expect(record.source_urls).toEqual([])
+  })
+
+  test("MINIMAL follow-up does not clear an unsatisfied source obligation", async () => {
+    const { SessionState } = await import(
+      "../../src/services/session-state.ts"
+    )
+    const minimalLayer = InferenceTest(() => ({
+      mode: "MINIMAL",
+      tier: null,
+      reason: "test minimal",
+      source: "classifier",
+      latencyMs: 0,
+    }))
+    const payload = decode({
+      _tag: "UserPromptSubmit",
+      session_id: "source-follow-up",
+      hook_event_name: "UserPromptSubmit",
+      prompt: "ok continue",
+    })
+    const record = await Effect.runPromise(
+      Effect.gen(function* () {
+        yield* handleUserPromptSubmit(payload)
+        const s = yield* SessionState
+        return yield* s.get("source-follow-up")
+      }).pipe(
+        Effect.provide(
+          SessionStateTest(
+            new Map([
+              [
+                "source-follow-up",
+                {
+                  ...EMPTY_SESSION_STATE,
+                  requires_web_sources: true,
+                  source_urls: [],
+                },
+              ],
+            ]),
+          ),
+        ),
+        Effect.provide(minimalLayer),
+        Effect.provide(subprocLayer),
+        Effect.provide(ClassifierTelemetryTest().layer),
+        Effect.provide(CommandRunnerTest()),
+      ),
+    )
+    expect(record.requires_web_sources).toBe(true)
+    expect(record.source_urls).toEqual([])
+  })
+
+  test("MINIMAL follow-up may clear a satisfied source obligation", async () => {
+    const { SessionState } = await import(
+      "../../src/services/session-state.ts"
+    )
+    const minimalLayer = InferenceTest(() => ({
+      mode: "MINIMAL",
+      tier: null,
+      reason: "test minimal",
+      source: "classifier",
+      latencyMs: 0,
+    }))
+    const payload = decode({
+      _tag: "UserPromptSubmit",
+      session_id: "satisfied-source-follow-up",
+      hook_event_name: "UserPromptSubmit",
+      prompt: "ok continue",
+    })
+    const record = await Effect.runPromise(
+      Effect.gen(function* () {
+        yield* handleUserPromptSubmit(payload)
+        const s = yield* SessionState
+        return yield* s.get("satisfied-source-follow-up")
+      }).pipe(
+        Effect.provide(
+          SessionStateTest(
+            new Map([
+              [
+                "satisfied-source-follow-up",
+                {
+                  ...EMPTY_SESSION_STATE,
+                  requires_web_sources: true,
+                  source_urls: ["https://example.com/source"],
+                },
+              ],
+            ]),
+          ),
+        ),
+        Effect.provide(minimalLayer),
+        Effect.provide(subprocLayer),
+        Effect.provide(ClassifierTelemetryTest().layer),
+        Effect.provide(CommandRunnerTest()),
+      ),
+    )
+    expect(record.requires_web_sources).toBe(false)
+    expect(record.source_urls).toEqual(["https://example.com/source"])
   })
 
   test("persists requires_web_sources=false for a loose research.web priming match", async () => {

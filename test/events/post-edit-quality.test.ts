@@ -198,6 +198,32 @@ describe("handlePostToolUse (post-edit-quality)", () => {
     expect(record.verification_status).toBe("passed")
   })
 
+  test("missing PostToolUse verification response does not pass", async () => {
+    const layer = Layer.mergeAll(
+      ProjectTest(),
+      RedactTest(),
+      SessionStateTest(),
+      ShellTest(() => ({ stdout: "", stderr: "", exitCode: 1 })),
+    )
+    const payload = decode({
+      _tag: "PostToolUse",
+      session_id: "s",
+      hook_event_name: "PostToolUse",
+      tool_name: "Bash",
+      tool_input: { command: "node --check extracted-script.js" },
+      tool_response: undefined,
+    })
+    const program = Effect.gen(function* () {
+      yield* handlePostToolUse(payload)
+      const state = yield* SessionState
+      return yield* state.get("s")
+    })
+    const record = await Effect.runPromise(program.pipe(Effect.provide(layer)))
+    expect(record.commands_failed).toContain("node --check extracted-script.js")
+    expect(record.tests_run).toContain("node --check extracted-script.js")
+    expect(record.verification_status).toBe("failed")
+  })
+
   test("does not treat incidental words like latest as verification", async () => {
     const layer = Layer.mergeAll(
       ProjectTest(),
@@ -327,6 +353,30 @@ describe("handlePostToolUse (post-edit-quality)", () => {
     })
     const record = await Effect.runPromise(program.pipe(Effect.provide(layer)))
     expect(record.source_urls).toEqual(["https://example.com/current-benchmark"])
+  })
+
+  test("does not treat URLs in search queries as fetched source evidence", async () => {
+    const layer = Layer.mergeAll(
+      ProjectTest(),
+      RedactTest(),
+      SessionStateTest(),
+      ShellTest(() => ({ stdout: "", stderr: "", exitCode: 1 })),
+    )
+    const payload = decode({
+      _tag: "PostToolUse",
+      session_id: "s",
+      hook_event_name: "PostToolUse",
+      tool_name: "WebSearch",
+      tool_input: { query: "Read https://example.com/current-benchmark" },
+      tool_response: "Did 1 search in 6s",
+    })
+    const program = Effect.gen(function* () {
+      yield* handlePostToolUse(payload)
+      const state = yield* SessionState
+      return yield* state.get("s")
+    })
+    const record = await Effect.runPromise(program.pipe(Effect.provide(layer)))
+    expect(record.source_urls).toEqual([])
   })
 
   test("does not record dead fetch URLs as usable source evidence", async () => {
