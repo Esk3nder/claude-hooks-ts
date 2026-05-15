@@ -101,6 +101,8 @@ describe("handleUserPromptSubmit", () => {
     expect(ctx).toContain("`classifier_tier: E3`")
     expect(ctx).toContain("`classifier_reason: test default → ALGORITHM E3`")
     expect(ctx).toContain("Required sections for E3:")
+    expect(ctx).toContain("Use exact H2 headings")
+    expect(ctx).toContain("one bulk write/edit")
     expect(ctx).toContain("Problem")
     expect(ctx).toContain("Out of Scope")
     expect(ctx).toContain("Test Strategy")

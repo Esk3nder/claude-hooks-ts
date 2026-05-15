@@ -106,7 +106,7 @@ const RULES: ReadonlyArray<Rule> = [
   // Review
   {
     tag: "coding.review",
-    pattern: /\b(review|code review|pr review|critique|audit code|look over)\b/i,
+    pattern: /\b(review|code review|pr review|critique|audit code|look over|grade yourself|score yourself|self[- ]grade)\b/i,
   },
   // Refactor
   {
@@ -124,7 +124,7 @@ const RULES: ReadonlyArray<Rule> = [
   {
     tag: "coding.feature",
     pattern:
-      /\b(implement|build|add (a |an |the )?(feature|endpoint|button|page|method|function|class|module|hook)|new feature|create (a |an |the )?(?:(?:single[- ]page|web|html|interactive|local|polished|practical|finance[- ]tool)\s+)*(component|service|handler|page|dashboard|app|tool|calculator|site|website|screen|view))\b/i,
+      /\b(implement|build|add (a |an |the )?(feature|endpoint|button|page|method|function|class|module|hook)|new feature|create (a |an |the )?(?:(?:self[- ]contained|single[- ]page|web|html|interactive|local|polished|practical|finance[- ]tool)\s+)*(component|service|handler|page|dashboard|app|tool|calculator|site|website|screen|view))\b/i,
   },
   // Ops: deploy
   // Tightened to require a true deploy verb context. Excludes documentation
@@ -203,6 +203,9 @@ const WEB_SOURCES_REQUIRED: ReadonlyArray<RegExp> = [
   /\brecent (?:news|update)s?\b/i,
 ]
 
+const META_EVALUATION_PROMPT =
+  /\b(grade yourself|score yourself|self[- ]grade|evaluate (?:yourself|the run)|rate (?:yourself|the run))\b/i
+
 /**
  * True when the prompt explicitly asks for web research. Used by the Stop
  * research-mode gate instead of the priming workflow tag, so that loose
@@ -214,6 +217,7 @@ const WEB_SOURCES_REQUIRED: ReadonlyArray<RegExp> = [
 export const requiresWebSources = (rawPrompt: string): boolean => {
   const prompt = (rawPrompt ?? "").trim()
   if (prompt.length === 0) return false
+  if (META_EVALUATION_PROMPT.test(prompt)) return false
   return WEB_SOURCES_REQUIRED.some((re) => re.test(prompt))
 }
 

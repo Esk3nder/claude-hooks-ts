@@ -326,6 +326,8 @@ describe("Stop ISA gate — completeness check on phase: complete", () => {
       expect(out.reason ?? "").toMatch(
         /Vision|Out of Scope|Test Strategy|Features|Constraints|Problem/,
       )
+      expect(out.reason ?? "").toContain("one bulk write/edit")
+      expect(out.reason ?? "").toContain("Do not issue one tool call per heading")
     } finally {
       cleanup()
     }

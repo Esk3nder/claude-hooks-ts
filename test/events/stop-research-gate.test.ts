@@ -43,6 +43,8 @@ describe("handleStop (research-mode source-ledger gate)", () => {
     const out = d as { decision?: string; reason?: string }
     expect(out.decision).toBe("block")
     expect(out.reason ?? "").toMatch(/source ledger/i)
+    expect(out.reason ?? "").toContain("Fetch or search")
+    expect(out.reason ?? "").toContain("Do not satisfy this gate with a prose reconciliation alone")
   })
 
   test("blocks source-required coding workflows, not just research.web", async () => {

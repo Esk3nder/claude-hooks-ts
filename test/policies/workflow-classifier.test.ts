@@ -16,6 +16,7 @@ const cases: ReadonlyArray<{ readonly prompt: string; readonly expected: Workflo
   { prompt: "Refactor the auth module to remove duplication", expected: "coding.refactor" },
   { prompt: "Rename UserService to AccountService", expected: "coding.refactor" },
   { prompt: "Code review the new payment PR please", expected: "coding.review" },
+  { prompt: "grade yourself line by line against these expectations", expected: "coding.review" },
   { prompt: "Add unit tests for the cache layer", expected: "coding.test" },
   { prompt: "Improve test coverage", expected: "coding.test" },
   { prompt: "Optimize the slow database query for performance", expected: "coding.perf" },
@@ -88,6 +89,16 @@ battery storage attach-rate or cost ranges, current federal tax credit, and rece
 electricity price trends. Cite the sources in the page footer.`
     expect(classifyPrompt(prompt).workflow).toBe("coding.feature")
   })
+
+  test("HVAC self-contained benchmark-data dashboard task stays feature-shaped", () => {
+    const prompt = `Create a self-contained single-page HTML dashboard for underwriting a regional HVAC services company.
+
+Pull real current benchmark data where useful, including HVAC replacement cost ranges, average technician
+wage or labor cost trends, residential electricity/natural gas price trends, current consumer financing
+rate ranges, and typical maintenance contract pricing. Cite the sources in the page footer with URLs.`
+    expect(classifyPrompt(prompt).workflow).toBe("coding.feature")
+    expect(requiresWebSources(prompt)).toBe(true)
+  })
 })
 
 /**
@@ -134,6 +145,7 @@ describe("requiresWebSources", () => {
     "test this in the browser",
     "the secret sauce of this module",
     "release notes for v2.3",
+    "grade yourself line by line: did you pull real current benchmark data and cite sources?",
   ]
   for (const p of negative) {
     test(`negative: "${p}"`, () => {

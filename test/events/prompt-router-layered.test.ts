@@ -168,5 +168,7 @@ describe("UserPromptSubmit emits BOTH layered classifier lines (B4)", () => {
       true,
     )
     expect(raw).toContain("FIRST ACTION NOW")
+    expect(raw).toContain("Use exact H2 headings")
+    expect(raw).toContain("one bulk write/edit")
   })
 })

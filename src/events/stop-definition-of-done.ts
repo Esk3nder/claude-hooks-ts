@@ -27,7 +27,7 @@ const BLOCK_REASON =
   "Code changed but no verification command has run. Run the smallest relevant test/typecheck now, then summarize the result."
 
 const RESEARCH_BLOCK_REASON =
-  "Research answer is not ready: source ledger has unsupported claims. Reconcile claims to sources and state uncertainties before final response."
+  "Source-backed answer is not ready: the source ledger has no fetched/recorded URLs for the current benchmark claims. Fetch or search the cited sources, record the URLs in session state, update the artifact/ISA with evidence-backed values, and state any remaining uncertainties. Do not satisfy this gate with a prose reconciliation alone."
 
 const STATE_READ_BLOCK_REASON =
   "Hook state could not be read, so verification status is unknown. Re-run the smallest relevant verification command, then try Stop again."

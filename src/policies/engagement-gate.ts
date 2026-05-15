@@ -15,17 +15,18 @@
  *     everything ISA-identity-related (expected ISA path resolution,
  *     project ISA at `<sessionRoot>/ISA.md`).
  *
- * Release condition (gate becomes inert):
+ * Release condition (gate becomes inert for non-ISA tools):
  *   - engagement_required is false, OR
  *   - the expected per-task ISA exists on disk, OR
  *   - a project ISA exists at `<sessionRoot>/ISA.md` (Stop-gate alignment).
  *
  * Acceptance:
- *   - Write / Update / NotebookEdit: ONLY the deterministic expected per-task
- *     ISA path. Creating a fresh project ISA via Write is intentionally
- *     not permitted — the directive promised a specific location.
- *   - Edit / MultiEdit: the expected per-task ISA path OR the project ISA
- *     at `<sessionRoot>/ISA.md` if it exists on disk.
+ *   - Write / Update / NotebookEdit: explicitly allow ONLY the deterministic
+ *     expected per-task ISA path. Creating a fresh project ISA via Write is
+ *     intentionally not permitted — the directive promised a specific
+ *     location.
+ *   - Edit / MultiEdit: explicitly allow the expected per-task ISA path OR
+ *     the project ISA at `<sessionRoot>/ISA.md` if it exists on disk.
  *   - Bash mkdir: the parent of the expected per-task ISA (absolute) OR
  *     the relative spelling of that parent when `currentCwd === sessionRoot`.
  *   - Bash inspection: harmless cwd/repo/worker-state discovery before
@@ -229,20 +230,46 @@ export const evaluateEngagementGateShallow = (
   ctx: EngagementContext,
 ): PolicyDecision => {
   if (!ctx.engagement_required) return { kind: "passthrough" }
-  if (ctx.anyAcceptedIsaExists) return { kind: "passthrough" }
   if (ctx.acceptedWritePaths.length === 0) return { kind: "passthrough" }
+
+  const targetsAcceptedEditPath =
+    ctx.resolvedToolFilePath !== null &&
+    ctx.acceptedEditPaths.includes(ctx.resolvedToolFilePath)
+  const targetsAcceptedWritePath =
+    ctx.resolvedToolFilePath !== null &&
+    ctx.acceptedWritePaths.includes(ctx.resolvedToolFilePath)
+
+  if (
+    (ctx.toolName === "Edit" || ctx.toolName === "MultiEdit") &&
+    targetsAcceptedEditPath
+  ) {
+    return {
+      kind: "allow",
+      reason:
+        "Scoped ISA artifact edit allowed for this engaged ALGORITHM session.",
+    }
+  }
+
+  if (
+    (ctx.toolName === "Write" ||
+      ctx.toolName === "Update" ||
+      ctx.toolName === "NotebookEdit") &&
+    targetsAcceptedWritePath
+  ) {
+    return {
+      kind: "allow",
+      reason:
+        "Scoped ISA artifact write allowed for this engaged ALGORITHM session.",
+    }
+  }
+
+  if (ctx.anyAcceptedIsaExists) return { kind: "passthrough" }
 
   if (ALLOWED_TOOLS_DURING_ENGAGEMENT.has(ctx.toolName)) {
     return { kind: "passthrough" }
   }
 
   if (ctx.toolName === "Edit" || ctx.toolName === "MultiEdit") {
-    if (
-      ctx.resolvedToolFilePath !== null &&
-      ctx.acceptedEditPaths.includes(ctx.resolvedToolFilePath)
-    ) {
-      return { kind: "passthrough" }
-    }
     return {
       kind: "deny",
       reason: denyReason(
@@ -259,12 +286,6 @@ export const evaluateEngagementGateShallow = (
     ctx.toolName === "Update" ||
     ctx.toolName === "NotebookEdit"
   ) {
-    if (
-      ctx.resolvedToolFilePath !== null &&
-      ctx.acceptedWritePaths.includes(ctx.resolvedToolFilePath)
-    ) {
-      return { kind: "passthrough" }
-    }
     return {
       kind: "deny",
       reason: denyReason(

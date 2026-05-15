@@ -232,7 +232,7 @@ export const handlePreToolUse = (
           toolName: payload.tool_name,
           toolInput: payload.tool_input,
         })
-        if (engagementVerdict.kind === "deny") {
+        if (engagementVerdict.kind !== "passthrough") {
           return toHookDecision(engagementVerdict)
         }
       }

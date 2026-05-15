@@ -69,27 +69,38 @@ describe("evaluateEngagementGate — passthrough cases", () => {
     },
   )
 
-  test("Write to expected_isa_path → passthrough", () => {
+  test("Write to expected_isa_path → explicit allow", () => {
     const v = evaluateEngagementGate({
       ...baseCtx,
       toolName: "Write",
       toolInput: { file_path: EXPECTED_ABS },
       resolvedToolFilePath: EXPECTED_ABS,
     })
-    expect(v.kind).toBe("passthrough")
+    expect(v.kind).toBe("allow")
   })
 
-  test("Edit to expected_isa_path → passthrough", () => {
+  test("Edit to expected_isa_path → explicit allow", () => {
     const v = evaluateEngagementGate({
       ...baseCtx,
       toolName: "Edit",
       toolInput: { file_path: EXPECTED_ABS },
       resolvedToolFilePath: EXPECTED_ABS,
     })
-    expect(v.kind).toBe("passthrough")
+    expect(v.kind).toBe("allow")
   })
 
-  test("Edit to existing project ISA → passthrough (Stop-gate alignment)", () => {
+  test("Update to expected_isa_path remains explicit allow after ISA exists", () => {
+    const v = evaluateEngagementGate({
+      ...baseCtx,
+      anyAcceptedIsaExists: true,
+      toolName: "Update",
+      toolInput: { file_path: EXPECTED_ABS },
+      resolvedToolFilePath: EXPECTED_ABS,
+    })
+    expect(v.kind).toBe("allow")
+  })
+
+  test("Edit to existing project ISA → explicit allow (Stop-gate alignment)", () => {
     const v = evaluateEngagementGate({
       ...baseCtx,
       acceptedEditPaths: [EXPECTED_ABS, PROJECT_ISA_ABS],
@@ -97,10 +108,10 @@ describe("evaluateEngagementGate — passthrough cases", () => {
       toolInput: { file_path: PROJECT_ISA_ABS },
       resolvedToolFilePath: PROJECT_ISA_ABS,
     })
-    expect(v.kind).toBe("passthrough")
+    expect(v.kind).toBe("allow")
   })
 
-  test("MultiEdit to existing project ISA → passthrough", () => {
+  test("MultiEdit to existing project ISA → explicit allow", () => {
     const v = evaluateEngagementGate({
       ...baseCtx,
       acceptedEditPaths: [EXPECTED_ABS, PROJECT_ISA_ABS],
@@ -108,7 +119,7 @@ describe("evaluateEngagementGate — passthrough cases", () => {
       toolInput: { file_path: PROJECT_ISA_ABS },
       resolvedToolFilePath: PROJECT_ISA_ABS,
     })
-    expect(v.kind).toBe("passthrough")
+    expect(v.kind).toBe("allow")
   })
 
   test("Bash mkdir -p <expected_dir> → passthrough", () => {

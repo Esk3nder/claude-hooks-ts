@@ -108,6 +108,9 @@ export const renderEngagementDirective = (
     `ISA_PATH=${plan.isaPath}\n` +
     action +
     `Required sections for E${plan.tier}: ${sections}. ` +
+    `Use exact H2 headings for those sections, e.g. \`## Problem\`, not ` +
+    `single-# headings. When repairing ISA readiness issues, update the ISA ` +
+    `in one bulk write/edit rather than one tool call per heading or line. ` +
     `Do not mark \`phase: complete\` until each ISC under \`## Criteria\` ` +
     `has matching evidence under \`## Verification\`. ` +
     `The Stop gate blocks if this run leaves the active ISA in a non-complete ` +
@@ -350,8 +353,10 @@ export const checkStopReadiness = (
           `ISA at ${isaPath} declares phase: complete but the Tier ` +
           `Completeness Gate (IsaFormat.md:191-201) reports missing ` +
           `sections for tier E${report.tier}: ${report.missing.join(", ")}. ` +
-          `Add the required sections OR roll the phase back to a non-complete ` +
-          `state before declaring done.`,
+          `Repair the ISA in one bulk write/edit using exact H2 headings ` +
+          `(\`## Problem\`, \`## Vision\`, etc.), OR roll the phase back to a ` +
+          `non-complete state before declaring done. Do not issue one tool ` +
+          `call per heading.`,
       }
     }
   }

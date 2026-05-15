@@ -81,7 +81,7 @@ describe("PreToolUse engagement gate — wiring", () => {
     }
   })
 
-  test("engagement_required + no ISA + Write to expected ISA path → allowed", async () => {
+  test("engagement_required + no ISA + Write to expected ISA path → explicitly allowed", async () => {
     const { root, cleanup } = stage()
     try {
       const out = await runPretool(
@@ -93,7 +93,10 @@ describe("PreToolUse engagement gate — wiring", () => {
         },
         ENGAGED_STATE,
       )
-      expect(out.hookSpecificOutput?.permissionDecision).not.toBe("deny")
+      expect(out.hookSpecificOutput?.permissionDecision).toBe("allow")
+      expect(out.hookSpecificOutput?.permissionDecisionReason ?? "").toContain(
+        "Scoped ISA artifact write allowed",
+      )
     } finally {
       cleanup()
     }
@@ -136,9 +139,8 @@ describe("PreToolUse engagement gate — wiring", () => {
         ENGAGED_STATE,
       )
       // Engagement gate aligned with Stop: existing project ISA can be
-      // updated. (Once the project ISA exists, the gate also releases on
-      // the next call — see the inert test below.)
-      expect(out.hookSpecificOutput?.permissionDecision).not.toBe("deny")
+      // updated without a human approval prompt.
+      expect(out.hookSpecificOutput?.permissionDecision).toBe("allow")
     } finally {
       cleanup()
     }
@@ -164,6 +166,35 @@ describe("PreToolUse engagement gate — wiring", () => {
       // Engagement gate doesn't fire (expected ISA exists). Default
       // policy passes the write through.
       expect(out.hookSpecificOutput?.permissionDecision).not.toBe("deny")
+    } finally {
+      cleanup()
+    }
+  })
+
+  test("engagement_required + ISA exists + Update to expected ISA path → explicitly allowed", async () => {
+    const { root, cleanup } = stage()
+    try {
+      const isaAbs = path.join(root, EXPECTED_ISA_REL)
+      fs.mkdirSync(path.dirname(isaAbs), { recursive: true })
+      fs.writeFileSync(
+        isaAbs,
+        "---\neffort: advanced\nphase: observe\n---\n\n## Goal\nx\n\n## Criteria\n- [ ] ISC-1\n",
+        "utf-8",
+      )
+      const out = await runPretool(
+        root,
+        "Update",
+        {
+          file_path: isaAbs,
+          old_string: "phase: observe",
+          new_string: "phase: complete",
+        },
+        ENGAGED_STATE,
+      )
+      expect(out.hookSpecificOutput?.permissionDecision).toBe("allow")
+      expect(out.hookSpecificOutput?.permissionDecisionReason ?? "").toContain(
+        "Scoped ISA artifact write allowed",
+      )
     } finally {
       cleanup()
     }
