@@ -131,6 +131,42 @@ const ENGAGED = (root: string): Partial<SessionStateRecord> => ({
   session_root: root,
 })
 
+const COMPLETE_ENGAGED_ISA = `---
+effort: advanced
+phase: complete
+classifier_mode: ALGORITHM
+classifier_tier: E3
+classifier_reason: cwd drift fixture
+---
+
+## Problem
+x
+
+## Vision
+x
+
+## Out of Scope
+x
+
+## Constraints
+x
+
+## Goal
+x
+
+## Criteria
+- [x] ISC-1: x
+
+## Test Strategy
+ISC-1 | unit | x | x | x
+
+## Features
+x | ISC-1 | none | yes
+
+## Verification
+- ISC-1: fixture passed
+`
+
 describe("PreToolUse engagement gate — cwd drift", () => {
   test("Write to frozen repo ISA allowed after cwd drift", async () => {
     const { root, drift, cleanup } = stage("write-allow")
@@ -223,12 +259,11 @@ describe("Stop ISA lookup — cwd drift", () => {
       fs.mkdirSync(isaDir, { recursive: true })
       fs.writeFileSync(
         path.join(isaDir, "ISA.md"),
-        "---\neffort: advanced\nphase: observe\n---\n\n## Goal\nx\n\n## Criteria\n- [ ] ISC-1\n",
+        COMPLETE_ENGAGED_ISA,
         "utf-8",
       )
       const out = await runStop(drift, ENGAGED(root))
-      // Engagement absence gate should NOT fire — the active ISA is
-      // visible via session_root.
+      // Stop should consult the ISA via session_root, not drifted cwd.
       expect(out.decision).not.toBe("block")
     } finally {
       cleanup()
