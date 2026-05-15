@@ -1,0 +1,488 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>Solar Installer — Underwriting Dashboard</title>
+<style>
+  :root {
+    --bg: #0f1418;
+    --panel: #161c22;
+    --panel-2: #1c242c;
+    --border: #2a333d;
+    --text: #e6ecf2;
+    --muted: #8895a3;
+    --accent: #f5b301;
+    --good: #4ec07a;
+    --bad: #e5616a;
+    --warn: #d8a23a;
+    --mono: ui-monospace, SFMono-Regular, Menlo, monospace;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; background: var(--bg); color: var(--text);
+    font: 14px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", Inter, system-ui, sans-serif; }
+  a { color: var(--accent); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  header {
+    padding: 22px 28px 18px; border-bottom: 1px solid var(--border);
+    display: flex; align-items: baseline; justify-content: space-between; flex-wrap: wrap; gap: 12px;
+  }
+  header h1 { font-size: 20px; margin: 0; letter-spacing: -0.01em; }
+  header .sub { color: var(--muted); font-size: 12px; }
+  main { padding: 22px 28px 40px; max-width: 1400px; margin: 0 auto; }
+  .grid { display: grid; gap: 18px; }
+  .grid.kpis { grid-template-columns: repeat(4, 1fr); margin-bottom: 22px; }
+  .grid.cols-2 { grid-template-columns: 1.1fr 0.9fr; }
+  .grid.cols-3 { grid-template-columns: repeat(3, 1fr); }
+  @media (max-width: 1000px) {
+    .grid.kpis { grid-template-columns: repeat(2, 1fr); }
+    .grid.cols-2, .grid.cols-3 { grid-template-columns: 1fr; }
+  }
+  .card {
+    background: var(--panel); border: 1px solid var(--border); border-radius: 10px;
+    padding: 16px 18px;
+  }
+  .card h2 {
+    margin: 0 0 12px; font-size: 13px; font-weight: 600; letter-spacing: 0.04em;
+    color: var(--muted); text-transform: uppercase;
+  }
+  .kpi .label { color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: 0.05em; }
+  .kpi .value { font: 600 26px/1.1 var(--mono); margin-top: 6px; letter-spacing: -0.02em; }
+  .kpi .sub { color: var(--muted); font-size: 12px; margin-top: 4px; }
+  .kpi .value.good { color: var(--good); }
+  .kpi .value.bad { color: var(--bad); }
+  .kpi .value.warn { color: var(--warn); }
+
+  .row { display: grid; grid-template-columns: 1fr auto; align-items: center; gap: 10px;
+    padding: 6px 0; border-bottom: 1px dashed transparent; }
+  .row + .row { border-top: 1px dashed var(--border); }
+  .row label { color: var(--text); font-size: 13px; }
+  .row .hint { color: var(--muted); font-size: 11px; display: block; margin-top: 2px; }
+  .row input[type="number"] {
+    width: 120px; padding: 6px 8px; text-align: right;
+    background: var(--panel-2); color: var(--text); border: 1px solid var(--border);
+    border-radius: 6px; font: 13px/1 var(--mono);
+  }
+  .row input[type="number"]:focus { outline: none; border-color: var(--accent); }
+  .row .suffix { color: var(--muted); font-size: 12px; min-width: 28px; display: inline-block; margin-left: 6px; }
+  .input-wrap { display: flex; align-items: center; }
+
+  .section-title { font-size: 12px; color: var(--muted); text-transform: uppercase;
+    letter-spacing: 0.05em; margin: 14px 0 6px; }
+  .section-title:first-child { margin-top: 0; }
+
+  table.scenarios { width: 100%; border-collapse: collapse; font-size: 13px; }
+  table.scenarios th, table.scenarios td {
+    padding: 8px 10px; text-align: right; border-bottom: 1px solid var(--border);
+    font-variant-numeric: tabular-nums;
+  }
+  table.scenarios th:first-child, table.scenarios td:first-child { text-align: left; color: var(--muted); }
+  table.scenarios thead th { color: var(--text); font-weight: 600; border-bottom: 1px solid var(--border); }
+  table.scenarios .num { font-family: var(--mono); }
+  table.scenarios .pos { color: var(--good); }
+  table.scenarios .neg { color: var(--bad); }
+  table.scenarios .scenario-up { color: var(--good); }
+  table.scenarios .scenario-down { color: var(--bad); }
+
+  .scenario-inputs { display: grid; grid-template-columns: repeat(3, 1fr); gap: 14px; }
+  .scenario-inputs .case { background: var(--panel-2); border: 1px solid var(--border); border-radius: 8px; padding: 12px; }
+  .scenario-inputs .case h3 { margin: 0 0 8px; font-size: 13px; }
+  .scenario-inputs input[type="number"] { width: 90px; }
+  .scenario-inputs .row { padding: 4px 0; }
+  .scenario-inputs .row label { font-size: 12px; }
+
+  .note { color: var(--muted); font-size: 12px; margin-top: 10px; line-height: 1.55; }
+  .pill { display: inline-block; background: var(--panel-2); border: 1px solid var(--border);
+    border-radius: 999px; padding: 2px 8px; color: var(--muted); font-size: 11px; margin-left: 6px; }
+
+  footer { color: var(--muted); font-size: 12px; padding: 18px 28px 32px; border-top: 1px solid var(--border);
+    line-height: 1.65; }
+  footer h3 { font-size: 12px; text-transform: uppercase; letter-spacing: 0.05em; color: var(--text);
+    margin: 0 0 6px; }
+  footer ol { margin: 0; padding-left: 18px; }
+
+  .legend { display: flex; gap: 14px; margin-top: 6px; font-size: 11px; color: var(--muted); }
+  .legend span::before { content: "■"; margin-right: 4px; }
+  .legend .b::before { color: var(--accent); }
+  .legend .u::before { color: var(--good); }
+  .legend .d::before { color: var(--bad); }
+</style>
+</head>
+<body>
+<header>
+  <div>
+    <h1>Solar Installer — Underwriting Dashboard</h1>
+    <div class="sub">Residential rooftop + storage · single-page model · defaults from 2024–2025 industry benchmarks</div>
+  </div>
+  <div class="sub">All math runs locally. Edit any input — KPIs and scenarios recompute live.</div>
+</header>
+
+<main>
+  <!-- KPI strip (base case) -->
+  <div class="grid kpis" id="kpis">
+    <div class="card kpi"><div class="label">Monthly revenue</div><div class="value" id="kpi-rev">—</div><div class="sub" id="kpi-rev-sub"></div></div>
+    <div class="card kpi"><div class="label">Gross margin</div><div class="value" id="kpi-gm">—</div><div class="sub" id="kpi-gm-sub"></div></div>
+    <div class="card kpi"><div class="label">Cash runway</div><div class="value" id="kpi-runway">—</div><div class="sub" id="kpi-runway-sub"></div></div>
+    <div class="card kpi"><div class="label">Break-even installs / mo</div><div class="value" id="kpi-be">—</div><div class="sub" id="kpi-be-sub"></div></div>
+  </div>
+
+  <div class="grid cols-2">
+    <!-- Base-case input panel -->
+    <div class="card">
+      <h2>Base-case inputs</h2>
+
+      <div class="section-title">Revenue — Installs</div>
+      <div class="row"><label>Installs per month
+        <span class="hint">New residential rooftop systems closed.</span></label>
+        <div class="input-wrap"><input type="number" id="installs" step="1" min="0"><span class="suffix">#</span></div></div>
+      <div class="row"><label>Avg system size
+        <span class="hint">US residential median ≈ 7–9 kW.</span></label>
+        <div class="input-wrap"><input type="number" id="kw" step="0.1" min="0"><span class="suffix">kW</span></div></div>
+      <div class="row"><label>Price to customer
+        <span class="hint">US residential turnkey ≈ $2.90–$3.50/W (pre-ITC).</span></label>
+        <div class="input-wrap"><input type="number" id="ppw" step="0.05" min="0"><span class="suffix">$/W</span></div></div>
+
+      <div class="section-title">Revenue — Batteries</div>
+      <div class="row"><label>Battery attach rate
+        <span class="hint">National ≈ 25% (2024); CA under NEM 3.0 ≈ 50–60%.</span></label>
+        <div class="input-wrap"><input type="number" id="battAttach" step="1" min="0" max="100"><span class="suffix">%</span></div></div>
+      <div class="row"><label>Revenue per attached battery
+        <span class="hint">Typical Powerwall / Franklin-class installed price.</span></label>
+        <div class="input-wrap"><input type="number" id="battRev" step="100" min="0"><span class="suffix">$</span></div></div>
+
+      <div class="section-title">Revenue — Recurring</div>
+      <div class="row"><label>Active maintenance customers</label>
+        <div class="input-wrap"><input type="number" id="maintCust" step="1" min="0"><span class="suffix">#</span></div></div>
+      <div class="row"><label>Maintenance ARPU (monthly)</label>
+        <div class="input-wrap"><input type="number" id="maintArpu" step="1" min="0"><span class="suffix">$</span></div></div>
+
+      <div class="section-title">Variable cost (% of install revenue, except permitting)</div>
+      <div class="row"><label>Labor</label>
+        <div class="input-wrap"><input type="number" id="cLabor" step="0.5" min="0"><span class="suffix">%</span></div></div>
+      <div class="row"><label>Equipment (modules, inverter, BOS, battery COGS)</label>
+        <div class="input-wrap"><input type="number" id="cEquip" step="0.5" min="0"><span class="suffix">%</span></div></div>
+      <div class="row"><label>Permitting & interconnection (per install)</label>
+        <div class="input-wrap"><input type="number" id="cPermit" step="25" min="0"><span class="suffix">$</span></div></div>
+      <div class="row"><label>Sales commission (% of install + battery revenue)</label>
+        <div class="input-wrap"><input type="number" id="cComm" step="0.5" min="0"><span class="suffix">%</span></div></div>
+
+      <div class="section-title">Cash & fixed costs</div>
+      <div class="row"><label>Cash on hand</label>
+        <div class="input-wrap"><input type="number" id="cash" step="1000" min="0"><span class="suffix">$</span></div></div>
+      <div class="row"><label>Monthly fixed costs
+        <span class="hint">Rent, salaried headcount, software, insurance, marketing base.</span></label>
+        <div class="input-wrap"><input type="number" id="fixed" step="500" min="0"><span class="suffix">$</span></div></div>
+      <div class="row"><label>AR collection delay
+        <span class="hint">Working-capital drag: revenue earned but not yet collected.</span></label>
+        <div class="input-wrap"><input type="number" id="arDays" step="1" min="0"><span class="suffix">days</span></div></div>
+    </div>
+
+    <!-- Right column: revenue / margin / runway breakdowns -->
+    <div class="grid" style="gap:18px">
+      <div class="card">
+        <h2>Revenue breakdown</h2>
+        <table class="scenarios">
+          <tbody id="rev-table"></tbody>
+        </table>
+      </div>
+      <div class="card">
+        <h2>Margin breakdown</h2>
+        <table class="scenarios">
+          <tbody id="margin-table"></tbody>
+        </table>
+        <div class="note" id="margin-note"></div>
+      </div>
+      <div class="card">
+        <h2>Cash runway & break-even</h2>
+        <table class="scenarios">
+          <tbody id="runway-table"></tbody>
+        </table>
+        <div class="note" id="runway-note"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Scenario comparison -->
+  <div class="card" style="margin-top:18px">
+    <h2>Scenario comparison <span class="pill">Base · Upside · Downside</span></h2>
+    <div class="scenario-inputs">
+      <div class="case" data-case="base">
+        <h3 style="color:var(--accent)">Base</h3>
+        <div class="row"><label>Installs / mo</label><input type="number" data-field="installs"></div>
+        <div class="row"><label>Price ($/W)</label><input type="number" step="0.05" data-field="ppw"></div>
+        <div class="row"><label>Attach rate (%)</label><input type="number" data-field="battAttach"></div>
+        <div class="row"><label>Equipment % rev</label><input type="number" step="0.5" data-field="cEquip"></div>
+        <div class="row"><label>Labor % rev</label><input type="number" step="0.5" data-field="cLabor"></div>
+        <div class="row"><label>Fixed costs ($)</label><input type="number" step="500" data-field="fixed"></div>
+      </div>
+      <div class="case" data-case="upside">
+        <h3 style="color:var(--good)">Upside</h3>
+        <div class="row"><label>Installs / mo</label><input type="number" data-field="installs"></div>
+        <div class="row"><label>Price ($/W)</label><input type="number" step="0.05" data-field="ppw"></div>
+        <div class="row"><label>Attach rate (%)</label><input type="number" data-field="battAttach"></div>
+        <div class="row"><label>Equipment % rev</label><input type="number" step="0.5" data-field="cEquip"></div>
+        <div class="row"><label>Labor % rev</label><input type="number" step="0.5" data-field="cLabor"></div>
+        <div class="row"><label>Fixed costs ($)</label><input type="number" step="500" data-field="fixed"></div>
+      </div>
+      <div class="case" data-case="downside">
+        <h3 style="color:var(--bad)">Downside</h3>
+        <div class="row"><label>Installs / mo</label><input type="number" data-field="installs"></div>
+        <div class="row"><label>Price ($/W)</label><input type="number" step="0.05" data-field="ppw"></div>
+        <div class="row"><label>Attach rate (%)</label><input type="number" data-field="battAttach"></div>
+        <div class="row"><label>Equipment % rev</label><input type="number" step="0.5" data-field="cEquip"></div>
+        <div class="row"><label>Labor % rev</label><input type="number" step="0.5" data-field="cLabor"></div>
+        <div class="row"><label>Fixed costs ($)</label><input type="number" step="500" data-field="fixed"></div>
+      </div>
+    </div>
+
+    <table class="scenarios" style="margin-top:16px">
+      <thead><tr><th>Metric</th><th>Base</th><th>Upside</th><th>Downside</th></tr></thead>
+      <tbody id="scenario-table"></tbody>
+    </table>
+    <div class="legend"><span class="b">Base = current trajectory</span><span class="u">Upside = volume + attach lift</span><span class="d">Downside = price compression + cost creep</span></div>
+    <div class="note">
+      Each column inherits unspecified fields from the Base inputs above. Editing a scenario field
+      only changes that case. Reset by reloading the page.
+    </div>
+  </div>
+
+  <!-- Explainer -->
+  <div class="card" style="margin-top:18px">
+    <h2>How to read this</h2>
+    <div class="note">
+      <strong style="color:var(--text)">Revenue.</strong> Install revenue = installs × kW × $/W × 1,000. Battery revenue = installs × attach% × $/battery.
+      Maintenance MRR = active customers × ARPU. Total monthly revenue is the sum.<br><br>
+      <strong style="color:var(--text)">Gross margin.</strong> Variable costs are taken against install + battery revenue (not maintenance, which is treated as high-margin recurring).
+      Permitting is per-install $. Sales commission is on closed install + battery revenue. Maintenance flows through at ~85% to reflect dispatched truck-roll cost.<br><br>
+      <strong style="color:var(--text)">Cash runway.</strong> Effective cash = cash on hand minus working-capital tied up in receivables (monthly revenue × AR days ÷ 30).
+      Net monthly burn = fixed costs − gross profit. If gross profit covers fixed costs, runway is shown as <em>profitable</em>.
+      Otherwise runway = effective cash ÷ net burn.<br><br>
+      <strong style="color:var(--text)">Break-even.</strong> Installs/month required so that contribution margin per install covers monthly fixed costs,
+      net of maintenance gross profit. Contribution margin per install includes attached battery economics at the case's attach rate.<br><br>
+      <strong style="color:var(--text)">ITC note.</strong> The 30% federal Residential Clean Energy Credit accrues to the homeowner, not the installer,
+      so it is not modeled as revenue here — but it materially supports the $/W the installer can charge. A repeal or step-down would compress price (model the downside).
+    </div>
+  </div>
+</main>
+
+<footer>
+  <h3>Benchmark sources (accessed 2026-05)</h3>
+  <ol>
+    <li>Lawrence Berkeley National Laboratory, <em>Tracking the Sun</em>, 2024 edition — residential installed-price distributions and medians (~$3.30/W median, 2023 data).</li>
+    <li>SEIA / Wood Mackenzie, <em>U.S. Solar Market Insight</em>, Q1 and Q4 2024 reports — residential pricing, segment shipments, battery attach trends.</li>
+    <li>U.S. Energy Information Administration (EIA), <em>Electric Power Monthly</em>, Table 5.6.A — residential retail electricity price (~16.5¢/kWh national avg, 2024), and recent ~4%/yr growth.</li>
+    <li>IRS, <em>Residential Clean Energy Credit</em> (IRC §25D), as amended by the Inflation Reduction Act of 2022 — 30% credit through 2032, step-down 2033–2034.</li>
+    <li>Wood Mackenzie / SEIA <em>U.S. Energy Storage Monitor</em>, 2024 — residential storage attach rate (~25% national; >50% in CA NEM 3.0 cohorts) and installed-cost ranges (~$1,000–$1,500/kWh).</li>
+    <li>NREL, <em>U.S. Solar Photovoltaic System and Energy Storage Cost Benchmark</em>, 2023 — residential cost stack (modules, inverter, structural BOS, electrical BOS, labor, permitting & interconnection, sales & overhead).</li>
+  </ol>
+  <div style="margin-top:10px">Defaults are starting points, not a recommendation. Always reconcile against the target company's own unit economics.</div>
+</footer>
+
+<script>
+"use strict";
+
+// ---------- Defaults (base case) ----------
+const DEFAULTS = {
+  installs: 8,        // closed installs / month
+  kw: 8.0,            // avg system size
+  ppw: 3.30,          // $/W to customer (LBNL Tracking the Sun median, 2023 data)
+  battAttach: 25,     // % of installs that attach a battery (US 2024)
+  battRev: 14000,     // $ revenue per attached battery (installed Powerwall-class)
+  maintCust: 120,     // active maintenance customers
+  maintArpu: 15,      // $ / customer / month
+  cLabor: 12,         // % of install+battery revenue
+  cEquip: 48,         // % of install+battery revenue
+  cPermit: 750,       // $ per install
+  cComm: 12,          // % of install+battery revenue
+  cash: 250000,       // $ on hand
+  fixed: 45000,       // $ / month
+  arDays: 45          // AR collection delay
+};
+
+const SCENARIOS = {
+  base:     {},
+  upside:   { installs: 12, ppw: 3.45, battAttach: 40, cEquip: 45, cLabor: 11, fixed: 47000 },
+  downside: { installs: 5,  ppw: 3.05, battAttach: 18, cEquip: 52, cLabor: 14, fixed: 48000 }
+};
+
+const MAINT_GM = 0.85; // recurring service treated as high-margin
+
+// ---------- Helpers ----------
+const $ = (id) => document.getElementById(id);
+const fmt$ = (n) => (isFinite(n) ? n : 0).toLocaleString("en-US",
+  { style: "currency", currency: "USD", maximumFractionDigits: 0 });
+const fmtPct = (n) => (isFinite(n) ? (n*100).toFixed(1) : "0.0") + "%";
+const fmtNum = (n, d=1) => (isFinite(n) ? n.toFixed(d) : "—");
+
+function compute(inp) {
+  const installRev  = inp.installs * inp.kw * inp.ppw * 1000;
+  const battRev     = inp.installs * (inp.battAttach/100) * inp.battRev;
+  const maintRev    = inp.maintCust * inp.maintArpu;
+  const totalRev    = installRev + battRev + maintRev;
+
+  const variableBase = installRev + battRev;
+  const laborCost    = variableBase * (inp.cLabor/100);
+  const equipCost    = variableBase * (inp.cEquip/100);
+  const permitCost   = inp.installs * inp.cPermit;
+  const commCost     = variableBase * (inp.cComm/100);
+  const maintCost    = maintRev * (1 - MAINT_GM);
+
+  const totalCogs    = laborCost + equipCost + permitCost + commCost + maintCost;
+  const grossProfit  = totalRev - totalCogs;
+  const grossMargin  = totalRev > 0 ? grossProfit / totalRev : 0;
+
+  // Contribution margin per install (incl. attached battery)
+  const revPerInstall    = inp.kw * inp.ppw * 1000 + (inp.battAttach/100) * inp.battRev;
+  const varCostPerInst   = revPerInstall * ((inp.cLabor + inp.cEquip + inp.cComm)/100) + inp.cPermit;
+  const cmPerInstall     = revPerInstall - varCostPerInst;
+  const maintGrossProfit = maintRev * MAINT_GM;
+  const fixedNetOfMaint  = Math.max(0, inp.fixed - maintGrossProfit);
+  const breakEven        = cmPerInstall > 0 ? fixedNetOfMaint / cmPerInstall : Infinity;
+
+  // Runway
+  const wcTied      = totalRev * (inp.arDays / 30);
+  const effCash     = Math.max(0, inp.cash - wcTied);
+  const netBurn     = inp.fixed - grossProfit; // positive = losing money
+  const profitable  = netBurn <= 0;
+  const runwayMo    = profitable ? Infinity : effCash / netBurn;
+
+  return {
+    installRev, battRev, maintRev, totalRev,
+    laborCost, equipCost, permitCost, commCost, maintCost, totalCogs,
+    grossProfit, grossMargin,
+    revPerInstall, varCostPerInst, cmPerInstall, breakEven,
+    wcTied, effCash, netBurn, profitable, runwayMo
+  };
+}
+
+function readBaseInputs() {
+  const out = {};
+  for (const k of Object.keys(DEFAULTS)) {
+    const v = parseFloat($(k).value);
+    out[k] = isFinite(v) ? v : DEFAULTS[k];
+  }
+  return out;
+}
+
+function readScenario(caseName, base) {
+  const overrides = {};
+  document.querySelectorAll(`.case[data-case="${caseName}"] input`).forEach(inp => {
+    const f = inp.dataset.field;
+    const v = parseFloat(inp.value);
+    if (isFinite(v)) overrides[f] = v;
+  });
+  return { ...base, ...overrides };
+}
+
+// ---------- Render ----------
+function render() {
+  const base = readBaseInputs();
+  const r = compute(base);
+
+  // KPI strip
+  $("kpi-rev").textContent = fmt$(r.totalRev);
+  $("kpi-rev-sub").textContent =
+    `Install ${fmt$(r.installRev)} · Battery ${fmt$(r.battRev)} · Maint ${fmt$(r.maintRev)}`;
+
+  const gmEl = $("kpi-gm");
+  gmEl.textContent = fmtPct(r.grossMargin);
+  gmEl.className = "value " + (r.grossMargin >= 0.25 ? "good" : r.grossMargin >= 0.12 ? "warn" : "bad");
+  $("kpi-gm-sub").textContent = `Gross profit ${fmt$(r.grossProfit)} · COGS ${fmt$(r.totalCogs)}`;
+
+  const rwEl = $("kpi-runway");
+  if (r.profitable) { rwEl.textContent = "Profitable"; rwEl.className = "value good"; }
+  else if (!isFinite(r.runwayMo) || r.runwayMo > 60) { rwEl.textContent = "60+ mo"; rwEl.className = "value good"; }
+  else { rwEl.textContent = fmtNum(r.runwayMo) + " mo"; rwEl.className = "value " + (r.runwayMo > 12 ? "warn" : "bad"); }
+  $("kpi-runway-sub").textContent = r.profitable
+    ? `Gross profit covers ${fmt$(base.fixed)} fixed`
+    : `Burn ${fmt$(r.netBurn)}/mo · WC tied ${fmt$(r.wcTied)}`;
+
+  const beEl = $("kpi-be");
+  if (!isFinite(r.breakEven)) { beEl.textContent = "—"; beEl.className = "value bad"; }
+  else {
+    beEl.textContent = fmtNum(r.breakEven, 1);
+    const head = base.installs - r.breakEven;
+    beEl.className = "value " + (head >= 0 ? "good" : "bad");
+  }
+  $("kpi-be-sub").textContent = isFinite(r.breakEven)
+    ? `CM/install ${fmt$(r.cmPerInstall)} · Currently ${base.installs}/mo`
+    : "Contribution margin ≤ 0 — cannot break even";
+
+  // Revenue breakdown
+  $("rev-table").innerHTML = `
+    <tr><td>Install revenue</td><td class="num">${fmt$(r.installRev)}</td></tr>
+    <tr><td>Battery revenue</td><td class="num">${fmt$(r.battRev)}</td></tr>
+    <tr><td>Maintenance MRR</td><td class="num">${fmt$(r.maintRev)}</td></tr>
+    <tr><td><strong>Total monthly revenue</strong></td><td class="num"><strong>${fmt$(r.totalRev)}</strong></td></tr>
+    <tr><td>Revenue per install</td><td class="num">${fmt$(r.revPerInstall)}</td></tr>`;
+
+  // Margin breakdown
+  $("margin-table").innerHTML = `
+    <tr><td>Labor</td><td class="num">${fmt$(r.laborCost)}</td></tr>
+    <tr><td>Equipment</td><td class="num">${fmt$(r.equipCost)}</td></tr>
+    <tr><td>Permitting & interconnection</td><td class="num">${fmt$(r.permitCost)}</td></tr>
+    <tr><td>Sales commission</td><td class="num">${fmt$(r.commCost)}</td></tr>
+    <tr><td>Maintenance service cost (15%)</td><td class="num">${fmt$(r.maintCost)}</td></tr>
+    <tr><td><strong>Total COGS</strong></td><td class="num"><strong>${fmt$(r.totalCogs)}</strong></td></tr>
+    <tr><td><strong>Gross profit</strong></td><td class="num ${r.grossProfit>=0?'pos':'neg'}"><strong>${fmt$(r.grossProfit)}</strong></td></tr>
+    <tr><td><strong>Gross margin</strong></td><td class="num"><strong>${fmtPct(r.grossMargin)}</strong></td></tr>`;
+  $("margin-note").textContent =
+    "Healthy residential installers typically run 20–30% gross margin. Below ~12% leaves no oxygen for fixed costs.";
+
+  // Runway / break-even
+  $("runway-table").innerHTML = `
+    <tr><td>Cash on hand</td><td class="num">${fmt$(base.cash)}</td></tr>
+    <tr><td>Working capital tied in AR</td><td class="num">${fmt$(r.wcTied)}</td></tr>
+    <tr><td>Effective cash</td><td class="num">${fmt$(r.effCash)}</td></tr>
+    <tr><td>Monthly fixed costs</td><td class="num">${fmt$(base.fixed)}</td></tr>
+    <tr><td>Net monthly ${r.profitable ? 'profit' : 'burn'}</td>
+        <td class="num ${r.profitable?'pos':'neg'}">${fmt$(Math.abs(r.netBurn))}</td></tr>
+    <tr><td><strong>Runway</strong></td>
+        <td class="num"><strong>${r.profitable ? 'Profitable' : (isFinite(r.runwayMo) ? fmtNum(r.runwayMo)+' mo' : '—')}</strong></td></tr>
+    <tr><td>Contribution margin / install</td><td class="num">${fmt$(r.cmPerInstall)}</td></tr>
+    <tr><td><strong>Break-even installs / month</strong></td>
+        <td class="num"><strong>${isFinite(r.breakEven) ? fmtNum(r.breakEven,1) : '—'}</strong></td></tr>`;
+  $("runway-note").textContent = r.profitable
+    ? "Operation is cash-generative at current inputs. Stress-test with the downside scenario below."
+    : `Each additional install adds ~${fmt$(r.cmPerInstall)} of contribution. Need ${isFinite(r.breakEven)?fmtNum(r.breakEven,1):'—'} installs/month to cover fixed.`;
+
+  // Scenarios
+  const cases = ["base", "upside", "downside"];
+  const results = cases.map(c => compute(readScenario(c, base)));
+  const fmtRunway = (x) => x.profitable ? '<span class="pos">Profitable</span>' :
+        (isFinite(x.runwayMo) ? fmtNum(x.runwayMo)+' mo' : '—');
+  const rows = [
+    ["Installs / mo",        cases.map(c => fmtNum(readScenario(c, base).installs, 0))],
+    ["Monthly revenue",      results.map(x => fmt$(x.totalRev))],
+    ["Gross profit",         results.map(x => fmt$(x.grossProfit))],
+    ["Gross margin",         results.map(x => fmtPct(x.grossMargin))],
+    ["Contribution / install", results.map(x => fmt$(x.cmPerInstall))],
+    ["Break-even installs",  results.map(x => isFinite(x.breakEven) ? fmtNum(x.breakEven,1) : '—')],
+    ["Net monthly P/(L)",    results.map(x => (x.profitable?'+':'−') + fmt$(Math.abs(x.netBurn)).replace('$','$'))],
+    ["Runway",               results.map(fmtRunway)]
+  ];
+  $("scenario-table").innerHTML = rows.map(([label, vals]) =>
+    `<tr><td>${label}</td>${vals.map(v => `<td class="num">${v}</td>`).join("")}</tr>`
+  ).join("");
+}
+
+// ---------- Init ----------
+function init() {
+  for (const [k, v] of Object.entries(DEFAULTS)) { $(k).value = v; }
+  for (const c of ["base", "upside", "downside"]) {
+    document.querySelectorAll(`.case[data-case="${c}"] input`).forEach(inp => {
+      const f = inp.dataset.field;
+      const v = (SCENARIOS[c][f] !== undefined) ? SCENARIOS[c][f] : DEFAULTS[f];
+      inp.value = v;
+    });
+  }
+  document.querySelectorAll("input[type=number]").forEach(inp => {
+    inp.addEventListener("input", render);
+    inp.addEventListener("change", render);
+  });
+  render();
+}
+init();
+</script>
+</body>
+</html>

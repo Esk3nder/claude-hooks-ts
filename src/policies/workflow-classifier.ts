@@ -95,7 +95,7 @@ const RULES: ReadonlyArray<Rule> = [
   {
     tag: "coding.perf",
     pattern:
-      /\b(perf(ormance)?|optimi[sz]e|optimi[sz]ation|latency|throughput|slow|profile|benchmark|memory leak|cpu)\b/i,
+      /\b(perf(ormance)?|optimi[sz]e|optimi[sz]ation|latency|throughput|slow|profile|memory leak|cpu)\b|\b(?:run|write|add|create|measure|profile)\s+(?:a\s+|the\s+)?benchmarks?\b|\bbenchmarks?\s+(?:the|this|for|against|performance|latency|throughput|query|function|module)\b/i,
   },
   // Tests
   {
@@ -124,7 +124,7 @@ const RULES: ReadonlyArray<Rule> = [
   {
     tag: "coding.feature",
     pattern:
-      /\b(implement|build|add (a |an |the )?(feature|endpoint|button|page|method|function|class|module|hook)|new feature|create (a |an |the )?(component|service|handler))\b/i,
+      /\b(implement|build|add (a |an |the )?(feature|endpoint|button|page|method|function|class|module|hook)|new feature|create (a |an |the )?(?:(?:single[- ]page|web|html|interactive|local|polished|practical|finance[- ]tool)\s+)*(component|service|handler|page|dashboard|app|tool|calculator|site|website|screen|view))\b/i,
   },
   // Ops: deploy
   // Tightened to require a true deploy verb context. Excludes documentation
@@ -193,7 +193,9 @@ const WEB_SOURCES_REQUIRED: ReadonlyArray<RegExp> = [
   /\bweb research\b/i,
   /\b(?:google|duckduckgo|bing)\s+(?:for|the)\s+\S+/i,
   /\bcite (?:authoritative|external|primary|web) sources?\b/i,
+  /\bcite (?:the )?sources?\b/i,
   /\bonline (?:research|sources?|references?)\b/i,
+  /\b(?:pull|use|include|gather|fetch)\s+(?:real\s+)?(?:current|recent|latest)\s+(?:benchmarks?|benchmark data|market|industry|pricing|price|cost|rate|tax|electricity|wage|data)\b/i,
   /\bwhat'?s the latest (?:news|on|in)\b/i,
   /\blatest news (?:on|about|in)\b/i,
   /\bcurrent best practices?\b/i,

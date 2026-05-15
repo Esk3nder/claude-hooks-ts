@@ -125,6 +125,14 @@ const reportStateWriteFailure = (
     context: { op },
   })
 
+const combineBlockReasons = (reasons: ReadonlyArray<string>): string => {
+  if (reasons.length === 1) return reasons[0] ?? ""
+  return [
+    `Stop blocked by ${reasons.length} readiness issues:`,
+    ...reasons.map((reason, i) => `${i + 1}. ${reason}`),
+  ].join("\n\n")
+}
+
 /**
  * Stop handler.
  *
@@ -179,35 +187,72 @@ export const handleStop = (
         : process.cwd()
     const stopStartedAt = Date.now()
     const sessionRoot = record.session_root ?? currentCwd
+    const preflightBlockReasons: string[] = []
     const isaVerdict = checkStopReadiness({ cwd: sessionRoot, record })
     if (isaVerdict._tag === "block") {
-      yield* state
-        .update(sid, { stop_blocked_once: true })
-        .pipe(Effect.catchAll((cause) => reportStateWriteFailure(sid, "stop-blocked-once", cause)))
-      const out: HookDecision = {
-        decision: "block",
-        reason: isaVerdict.reason,
-      }
-      return out
+      preflightBlockReasons.push(isaVerdict.reason)
     }
 
-    // Research-mode source-ledger gate.
+    // Source-required source-ledger gate.
     //
     // Keys off `requires_web_sources` (set by the prompt-router from a STRICT
-    // web-research regex), NOT the loose `last_workflow` priming tag. Prior
-    // behavior gated whenever `last_workflow.startsWith("research.")`, which
-    // included `research.repo` ("find the function") and `research.synthesis`
-    // ("compare X and Y") — neither warrants a source-URL ledger — and also
-    // fired on a bare `latest` keyword in the priming regex (e.g. "are we on
-    // the latest"). The new boolean is set only by `requiresWebSources` in
-    // policies/workflow-classifier.ts.
+    // web-source regex), NOT the loose `last_workflow` priming tag. This
+    // applies to coding/build tasks too when the user explicitly asks for
+    // current real data or cited sources.
     if (record.requires_web_sources && record.source_urls.length === 0) {
+      preflightBlockReasons.push(RESEARCH_BLOCK_REASON)
+    }
+
+    // Engagement absence gate — when ALGORITHM tier ≥ 3 was classified
+    // upstream, the run MUST have produced an ISA. This participates in the
+    // first-stop preflight bundle so a missing ISA cannot be masked by another
+    // one-shot Stop gate such as missing sources.
+    if (record.engagement_required) {
+      // Session-scoped: a project ISA or the session's OWN expected ISA
+      // satisfies the gate. A stale foreign-slug ISA under session_root
+      // must NOT — that's the bug this resolver fixes.
+      const activeIsa = resolveActiveIsa({ sessionRoot, record })
+      const hasAnyIsa = activeIsa !== null && existsSync(activeIsa)
+      if (!hasAnyIsa && !isInspectionOnlyEngagement(record)) {
+        const tierLabel =
+          typeof record.last_tier === "number"
+            ? `E${record.last_tier}`
+            : "E3+"
+        const expectedRel =
+          record.expected_isa_path ?? "<.claude-hooks/work/<slug>/ISA.md>"
+        // Surface the frozen absolute path alongside the relative one so
+        // the model can write to it unambiguously even from a drifted cwd.
+        const expectedAbs = record.expected_isa_path_absolute
+        const expectedDisplay =
+          expectedAbs !== null && expectedAbs !== expectedRel
+            ? `\`${expectedRel}\` (absolute: \`${expectedAbs}\`)`
+            : `\`${expectedRel}\``
+        preflightBlockReasons.push(
+          `ALGORITHM ${tierLabel} run is finishing without an ISA. ` +
+            `Create it now at ${expectedDisplay} (or at \`<repo>/ISA.md\` if ` +
+            `this is a project-level effort) with at minimum frontmatter ` +
+            `(\`effort:\`, \`phase:\`), \`## Goal\`, and \`## Criteria\`. ` +
+            `The downstream verification gates only fire on a real artifact; ` +
+            `Stop will not block again on this session.`,
+        )
+      }
+    }
+
+    if (
+      preflightBlockReasons.length > 0 &&
+      record.files_changed.length > 0 &&
+      record.verification_status !== "passed"
+    ) {
+      preflightBlockReasons.push(BLOCK_REASON)
+    }
+
+    if (preflightBlockReasons.length > 0) {
       yield* state
         .update(sid, { stop_blocked_once: true })
         .pipe(Effect.catchAll((cause) => reportStateWriteFailure(sid, "stop-blocked-once", cause)))
       const out: HookDecision = {
         decision: "block",
-        reason: RESEARCH_BLOCK_REASON,
+        reason: combineBlockReasons(preflightBlockReasons),
       }
       return out
     }
@@ -292,51 +337,6 @@ export const handleStop = (
         reason: BLOCK_REASON,
       }
       return out
-    }
-
-    // Engagement absence gate (last among blocking gates) — when ALGORITHM
-    // tier ≥ 3 was classified upstream, the run MUST have produced an ISA.
-    // Absence is the failure mode the prompt-router engagement directive
-    // is designed to prevent; here we make it a real gate instead of a hint.
-    // Runs LAST so workflow-specific gates (research source-ledger, files-
-    // changed-without-verification) get to fire on their own more-actionable
-    // reasons first; this gate is the doctrinal fallback. Fires once per
-    // session via stop_blocked_once.
-    if (record.engagement_required) {
-      // Session-scoped: a project ISA or the session's OWN expected ISA
-      // satisfies the gate. A stale foreign-slug ISA under session_root
-      // must NOT — that's the bug this resolver fixes.
-      const activeIsa = resolveActiveIsa({ sessionRoot, record })
-      const hasAnyIsa = activeIsa !== null && existsSync(activeIsa)
-      if (!hasAnyIsa && !isInspectionOnlyEngagement(record)) {
-        yield* state
-          .update(payload.session_id, { stop_blocked_once: true })
-          .pipe(Effect.catchAll((cause) => reportStateWriteFailure(sid, "stop-blocked-once", cause)))
-        const tierLabel =
-          typeof record.last_tier === "number"
-            ? `E${record.last_tier}`
-            : "E3+"
-        const expectedRel =
-          record.expected_isa_path ?? "<.claude-hooks/work/<slug>/ISA.md>"
-        // Surface the frozen absolute path alongside the relative one so
-        // the model can write to it unambiguously even from a drifted cwd.
-        const expectedAbs = record.expected_isa_path_absolute
-        const expectedDisplay =
-          expectedAbs !== null && expectedAbs !== expectedRel
-            ? `\`${expectedRel}\` (absolute: \`${expectedAbs}\`)`
-            : `\`${expectedRel}\``
-        const out: HookDecision = {
-          decision: "block",
-          reason:
-            `ALGORITHM ${tierLabel} run is finishing without an ISA. ` +
-            `Create it now at ${expectedDisplay} (or at \`<repo>/ISA.md\` if ` +
-            `this is a project-level effort) with at minimum frontmatter ` +
-            `(\`effort:\`, \`phase:\`), \`## Goal\`, and \`## Criteria\`. ` +
-            `The downstream verification gates only fire on a real artifact; ` +
-            `Stop will not block again on this session.`,
-        }
-        return out
-      }
     }
 
     // 4b doc-integrity regen: best-effort run of declarative regenerate.yaml

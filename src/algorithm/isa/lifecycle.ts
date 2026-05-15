@@ -110,6 +110,8 @@ export const renderEngagementDirective = (
     `Required sections for E${plan.tier}: ${sections}. ` +
     `Do not mark \`phase: complete\` until each ISC under \`## Criteria\` ` +
     `has matching evidence under \`## Verification\`. ` +
+    `The Stop gate blocks if this run leaves the active ISA in a non-complete ` +
+    `phase while declaring done. ` +
     `The Stop gate now blocks once if this run ends without an ISA at the ` +
     `expected path; absence is treated as failure, not noop. Skipping ISA ` +
     `creation is a CRITICAL FAILURE.`
@@ -253,10 +255,11 @@ export interface StopReadinessInput {
  * a model-actionable reason, or a `noop` when nothing about the ISA should
  * stop this Stop.
  *
- * Two block conditions, both per Algorithm v6.3.0 + IsaFormat.md doctrine:
- *   1. ISA frontmatter says `phase: complete` but the Tier Completeness Gate
+ * Three block conditions, per Algorithm v6.3.0 + IsaFormat.md doctrine:
+ *   1. An engaged ALGORITHM run has an active ISA whose phase is not complete.
+ *   2. ISA frontmatter says `phase: complete` but the Tier Completeness Gate
  *      (IsaFormat.md:191-201) shows missing required sections.
- *   2. ISA frontmatter says `phase: complete` but `progress` shows unchecked
+ *   3. ISA frontmatter says `phase: complete` but `progress` shows unchecked
  *      ISCs (i.e., not all criteria passed).
  *
  * Path adaptation: project-ISA detection uses `cwd`. The check is skipped
@@ -288,7 +291,21 @@ export const checkStopReadiness = (
   if (fm === null) return { _tag: "noop" }
 
   const phase = (fm["phase"] ?? "").toLowerCase().trim()
-  if (phase !== "complete") return { _tag: "noop" }
+  if (phase !== "complete") {
+    if (input.record?.engagement_required === true) {
+      const phaseLabel = phase.length > 0 ? `phase: ${phase}` : "missing phase"
+      return {
+        _tag: "block",
+        reason:
+          `ISA at ${isaPath} is still ${phaseLabel}. Engaged ALGORITHM ` +
+          `runs cannot declare completion until the ISA records ` +
+          `Verification evidence for each ISC and sets \`phase: complete\`. ` +
+          `Update the ISA with evidence-backed Verification, or continue the ` +
+          `task instead of finishing.`,
+      }
+    }
+    return { _tag: "noop" }
+  }
 
   if (input.record?.engagement_required === true) {
     const expectedTier =

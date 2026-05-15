@@ -363,6 +363,37 @@ describe("handleUserPromptSubmit", () => {
     expect(record.last_workflow).toBe("research.web")
   })
 
+  test("persists requires_web_sources=true for a source-backed feature build", async () => {
+    const { SessionState } = await import(
+      "../../src/services/session-state.ts"
+    )
+    const payload = decode({
+      _tag: "UserPromptSubmit",
+      session_id: "solar-dashboard",
+      hook_event_name: "UserPromptSubmit",
+      prompt: `Create a single-page HTML dashboard for underwriting a small solar-installation business.
+
+Pull real current benchmark data where useful, such as average residential solar install cost per watt,
+battery storage attach-rate or cost ranges, current federal tax credit, and recent residential
+electricity price trends. Cite the sources in the page footer.`,
+    })
+    const record = await Effect.runPromise(
+      Effect.gen(function* () {
+        yield* handleUserPromptSubmit(payload)
+        const s = yield* SessionState
+        return yield* s.get("solar-dashboard")
+      }).pipe(
+        Effect.provide(SessionStateTest()),
+        Effect.provide(inferenceLayer),
+        Effect.provide(subprocLayer),
+        Effect.provide(ClassifierTelemetryTest().layer),
+        Effect.provide(CommandRunnerTest()),
+      ),
+    )
+    expect(record.last_workflow).toBe("coding.feature")
+    expect(record.requires_web_sources).toBe(true)
+  })
+
   test("persists requires_web_sources=false for a loose research.web priming match", async () => {
     // This is the decoupling contract: the priming tag is `research.web`
     // (because "look up" matches the priming regex) but the STRICT

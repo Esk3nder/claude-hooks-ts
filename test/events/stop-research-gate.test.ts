@@ -45,6 +45,27 @@ describe("handleStop (research-mode source-ledger gate)", () => {
     expect(out.reason ?? "").toMatch(/source ledger/i)
   })
 
+  test("blocks source-required coding workflows, not just research.web", async () => {
+    const layer = SessionStateTest(
+      new Map([
+        [
+          "feature-needs-sources",
+          {
+            ...EMPTY_SESSION_STATE,
+            last_workflow: "coding.feature",
+            requires_web_sources: true,
+          },
+        ],
+      ]),
+    )
+    const d = await Effect.runPromise(
+      handleStop(stop("feature-needs-sources")).pipe(Effect.provide(layer)),
+    )
+    const out = d as { decision?: string; reason?: string }
+    expect(out.decision).toBe("block")
+    expect(out.reason ?? "").toMatch(/source ledger/i)
+  })
+
   test("allows when requires_web_sources=true and source URLs recorded", async () => {
     const layer = SessionStateTest(
       new Map([

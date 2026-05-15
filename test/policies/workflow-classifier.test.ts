@@ -12,6 +12,7 @@ const cases: ReadonlyArray<{ readonly prompt: string; readonly expected: Workflo
   { prompt: "The build is broken", expected: "coding.fix" },
   { prompt: "Implement a new endpoint for user profiles", expected: "coding.feature" },
   { prompt: "Add a feature to export PDF", expected: "coding.feature" },
+  { prompt: "Create a single-page HTML dashboard for solar underwriting", expected: "coding.feature" },
   { prompt: "Refactor the auth module to remove duplication", expected: "coding.refactor" },
   { prompt: "Rename UserService to AccountService", expected: "coding.refactor" },
   { prompt: "Code review the new payment PR please", expected: "coding.review" },
@@ -78,6 +79,15 @@ describe("classifyPrompt", () => {
       expect(exercised.has(tag)).toBe(true)
     }
   })
+
+  test("solar dashboard benchmark-data task stays feature-shaped, not perf-shaped", () => {
+    const prompt = `Create a single-page HTML dashboard for underwriting a small solar-installation business.
+
+Pull real current benchmark data where useful, such as average residential solar install cost per watt,
+battery storage attach-rate or cost ranges, current federal tax credit, and recent residential
+electricity price trends. Cite the sources in the page footer.`
+    expect(classifyPrompt(prompt).workflow).toBe("coding.feature")
+  })
 })
 
 /**
@@ -98,6 +108,8 @@ describe("requiresWebSources", () => {
     "current best practice for prompt caching",
     "any recent news about claude code",
     "find some online research on the topic",
+    "cite the sources in the page footer",
+    "Pull real current benchmark data where useful",
   ]
   for (const p of positive) {
     test(`positive: "${p}"`, () => {
