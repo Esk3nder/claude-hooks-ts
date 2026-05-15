@@ -22,16 +22,16 @@ const WRITE_RULE =
   "You may modify files within the project. Stay in scope. Report exact paths edited, commands run, and verification steps."
 
 const READ_ONLY_OUTPUT =
-  "Output contract: return summary, concrete evidence anchors (file:line or command run), confidence, risks/blockers, and next recommended action."
+  "Output contract: return markdown directly in the final assistant message; do not wrap it in JSON. Include summary, concrete evidence anchors (file:line or command run), confidence, risks/blockers, and next recommended action."
 
 const PLANNER_OUTPUT =
-  "Output contract: return summary, concrete recommendations, risks/blockers, next steps, and confidence. file:line anchors are encouraged but not required."
+  "Output contract: return markdown directly in the final assistant message; do not wrap it in JSON. Include summary, concrete recommendations, risks/blockers, next steps, and confidence. file:line anchors are encouraged but not required."
 
 const WRITE_OUTPUT =
-  "Output contract: return summary, exact paths edited (or state no edits), commands run, verification result, risks, and any orchestrator handoff needed."
+  "Output contract: return markdown directly in the final assistant message; do not wrap it in JSON. Include summary, exact paths edited (or state no edits), commands run, verification result, risks, and any orchestrator handoff needed."
 
 const UNKNOWN_OUTPUT =
-  "Output contract: return summary, file paths, commands run, confidence, and any blocker or handoff needed."
+  "Output contract: return markdown directly in the final assistant message; do not wrap it in JSON. Include summary, file paths, commands run, confidence, and any blocker or handoff needed."
 
 const ROLES: Record<string, RoleSpec> = {
   Explore: {

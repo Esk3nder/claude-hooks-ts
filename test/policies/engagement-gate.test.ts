@@ -176,9 +176,9 @@ describe("evaluateEngagementGate — deny cases", () => {
     })
     expect(v.kind).toBe("deny")
     if (v.kind === "deny") {
-      expect(v.reason).toContain("ALGORITHM engagement is required")
+      expect(v.reason).toContain("ISA required before this tool can run")
       expect(v.reason).toContain(".claude-hooks/work/sess-1/ISA.md")
-      expect(v.reason).toContain("CLAUDE_HOOKS_DISABLE_ISA_PRETOOL_GATE")
+      expect(v.reason).toContain("After the ISA exists on disk")
     }
   })
 

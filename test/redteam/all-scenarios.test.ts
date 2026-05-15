@@ -275,7 +275,7 @@ describe("Red-team scenarios (10/10)", () => {
     expect(ctx).toContain("MODE: ALGORITHM")
     expect(ctx).toContain("ENGAGE: ALGORITHM_ENGAGEMENT_REQUIRED=true")
     expect(ctx).toContain("ISA_PATH=.claude-hooks/work/rt11-loglens/ISA.md")
-    expect(ctx).toContain("MANDATORY FIRST ACTION")
+    expect(ctx).toContain("FIRST ACTION NOW")
     expect(ctx).toMatch(/Required sections for E[3-5]:/)
   })
 
@@ -306,7 +306,7 @@ describe("Red-team scenarios (10/10)", () => {
     }
     expect(out.hookSpecificOutput?.permissionDecision).toBe("deny")
     expect(out.hookSpecificOutput?.permissionDecisionReason ?? "").toContain(
-      "ALGORITHM engagement is required",
+      "ISA required before this tool can run",
     )
   })
 

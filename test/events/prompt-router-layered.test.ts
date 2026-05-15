@@ -167,6 +167,6 @@ describe("UserPromptSubmit emits BOTH layered classifier lines (B4)", () => {
     expect(lines[2]?.startsWith("ENGAGE: ALGORITHM_ENGAGEMENT_REQUIRED=true")).toBe(
       true,
     )
-    expect(raw).toContain("MANDATORY FIRST ACTION")
+    expect(raw).toContain("FIRST ACTION NOW")
   })
 })

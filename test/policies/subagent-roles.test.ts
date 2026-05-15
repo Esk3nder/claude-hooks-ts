@@ -8,6 +8,8 @@ describe("lookupRole", () => {
     expect(r.investigative).toBe(true)
     expect(r.scopeRule).toContain("read-only investigator")
     expect(r.outputContract).toContain("evidence anchors")
+    expect(r.outputContract).toContain("markdown directly")
+    expect(r.outputContract).toContain("do not wrap it in JSON")
   })
 
   test("general-purpose is write-allowed and not investigative", () => {

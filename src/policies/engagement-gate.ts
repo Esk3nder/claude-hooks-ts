@@ -185,26 +185,21 @@ const denyReason = (
       ? `  ${rel}\n  (absolute: ${displayIsaAbsolutePath})`
       : `  ${rel}`
   return (
-    `ALGORITHM engagement is required before implementation.\n` +
+    `ISA required before this tool can run.\n` +
     `\n` +
-    `This session classified as ALGORITHM tier ≥ 3. Before using ` +
-    `implementation tools (${toolName} on a non-ISA target was just ` +
-    `attempted), create the ISA at:\n` +
+    `This session is ALGORITHM tier ≥ 3; ${toolName} targeted a non-ISA ` +
+    `path before the ISA exists. Create or update:\n` +
     `\n` +
     `${absoluteLine}\n` +
     `\n` +
     `Allowed now:\n` +
-    `  - Read / LS / Glob / Grep for inspection\n` +
     `  - Write to the expected ISA path above\n` +
     `  - Edit / MultiEdit to that path OR an existing <repo>/ISA.md\n` +
-    `  - Bash \`pwd\`, \`rg ...\`, or \`./bin/claude-hooks-workers list [--json]\` for read-only inspection\n` +
+    `  - Read / LS / Glob / Grep, Bash \`pwd\`, ` +
+    `\`rg ...\`, or \`./bin/claude-hooks-workers list [--json]\` for inspection\n` +
     `  - Bash only for \`mkdir -p ${dir}\`\n` +
     `\n` +
-    `After the ISA exists, the gate releases automatically and you may ` +
-    `continue normally. Disk is the source of truth — the gate checks ` +
-    `the actual filesystem, not in-memory state. Set ` +
-    `CLAUDE_HOOKS_DISABLE_ISA_PRETOOL_GATE=1 in the hook environment to ` +
-    `bypass in emergencies.`
+    `After the ISA exists on disk, retry the blocked tool.`
   )
 }
 

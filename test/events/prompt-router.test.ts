@@ -1,5 +1,8 @@
 import { describe, expect, test } from "bun:test"
 import { Effect, Schema } from "effect"
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs"
+import { tmpdir } from "node:os"
+import { join } from "node:path"
 import { handleUserPromptSubmit } from "../../src/events/prompt-router.ts"
 import { HookPayload } from "../../src/schema/payloads.ts"
 import { SessionStateTest } from "../../src/services/session-state.ts"
@@ -92,12 +95,50 @@ describe("handleUserPromptSubmit", () => {
     ).hookSpecificOutput.additionalContext
     expect(ctx).toContain("ENGAGE: ALGORITHM_ENGAGEMENT_REQUIRED=true")
     expect(ctx).toContain("ISA_PATH=.claude-hooks/work/abc-123/ISA.md")
-    expect(ctx).toContain("MANDATORY FIRST ACTION")
+    expect(ctx).toContain("FIRST ACTION NOW")
+    expect(ctx).toContain("Do not probe with implementation tools")
     expect(ctx).toContain("Required sections for E3:")
     expect(ctx).toContain("Problem")
     expect(ctx).toContain("Out of Scope")
     expect(ctx).toContain("Test Strategy")
     expect(ctx).toContain("absence is treated as failure")
+  })
+
+  test("existing expected ISA → directive says to update without phase demotion", async () => {
+    const root = mkdtempSync(join(tmpdir(), "prompt-router-isa-"))
+    try {
+      const isaPath = join(root, ".claude-hooks", "work", "abc-existing", "ISA.md")
+      mkdirSync(join(root, ".claude-hooks", "work", "abc-existing"), { recursive: true })
+      writeFileSync(
+        isaPath,
+        "---\neffort: advanced\nphase: complete\n---\n\n## Goal\nDone\n## Criteria\n- ISC-1\n## Verification\n- ISC-1: done\n",
+      )
+      const payload = decode({
+        _tag: "UserPromptSubmit",
+        session_id: "abc-existing",
+        hook_event_name: "UserPromptSubmit",
+        cwd: root,
+        prompt: "implement a log-analysis CLI in TypeScript with three subcommands",
+      })
+      const d = await Effect.runPromise(
+        handleUserPromptSubmit(payload).pipe(
+          Effect.provide(SessionStateTest()),
+          Effect.provide(inferenceLayer),
+          Effect.provide(subprocLayer),
+          Effect.provide(ClassifierTelemetryTest().layer),
+          Effect.provide(CommandRunnerTest()),
+        ),
+      )
+      const ctx = (
+        d as { hookSpecificOutput: { additionalContext: string } }
+      ).hookSpecificOutput.additionalContext
+      expect(ctx).toContain("UPDATE EXISTING ISA")
+      expect(ctx).toContain(isaPath)
+      expect(ctx).toContain("do not reset `phase: complete`")
+      expect(ctx).not.toContain("FIRST ACTION NOW")
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
   })
 
   test("ALGORITHM E4 → directive lists all twelve sections", async () => {

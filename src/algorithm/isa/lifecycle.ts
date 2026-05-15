@@ -52,6 +52,10 @@ export interface EngagementPlan {
   readonly sections: ReadonlyArray<IsaSectionName>
 }
 
+export interface EngagementDirectiveOptions {
+  readonly activeIsaPath?: string | null
+}
+
 /**
  * Decide whether the classification demands an ISA engagement and, if so,
  * return everything the directive renderer needs. Returns `null` for
@@ -78,15 +82,26 @@ export const planEngagement = (
  * placement are part of the contract — downstream gates and operator
  * expectations key on it — so changes here are observable behavior.
  */
-export const renderEngagementDirective = (plan: EngagementPlan): string => {
+export const renderEngagementDirective = (
+  plan: EngagementPlan,
+  options: EngagementDirectiveOptions = {},
+): string => {
   const sections = plan.sections.join(", ")
+  const activeIsaPath = options.activeIsaPath ?? null
+  const action =
+    activeIsaPath === null
+      ? `FIRST ACTION NOW: create or update the ISA at \`${plan.isaPath}\` ` +
+        `(or, if a project ISA exists at \`<repo>/ISA.md\`, append to it). ` +
+        `Do not probe with implementation tools just to discover this gate; ` +
+        `write the ISA first after any explicitly-requested pre-ISA inspection. ` +
+        `Minimum frontmatter: \`effort: ${plan.effort}\`, \`phase: observe\`. `
+      : `UPDATE EXISTING ISA: update the active ISA at \`${activeIsaPath}\`. ` +
+        `Do not create a second ISA, and do not reset \`phase: complete\` back ` +
+        `to \`phase: observe\` unless the criteria are genuinely reopened. `
   return (
     `ENGAGE: ALGORITHM_ENGAGEMENT_REQUIRED=true | TIER=E${plan.tier} | ` +
     `ISA_PATH=${plan.isaPath}\n` +
-    `MANDATORY FIRST ACTION before any non-ISA implementation work: ` +
-    `create or update the ISA at \`${plan.isaPath}\` (or, if a project ISA ` +
-    `exists at \`<repo>/ISA.md\`, append to it). ` +
-    `Minimum frontmatter: \`effort: ${plan.effort}\`, \`phase: observe\`. ` +
+    action +
     `Required sections for E${plan.tier}: ${sections}. ` +
     `Do not mark \`phase: complete\` until each ISC under \`## Criteria\` ` +
     `has matching evidence under \`## Verification\`. ` +

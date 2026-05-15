@@ -74,7 +74,7 @@ describe("PreToolUse engagement gate — wiring", () => {
       )
       expect(out.hookSpecificOutput?.permissionDecision).toBe("deny")
       expect(out.hookSpecificOutput?.permissionDecisionReason ?? "").toContain(
-        "ALGORITHM engagement is required",
+        "ISA required before this tool can run",
       )
     } finally {
       cleanup()
@@ -404,7 +404,7 @@ describe("PreToolUse engagement gate — path normalization & traversal", () => 
       expect(out.hookSpecificOutput?.permissionDecision).toBe("deny")
       expect(
         out.hookSpecificOutput?.permissionDecisionReason ?? "",
-      ).toContain("ALGORITHM engagement is required")
+      ).toContain("ISA required before this tool can run")
     } finally {
       cleanup()
       fs.rmSync(escape, { recursive: true, force: true })

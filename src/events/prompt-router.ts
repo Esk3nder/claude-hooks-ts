@@ -23,6 +23,7 @@ import {
 import {
   planEngagement,
   renderEngagementDirective,
+  resolveActiveIsa,
 } from "../algorithm/isa/lifecycle.ts"
 import { detectSessionRoot } from "../services/project-root.ts"
 import { safeResolvePath } from "../services/path-resolution.ts"
@@ -117,10 +118,6 @@ export const handleUserPromptSubmit = (
     const modeLine = renderClassificationLine(classification)
     const workflowLine = `Detected workflow: ${workflow}. ${playbook}`
     const plan = planEngagement(classification, sessionId)
-    const engageLine = plan === null ? null : renderEngagementDirective(plan)
-    const additionalContext = engageLine
-      ? `${workflowLine}\n${modeLine}\n${engageLine}`
-      : `${workflowLine}\n${modeLine}`
 
     // Step 4b — engagement bookkeeping. Stop / PostToolUse gates read
     // these fields; without them they cannot tell "no ISA" (legitimate
@@ -161,6 +158,22 @@ export const handleUserPromptSubmit = (
         ? (existing?.expected_isa_path_absolute ??
           safeResolvePath(sessionRoot, plan.isaPath))
         : null
+    const activeIsaPath =
+      engagementRequired && sessionRoot !== null && plan !== null
+        ? resolveActiveIsa({
+            sessionRoot,
+            record: {
+              engagement_required: true,
+              expected_isa_path: plan.isaPath,
+              expected_isa_path_absolute: expectedIsaPathAbsolute,
+            },
+          })
+        : null
+    const engageLine =
+      plan === null ? null : renderEngagementDirective(plan, { activeIsaPath })
+    const additionalContext = engageLine
+      ? `${workflowLine}\n${modeLine}\n${engageLine}`
+      : `${workflowLine}\n${modeLine}`
     yield* state
       .update(sessionId, {
         last_mode: classification.mode,
