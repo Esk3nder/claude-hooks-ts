@@ -656,12 +656,13 @@ ship
     }
   })
 
-  test("loop-protection: a session that already blocked once gets through", async () => {
+  test("stop_blocked_once does not suppress an invalid complete ISA", async () => {
     const { root, cleanup } = stage()
     try {
       writeProjectIsa(root, E1_COMPLETE_UNCHECKED)
       const out = await runStop(root, { stop_blocked_once: true })
-      expect(out).toEqual({})
+      expect(out.decision).toBe("block")
+      expect(out.reason ?? "").toContain("ISA")
     } finally {
       cleanup()
     }

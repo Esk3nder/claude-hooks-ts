@@ -10,7 +10,10 @@ import { Effect } from "effect"
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-import { handlePostToolUseIsaEffects } from "../../../src/algorithm/isa/lifecycle.ts"
+import {
+  handlePostToolUseIsaEffects,
+  resolveActiveIsa,
+} from "../../../src/algorithm/isa/lifecycle.ts"
 
 const stage = (): { root: string; cleanup: () => void } => {
   const root = mkdtempSync(join(tmpdir(), "chts-pte-identity-"))
@@ -38,6 +41,31 @@ foreign
 `
 
 describe("handlePostToolUseIsaEffects — session-scoped ISA identity", () => {
+  test("resolveActiveIsa ignores a mismatched expected_isa_path_absolute", () => {
+    const { root, cleanup } = stage()
+    try {
+      const arbitraryDir = join(root, "outside-contract")
+      mkdirSync(arbitraryDir, { recursive: true })
+      const arbitraryIsa = join(arbitraryDir, "ISA.md")
+      writeFileSync(arbitraryIsa, FOREIGN_ISA, "utf-8")
+
+      const active = resolveActiveIsa({
+        sessionRoot: root,
+        record: {
+          engagement_required: true,
+          expected_isa_path_absolute: arbitraryIsa,
+          expected_isa_path: ".claude-hooks/work/current-slug/ISA.md",
+          last_mode: "ALGORITHM",
+          last_tier: 3,
+        },
+      })
+
+      expect(active).toBeNull()
+    } finally {
+      cleanup()
+    }
+  })
+
   test("does not flip foreign-slug ISA when the session's expected ISA is missing", async () => {
     const { root, cleanup } = stage()
     try {

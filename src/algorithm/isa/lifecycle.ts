@@ -21,7 +21,6 @@
 import { Effect } from "effect"
 import { existsSync, readFileSync, writeFileSync } from "node:fs"
 import type { Classification, Tier } from "../../services/inference.ts"
-import { safeResolvePath } from "../../services/path-resolution.ts"
 import type { SessionStateRecord } from "../../services/session-state.ts"
 import { runCheckpoint } from "./checkpoint.ts"
 import { logWarningSync } from "../../services/diagnostics.ts"
@@ -29,6 +28,7 @@ import { checkCompleteness } from "./completeness.ts"
 import { countCriteria, parseCriteriaList } from "./criteria.ts"
 import { parseFrontmatter } from "./frontmatter.ts"
 import { findLatestISA, findProjectIsa } from "./locate.ts"
+import { resolveExpectedIsaAbsolute } from "./path-contract.ts"
 import {
   loadProbes,
   matchProbes,
@@ -164,11 +164,7 @@ export const resolveActiveIsa = (input: ResolveActiveIsaInput): string | null =>
   const projectIsa = findProjectIsa(sessionRoot)
   if (projectIsa !== null && existsSync(projectIsa)) return projectIsa
 
-  const expected =
-    record.expected_isa_path_absolute ??
-    (record.expected_isa_path === null
-      ? null
-      : safeResolvePath(sessionRoot, record.expected_isa_path))
+  const expected = resolveExpectedIsaAbsolute(sessionRoot, record)
   if (expected !== null && existsSync(expected)) return expected
 
   if (!record.engagement_required) {

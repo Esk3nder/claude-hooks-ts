@@ -44,7 +44,7 @@ describe("handleStop (definition of done)", () => {
     expect(out.reason ?? "").toMatch(/verification/i)
   })
 
-  test("loop-guard via stop_blocked_once: a session that was already blocked once short-circuits to NoOp", async () => {
+  test("stop_blocked_once does not suppress missing verification", async () => {
     const layer = SessionStateTest(
       new Map([
         [
@@ -61,10 +61,12 @@ describe("handleStop (definition of done)", () => {
     const d = await Effect.runPromise(
       handleStop(stop("sid-2")).pipe(Effect.provide(layer)),
     )
-    expect(d).toEqual({})
+    const out = d as { decision?: string; reason?: string }
+    expect(out.decision).toBe("block")
+    expect(out.reason ?? "").toMatch(/verification/i)
   })
 
-  test("never blocks twice in same session", async () => {
+  test("verification readiness keeps blocking until verification is recorded", async () => {
     const layer = SessionStateTest(
       new Map([
         [
@@ -86,8 +88,8 @@ describe("handleStop (definition of done)", () => {
     })
     const r = await Effect.runPromise(program.pipe(Effect.provide(layer)))
     expect((r.first as { decision?: string }).decision).toBe("block")
-    expect(r.stateAfter.stop_blocked_once).toBe(true)
-    expect(r.second).toEqual({})
+    expect(r.stateAfter.stop_blocked_once).toBe(false)
+    expect((r.second as { decision?: string }).decision).toBe("block")
   })
 
   test("allows stop when verification has passed", async () => {
@@ -152,7 +154,7 @@ describe("handleStop (definition of done)", () => {
     expect(d).toEqual({})
   })
 
-  test("state-driven loop guard does not depend on doc-derived stop_hook_active payload semantics", async () => {
+  test("state-driven verification gate does not depend on doc-derived stop_hook_active payload semantics", async () => {
     const layer = SessionStateTest(
       new Map([
         [
@@ -186,8 +188,43 @@ describe("handleStop (definition of done)", () => {
 
     const result = await Effect.runPromise(program.pipe(Effect.provide(layer)))
     expect((result.first as { decision?: string }).decision).toBe("block")
-    expect(result.afterFirst.stop_blocked_once).toBe(true)
-    expect(result.second).toEqual({})
+    expect(result.afterFirst.stop_blocked_once).toBe(false)
+    expect((result.second as { decision?: string }).decision).toBe("block")
+  })
+
+  test("after source URLs are recorded, missing verification still blocks later Stop", async () => {
+    const layer = SessionStateTest(
+      new Map([
+        [
+          "sid-source-then-verify",
+          {
+            ...EMPTY_SESSION_STATE,
+            requires_web_sources: true,
+            files_changed: ["/repo/dashboard.html"],
+            verification_status: "none" as const,
+          },
+        ],
+      ]),
+    )
+    const program = Effect.gen(function* () {
+      const first = yield* handleStop(stop("sid-source-then-verify"))
+      const state = yield* SessionState
+      yield* state.append(
+        "sid-source-then-verify",
+        "source_urls",
+        "https://example.com/source",
+      )
+      const second = yield* handleStop(stop("sid-source-then-verify"))
+      return { first, second }
+    })
+    const result = await Effect.runPromise(program.pipe(Effect.provide(layer)))
+    expect((result.first as { decision?: string; reason?: string }).reason ?? "").toMatch(
+      /source ledger/i,
+    )
+    const second = result.second as { decision?: string; reason?: string }
+    expect(second.decision).toBe("block")
+    expect(second.reason ?? "").toMatch(/verification command/i)
+    expect(second.reason ?? "").not.toMatch(/source ledger/i)
   })
 
   test("blocks complete engaged ISA when classifier telemetry mismatches session route", async () => {

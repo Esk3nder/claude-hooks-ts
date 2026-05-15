@@ -185,6 +185,36 @@ describe("evaluateEngagementGate (deepened) — passthrough/allow", () => {
     })
     expect(v.kind).toBe("allow")
   })
+
+  test("corrupt expected_isa_path_absolute does not allow arbitrary writes", () => {
+    const arbitraryTarget = path.join(root, ".env")
+    const v = evaluateEngagementGate({
+      currentCwd: root,
+      sessionRoot: root,
+      record: engagedRecord({
+        expected_isa_path_absolute: arbitraryTarget,
+      }),
+      toolName: "Write",
+      toolInput: { file_path: arbitraryTarget },
+    })
+    expect(v.kind).toBe("deny")
+  })
+
+  test("invalid relative expected_isa_path is fail-closed for implementation writes", () => {
+    const escapedRel = ".claude-hooks/work/../escape/ISA.md"
+    const escapedAbs = safeResolvePath(root, escapedRel)
+    const v = evaluateEngagementGate({
+      currentCwd: root,
+      sessionRoot: root,
+      record: engagedRecord({
+        expected_isa_path: escapedRel,
+        expected_isa_path_absolute: escapedAbs,
+      }),
+      toolName: "Write",
+      toolInput: { file_path: escapedAbs },
+    })
+    expect(v.kind).toBe("deny")
+  })
 })
 
 describe("evaluateEngagementGate (deepened) — deny", () => {

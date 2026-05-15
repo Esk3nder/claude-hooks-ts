@@ -46,6 +46,10 @@ import { dirname } from "node:path"
 import type { PolicyDecision } from "./types.ts"
 import { safeResolvePath } from "../services/path-resolution.ts"
 import type { SessionStateRecord } from "../services/session-state.ts"
+import { resolveExpectedIsaAbsolute } from "../algorithm/isa/path-contract.ts"
+import {
+  normalizeExpectedIsaPath,
+} from "../algorithm/isa/tier-policy.ts"
 
 export interface EngagementGateInput {
   readonly currentCwd: string
@@ -335,9 +339,8 @@ export const evaluateEngagementGate = (
   // write path; fail open rather than blocking all tools.
   if (record.expected_isa_path === null) return { kind: "passthrough" }
 
-  const expectedAbsolute =
-    record.expected_isa_path_absolute ??
-    safeResolvePath(sessionRoot, record.expected_isa_path)
+  const expectedRelative = normalizeExpectedIsaPath(record.expected_isa_path)
+  const expectedAbsolute = resolveExpectedIsaAbsolute(sessionRoot, record)
   const expectedDir =
     expectedAbsolute !== null ? dirname(expectedAbsolute) : null
   const expectedIsaExists =
@@ -348,7 +351,7 @@ export const evaluateEngagementGate = (
     projectIsaAbsolute !== null && existsSync(projectIsaAbsolute)
 
   const acceptedWritePaths =
-    expectedAbsolute !== null ? [expectedAbsolute] : []
+    expectedAbsolute !== null ? [expectedAbsolute] : ["<invalid-isa-target>"]
   const acceptedEditPaths =
     projectIsaExists && projectIsaAbsolute !== null
       ? [...acceptedWritePaths, projectIsaAbsolute]
@@ -367,7 +370,8 @@ export const evaluateEngagementGate = (
   const sessionRootResolved =
     safeResolvePath(sessionRoot, ".") ?? sessionRoot
   const cwdIsSessionRoot = currentCwdResolved === sessionRootResolved
-  const expectedDirRelative = dirname(record.expected_isa_path)
+  const expectedDirRelative =
+    expectedRelative === null ? null : dirname(expectedRelative)
   const pushIfNew = (d: string): void => {
     if (d.length > 0 && !acceptedMkdirDirs.includes(d)) {
       acceptedMkdirDirs.push(d)
@@ -377,8 +381,9 @@ export const evaluateEngagementGate = (
     // The model can spell relative paths several common ways. Accept
     // the bare relative form AND a leading `./` form (`./foo/bar`),
     // since the engagement-gate's whitelist is exact-string.
-    pushIfNew(expectedDirRelative)
+    if (expectedDirRelative !== null) pushIfNew(expectedDirRelative)
     if (
+      expectedDirRelative !== null &&
       expectedDirRelative !== "." &&
       !expectedDirRelative.startsWith("./") &&
       !expectedDirRelative.startsWith("/")
@@ -401,7 +406,7 @@ export const evaluateEngagementGate = (
     acceptedWritePaths,
     acceptedEditPaths,
     acceptedMkdirDirs,
-    displayIsaPath: record.expected_isa_path,
+    displayIsaPath: expectedRelative ?? record.expected_isa_path,
     displayIsaAbsolutePath: expectedAbsolute,
     displayMkdirDir: expectedDir,
     resolvedToolFilePath,

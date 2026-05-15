@@ -5,7 +5,10 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { handleUserPromptSubmit } from "../../src/events/prompt-router.ts"
 import { HookPayload } from "../../src/schema/payloads.ts"
-import { SessionStateTest } from "../../src/services/session-state.ts"
+import {
+  EMPTY_SESSION_STATE,
+  SessionStateTest,
+} from "../../src/services/session-state.ts"
 import {
   WORKFLOW_TAGS,
   type WorkflowTag,
@@ -394,6 +397,45 @@ electricity price trends. Cite the sources in the page footer.`,
     )
     expect(record.last_workflow).toBe("coding.feature")
     expect(record.requires_web_sources).toBe(true)
+  })
+
+  test("resets stale source URLs when a new source-backed prompt starts", async () => {
+    const { SessionState } = await import(
+      "../../src/services/session-state.ts"
+    )
+    const payload = decode({
+      _tag: "UserPromptSubmit",
+      session_id: "fresh-source-task",
+      hook_event_name: "UserPromptSubmit",
+      prompt: "Create a single-page HTML dashboard and pull real current benchmark data. Cite the sources.",
+    })
+    const record = await Effect.runPromise(
+      Effect.gen(function* () {
+        yield* handleUserPromptSubmit(payload)
+        const s = yield* SessionState
+        return yield* s.get("fresh-source-task")
+      }).pipe(
+        Effect.provide(
+          SessionStateTest(
+            new Map([
+              [
+                "fresh-source-task",
+                {
+                  ...EMPTY_SESSION_STATE,
+                  source_urls: ["https://example.com/stale"],
+                },
+              ],
+            ]),
+          ),
+        ),
+        Effect.provide(inferenceLayer),
+        Effect.provide(subprocLayer),
+        Effect.provide(ClassifierTelemetryTest().layer),
+        Effect.provide(CommandRunnerTest()),
+      ),
+    )
+    expect(record.requires_web_sources).toBe(true)
+    expect(record.source_urls).toEqual([])
   })
 
   test("persists requires_web_sources=false for a loose research.web priming match", async () => {

@@ -102,11 +102,13 @@ export const handleUserPromptSubmit = (
     const requiresWebSrc = requiresWebSources(payload.prompt)
     const state = yield* SessionState
     const sessionId = payload.session_id
+    const workflowPatch = {
+      last_workflow: workflow,
+      requires_web_sources: requiresWebSrc,
+      ...(requiresWebSrc ? { source_urls: [] } : {}),
+    }
     yield* state
-      .update(sessionId, {
-        last_workflow: workflow,
-        requires_web_sources: requiresWebSrc,
-      })
+      .update(sessionId, workflowPatch)
       .pipe(
         Effect.catchAll((cause) =>
           reportHookFailure({

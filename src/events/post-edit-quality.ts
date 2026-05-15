@@ -4,7 +4,7 @@ import type { HookDecision } from "../schema/decisions.ts"
 import { NO_DECISION } from "../schema/decisions.ts"
 import { Project } from "../services/project.ts"
 import { Shell } from "../services/shell.ts"
-import { SessionState } from "../services/session-state.ts"
+import { SessionState, type VerificationStatus } from "../services/session-state.ts"
 import { makeShellCommand } from "../schema/branded.ts"
 import { isIsaFilePath } from "../algorithm/isa/locate.ts"
 import { runCheckpoint } from "../algorithm/isa/checkpoint.ts"
@@ -17,6 +17,14 @@ import {
   renderWarning,
   sliceForScan,
 } from "../policies/content-scan.ts"
+import {
+  isSourceCollectionTool,
+  isSuccessfulToolResponse,
+  isUsableSourceToolResponse,
+  isVerificationCommand,
+  urlsFromToolInput,
+  urlsFromToolResponse,
+} from "../policies/tool-evidence.ts"
 
 const EDIT_TOOLS = new Set(["Edit", "Write", "MultiEdit", "Update"])
 
@@ -68,6 +76,12 @@ const filePathFromInput = (input: unknown): string | null => {
   return typeof fp === "string" ? fp : null
 }
 
+const commandFromInput = (input: unknown): string | null => {
+  if (typeof input !== "object" || input === null) return null
+  const c = (input as { command?: unknown }).command
+  return typeof c === "string" ? c : null
+}
+
 const formatterFor = (filePath: string): FormatterSpec | null => {
   const lower = filePath.toLowerCase()
   for (const entry of FORMATTERS) {
@@ -85,6 +99,84 @@ const finishWithWarning = (warningContext: string | null): HookDecision =>
           additionalContext: warningContext,
         },
       }
+
+const recordSingleToolUseEvidence = (
+  state: SessionState["Type"],
+  payload: HookPayload,
+  file: string | null,
+  isEdit: boolean,
+): Effect.Effect<void> =>
+  Effect.gen(function* () {
+    if (payload._tag !== "PostToolUse") return
+    const response = (payload as { readonly tool_response?: unknown }).tool_response
+    const success = isSuccessfulToolResponse(response)
+    const entries: Array<{
+      readonly key:
+        | "files_changed"
+        | "commands_run"
+        | "commands_failed"
+        | "tests_run"
+        | "source_urls"
+      readonly value: string
+    }> = []
+    let verification: VerificationStatus = "none"
+    let nextRequiredAction: string | null = null
+
+    if (isEdit && file !== null && success) {
+      entries.push({ key: "files_changed", value: file })
+      nextRequiredAction = "Run the smallest relevant test/typecheck for the changed files."
+    } else if (payload.tool_name === "Bash") {
+      const cmd = commandFromInput(payload.tool_input)
+      if (cmd !== null) {
+        entries.push({ key: "commands_run", value: cmd })
+        if (!success) entries.push({ key: "commands_failed", value: cmd })
+        if (isVerificationCommand(cmd)) {
+          entries.push({ key: "tests_run", value: cmd })
+          verification = success ? "passed" : "failed"
+          if (!success) nextRequiredAction = "Read the failure output and fix the failing assertion."
+        } else if (!success) {
+          nextRequiredAction = "Investigate the failed command before continuing."
+        }
+      }
+    } else if (
+      isSourceCollectionTool(payload.tool_name) &&
+      isUsableSourceToolResponse(response)
+    ) {
+      for (const url of urlsFromToolInput(payload.tool_input)) {
+        entries.push({ key: "source_urls", value: url })
+      }
+      for (const url of urlsFromToolResponse(response)) {
+        entries.push({ key: "source_urls", value: url })
+      }
+    }
+
+    if (entries.length > 0) {
+      yield* state
+        .appendBatch(payload.session_id, entries)
+        .pipe(
+          Effect.catchAll((cause) =>
+            logWarning(
+              `[PostToolUse] session-state op=append-evidence failed: sid=${payload.session_id} cause=${String(cause).slice(0, 160)}`,
+            ),
+          ),
+        )
+    }
+
+    if (verification !== "none" || nextRequiredAction !== null) {
+      yield* state
+        .update(payload.session_id, {
+          verification_status: verification,
+          next_required_action: nextRequiredAction,
+        })
+        .pipe(
+          Effect.catchAll((cause) =>
+            logWarning(
+              `[PostToolUse] session-state op=verification-evidence failed: sid=${payload.session_id} cause=${String(cause).slice(0, 160)}`,
+            ),
+          ),
+        )
+    }
+  })
 
 /**
  * Two-branch handler:
@@ -128,6 +220,8 @@ export const handlePostToolUse = (
           ).pipe(Effect.as(null))
         }),
       )
+
+    yield* recordSingleToolUseEvidence(state, payload, file, isEdit)
 
     // Engaged-marker: when an ISA file is written, stamp `isa_engaged_at`
     // for telemetry. Do NOT clear `engagement_required` — the flag is

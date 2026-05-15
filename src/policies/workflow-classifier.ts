@@ -205,6 +205,18 @@ const WEB_SOURCES_REQUIRED: ReadonlyArray<RegExp> = [
 
 const META_EVALUATION_PROMPT =
   /\b(grade yourself|score yourself|self[- ]grade|evaluate (?:yourself|the run)|rate (?:yourself|the run))\b/i
+const NEW_SOURCE_BACKED_TASK_IN_META_PROMPT =
+  /\b(?:create|build|implement|add|write|generate)\b[\s\S]{0,300}\b(?:pull|use|include|gather|fetch|search|cite)\b[\s\S]{0,200}\b(?:sources?|current|recent|latest|benchmarks?|data|market|pricing|cost|rate|tax|electricity|wage)\b/i
+const FOLLOW_ON_SOURCE_TASK_IN_META_PROMPT =
+  /\b(?:then|also|now|next)\b[\s\S]{0,120}\b(?:pull|use|include|gather|fetch|search|cite)\b[\s\S]{0,120}\b(?:sources?|current|recent|latest|benchmarks?|data|market|pricing|cost|rate|tax|electricity|wage)\b/i
+
+const hasSourceBackedTaskInMetaPrompt = (prompt: string): boolean =>
+  NEW_SOURCE_BACKED_TASK_IN_META_PROMPT.test(prompt) ||
+  FOLLOW_ON_SOURCE_TASK_IN_META_PROMPT.test(prompt)
+
+const isMetaEvaluationOnlyPrompt = (prompt: string): boolean =>
+  META_EVALUATION_PROMPT.test(prompt) &&
+  !hasSourceBackedTaskInMetaPrompt(prompt)
 
 /**
  * True when the prompt explicitly asks for web research. Used by the Stop
@@ -217,7 +229,10 @@ const META_EVALUATION_PROMPT =
 export const requiresWebSources = (rawPrompt: string): boolean => {
   const prompt = (rawPrompt ?? "").trim()
   if (prompt.length === 0) return false
-  if (META_EVALUATION_PROMPT.test(prompt)) return false
+  if (META_EVALUATION_PROMPT.test(prompt) && hasSourceBackedTaskInMetaPrompt(prompt)) {
+    return true
+  }
+  if (isMetaEvaluationOnlyPrompt(prompt)) return false
   return WEB_SOURCES_REQUIRED.some((re) => re.test(prompt))
 }
 
@@ -226,7 +241,10 @@ export const classifyPrompt = (rawPrompt: string): ClassifierResult => {
   if (prompt.length === 0) {
     return { workflow: "unknown", playbook: PLAYBOOKS.unknown }
   }
+  const metaWrappedSourceTask =
+    META_EVALUATION_PROMPT.test(prompt) && hasSourceBackedTaskInMetaPrompt(prompt)
   for (const rule of RULES) {
+    if (metaWrappedSourceTask && rule.tag === "coding.review") continue
     if (rule.pattern.test(prompt)) {
       return { workflow: rule.tag, playbook: PLAYBOOKS[rule.tag] }
     }

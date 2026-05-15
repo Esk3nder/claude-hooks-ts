@@ -136,11 +136,12 @@ const combineBlockReasons = (reasons: ReadonlyArray<string>): string => {
 /**
  * Stop handler.
  *
- * Loop protection is session-state driven inside this Effect handler:
- * `SessionState.stop_blocked_once` is the only loop guard. Any external or
- * doc-derived `stop_hook_active` payload semantics are intentionally ignored,
- * so once a session has blocked one Stop, the next Stop in that session is
- * allowed through to avoid an infinite block loop.
+ * Loop protection is session-state driven inside this Effect handler.
+ * `SessionState.stop_blocked_once` is deliberately scoped to the ISA-absence
+ * reminder only. Source and verification readiness gates keep blocking until
+ * the missing evidence is actually present; otherwise a first Stop block for
+ * one readiness issue can mask a second unresolved issue later in the same
+ * session.
  */
 export const handleStop = (
   payload: HookPayload,
@@ -167,8 +168,6 @@ export const handleStop = (
       return stateReadFallback
     }
     const record = recordEither.right
-    // Local loop-guard: never block twice in the same session.
-    if (record.stop_blocked_once) return NO_DECISION
 
     // ISA completeness gate — runs first because an ISA declaring
     // phase: complete with missing sections / unchecked ISCs is a
@@ -188,6 +187,7 @@ export const handleStop = (
     const stopStartedAt = Date.now()
     const sessionRoot = record.session_root ?? currentCwd
     const preflightBlockReasons: string[] = []
+    let shouldMarkStopBlockedOnce = false
     const isaVerdict = checkStopReadiness({ cwd: sessionRoot, record })
     if (isaVerdict._tag === "block") {
       preflightBlockReasons.push(isaVerdict.reason)
@@ -207,7 +207,7 @@ export const handleStop = (
     // upstream, the run MUST have produced an ISA. This participates in the
     // first-stop preflight bundle so a missing ISA cannot be masked by another
     // one-shot Stop gate such as missing sources.
-    if (record.engagement_required) {
+    if (record.engagement_required && !record.stop_blocked_once) {
       // Session-scoped: a project ISA or the session's OWN expected ISA
       // satisfies the gate. A stale foreign-slug ISA under session_root
       // must NOT — that's the bug this resolver fixes.
@@ -235,6 +235,7 @@ export const handleStop = (
             `The downstream verification gates only fire on a real artifact; ` +
             `Stop will not block again on this session.`,
         )
+        shouldMarkStopBlockedOnce = true
       }
     }
 
@@ -247,9 +248,11 @@ export const handleStop = (
     }
 
     if (preflightBlockReasons.length > 0) {
-      yield* state
-        .update(sid, { stop_blocked_once: true })
-        .pipe(Effect.catchAll((cause) => reportStateWriteFailure(sid, "stop-blocked-once", cause)))
+      if (shouldMarkStopBlockedOnce) {
+        yield* state
+          .update(sid, { stop_blocked_once: true })
+          .pipe(Effect.catchAll((cause) => reportStateWriteFailure(sid, "stop-blocked-once", cause)))
+      }
       const out: HookDecision = {
         decision: "block",
         reason: combineBlockReasons(preflightBlockReasons),
@@ -329,9 +332,6 @@ export const handleStop = (
       record.verification_status !== "passed" &&
       !verifiedThisStop
     ) {
-      yield* state
-        .update(sid, { stop_blocked_once: true })
-        .pipe(Effect.catchAll((cause) => reportStateWriteFailure(sid, "stop-blocked-once", cause)))
       const out: HookDecision = {
         decision: "block",
         reason: BLOCK_REASON,

@@ -14,6 +14,7 @@
  * Pure module: no Effect, no I/O.
  */
 import type { Classification } from "../../services/inference.ts"
+import { safeStateSegment } from "../../services/state-paths.ts"
 import { ISA_SECTIONS_V2_7, type IsaSectionName } from "./sections.ts"
 
 /**
@@ -61,8 +62,27 @@ export const EFFORT_BY_TIER: Record<1 | 2 | 3 | 4 | 5, string> = {
  * guessing, no late binding. Stop / PostToolUse gates use the same field
  * (SessionState.expected_isa_path) so directive text and gate behavior agree.
  */
+const EXPECTED_ISA_PATH_RE = /^\.claude-hooks\/work\/([^/]+)\/ISA\.md$/
+
+export const normalizeExpectedIsaPath = (value: string | null): string | null => {
+  if (value === null) return null
+  const normalized = value.replace(/\\/g, "/").replace(/^\.\/+/, "")
+  const match = normalized.match(EXPECTED_ISA_PATH_RE)
+  const slug = match?.[1]
+  if (
+    slug === undefined ||
+    slug === "." ||
+    slug === ".." ||
+    slug.includes("..") ||
+    safeStateSegment(slug, "session") !== slug
+  ) {
+    return null
+  }
+  return normalized
+}
+
 export const expectedIsaPathFor = (sessionId: string): string =>
-  `.claude-hooks/work/${sessionId}/ISA.md`
+  `.claude-hooks/work/${safeStateSegment(sessionId, "session")}/ISA.md`
 
 /**
  * True iff the classification demands an ISA engagement (ALGORITHM tier ≥ 3).

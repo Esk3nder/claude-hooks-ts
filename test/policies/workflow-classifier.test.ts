@@ -207,4 +207,11 @@ describe("requiresWebSources", () => {
     }
     expect(triggered).toBeNull()
   })
+
+  test("meta-evaluation does not suppress a new source-backed task in the same prompt", () => {
+    const prompt =
+      "grade yourself briefly, then create an HTML dashboard and pull real current benchmark data with cited sources"
+    expect(classifyPrompt(prompt).workflow).toBe("coding.feature")
+    expect(requiresWebSources(prompt)).toBe(true)
+  })
 })
