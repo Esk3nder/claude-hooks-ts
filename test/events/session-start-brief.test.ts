@@ -97,7 +97,7 @@ describe("handleSessionStart", () => {
       )
       const ctx = (d as { hookSpecificOutput: { additionalContext: string } })
         .hookSpecificOutput.additionalContext
-      expect(ctx).toContain("Dirty files: 3")
+      expect(ctx).toContain("Dirty files: 2 (+2 work dir entries collapsed)")
       expect(ctx).toContain(".claude-hooks/work/: 2 work dirs summarized")
       expect(ctx).toContain("M src/a.ts")
       expect(ctx).toContain("Archived stale work dirs: 1")

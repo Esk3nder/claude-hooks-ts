@@ -132,8 +132,12 @@ export const handleSessionStart = (
       .currentBranch(cwd)
       .pipe(Effect.catchAll(() => Effect.succeed("unknown")))
     const dirty = yield* dirtyFiles(cwd)
-    const dirtyCount = dirty.length
     const summarizedDirty = summarizeDirty(dirty)
+    const collapsedWorkDirs =
+      dirty.length -
+      summarizedDirty.length +
+      (summarizedDirty.length === dirty.length ? 0 : 1)
+    const dirtyCount = summarizedDirty.length
     const dirtyShown = summarizedDirty.slice(0, MAX_DIRTY_FILES)
     const moreDirty = summarizedDirty.length > MAX_DIRTY_FILES ? summarizedDirty.length - MAX_DIRTY_FILES : 0
     const typecheck = yield* project.typecheckCommand()
@@ -144,7 +148,11 @@ export const handleSessionStart = (
     lines.push("# Session brief")
     lines.push("")
     lines.push(`- Branch: \`${branch}\``)
-    lines.push(`- Dirty files: ${dirtyCount}`)
+    lines.push(
+      collapsedWorkDirs > 0
+        ? `- Dirty files: ${dirtyCount} (+${collapsedWorkDirs} work dir entries collapsed)`
+        : `- Dirty files: ${dirtyCount}`,
+    )
     if (archiveSummary.archived > 0) {
       lines.push(
         `- Archived stale work dirs: ${archiveSummary.archived}` +
