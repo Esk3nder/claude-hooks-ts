@@ -2,7 +2,7 @@ import { Effect, Either } from "effect"
 import * as path from "node:path"
 import type { HookPayload } from "../schema/payloads.ts"
 import type { HookDecision } from "../schema/decisions.ts"
-import { SAFE_DEFAULT } from "../schema/decisions.ts"
+import { NO_DECISION } from "../schema/decisions.ts"
 import { FileSystem } from "../services/filesystem.ts"
 import { Shell, type ShellApi } from "../services/shell.ts"
 import { SessionState } from "../services/session-state.ts"
@@ -44,7 +44,7 @@ export const handleCwdChanged = (
   payload: HookPayload,
 ): Effect.Effect<HookDecision, never, FileSystem | Shell | SessionState> =>
   Effect.gen(function* () {
-    if (payload._tag !== "CwdChanged") return SAFE_DEFAULT
+    if (payload._tag !== "CwdChanged") return NO_DECISION
     const fs = yield* FileSystem
     const shell = yield* Shell
     const state = yield* SessionState
@@ -103,5 +103,5 @@ export const handleCwdChanged = (
         },
       }
     }
-    return SAFE_DEFAULT
+    return NO_DECISION
   })

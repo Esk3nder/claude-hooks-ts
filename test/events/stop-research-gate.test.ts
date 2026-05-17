@@ -43,6 +43,29 @@ describe("handleStop (research-mode source-ledger gate)", () => {
     const out = d as { decision?: string; reason?: string }
     expect(out.decision).toBe("block")
     expect(out.reason ?? "").toMatch(/source ledger/i)
+    expect(out.reason ?? "").toContain("Fetch or search")
+    expect(out.reason ?? "").toContain("Do not satisfy this gate with a prose reconciliation alone")
+  })
+
+  test("blocks source-required coding workflows, not just research.web", async () => {
+    const layer = SessionStateTest(
+      new Map([
+        [
+          "feature-needs-sources",
+          {
+            ...EMPTY_SESSION_STATE,
+            last_workflow: "coding.feature",
+            requires_web_sources: true,
+          },
+        ],
+      ]),
+    )
+    const d = await Effect.runPromise(
+      handleStop(stop("feature-needs-sources")).pipe(Effect.provide(layer)),
+    )
+    const out = d as { decision?: string; reason?: string }
+    expect(out.decision).toBe("block")
+    expect(out.reason ?? "").toMatch(/source ledger/i)
   })
 
   test("allows when requires_web_sources=true and source URLs recorded", async () => {
@@ -83,7 +106,7 @@ describe("handleStop (research-mode source-ledger gate)", () => {
     expect(d).toEqual({})
   })
 
-  test("loop-guard: stop_blocked_once short-circuits to NoOp even in research mode", async () => {
+  test("stop_blocked_once does not suppress source-ledger readiness", async () => {
     const layer = SessionStateTest(
       new Map([
         [
@@ -100,7 +123,9 @@ describe("handleStop (research-mode source-ledger gate)", () => {
     const d = await Effect.runPromise(
       handleStop(stop("r3")).pipe(Effect.provide(layer)),
     )
-    expect(d).toEqual({})
+    const out = d as { decision?: string; reason?: string }
+    expect(out.decision).toBe("block")
+    expect(out.reason ?? "").toMatch(/source ledger/i)
   })
 
   // Regression pins for the priming-vs-gating split. Each of these is a

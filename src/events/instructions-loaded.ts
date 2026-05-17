@@ -3,9 +3,11 @@ import * as path from "node:path"
 import * as fsSync from "node:fs"
 import type { HookPayload } from "../schema/payloads.ts"
 import type { HookDecision } from "../schema/decisions.ts"
-import { SAFE_DEFAULT } from "../schema/decisions.ts"
-import { FileSystem } from "../services/filesystem.ts"
+import { NO_DECISION } from "../schema/decisions.ts"
+import { eventStream, InstructionsLoadedRecordSchema } from "../schema/events.ts"
+import { EventStore, summarizeEventStoreError } from "../services/event-store.ts"
 import { Project } from "../services/project.ts"
+import { logWarning } from "../services/diagnostics.ts"
 
 interface InstructionsLoadedLedgerEntry {
   readonly session_id: string
@@ -53,10 +55,10 @@ const formatDate = (ms: number): string => {
  */
 export const handleInstructionsLoaded = (
   payload: HookPayload,
-): Effect.Effect<HookDecision, never, FileSystem | Project> =>
+): Effect.Effect<HookDecision, never, EventStore | Project> =>
   Effect.gen(function* () {
-    if (payload._tag !== "InstructionsLoaded") return SAFE_DEFAULT
-    const fs = yield* FileSystem
+    if (payload._tag !== "InstructionsLoaded") return NO_DECISION
+    const eventStore = yield* EventStore
     const project = yield* Project
     const root = yield* project.root()
     const ledgerPath = path.join(
@@ -72,20 +74,15 @@ export const handleInstructionsLoaded = (
       load_reason: payload.load_reason,
       ts: new Date().toISOString(),
     }
-    yield* Effect.gen(function* () {
-      const existsE = yield* Effect.either(fs.exists(ledgerPath))
-      const prior =
-        existsE._tag === "Right" && existsE.right
-          ? yield* fs
-              .readFile(ledgerPath)
-              .pipe(Effect.catchAll(() => Effect.succeed("")))
-          : ""
-      const next =
-        (prior.length === 0 || prior.endsWith("\n") ? prior : prior + "\n") +
-        JSON.stringify(entry) +
-        "\n"
-      yield* fs.writeFile(ledgerPath, next)
-    }).pipe(Effect.catchAll(() => Effect.succeed(undefined)))
+    yield* eventStore
+      .append(eventStream("instructions-loaded", ledgerPath, InstructionsLoadedRecordSchema, { maxRecords: 1_000 }), entry)
+      .pipe(
+        Effect.catchAll((err) =>
+          logWarning(
+            `instructions-loaded: ledger write failed: ${summarizeEventStoreError(err)}`,
+          ),
+        ),
+      )
 
     if (isThirdPartyHookFile(payload.file_path)) {
       return {
@@ -119,5 +116,5 @@ export const handleInstructionsLoaded = (
       }
     }
 
-    return SAFE_DEFAULT
+    return NO_DECISION
   })

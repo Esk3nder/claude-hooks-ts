@@ -21,13 +21,14 @@
 import { Effect } from "effect"
 import { existsSync, readFileSync, writeFileSync } from "node:fs"
 import type { Classification, Tier } from "../../services/inference.ts"
-import { safeResolvePath } from "../../services/path-resolution.ts"
 import type { SessionStateRecord } from "../../services/session-state.ts"
 import { runCheckpoint } from "./checkpoint.ts"
+import { logWarningSync } from "../../services/diagnostics.ts"
 import { checkCompleteness } from "./completeness.ts"
 import { countCriteria, parseCriteriaList } from "./criteria.ts"
 import { parseFrontmatter } from "./frontmatter.ts"
 import { findLatestISA, findProjectIsa } from "./locate.ts"
+import { resolveExpectedIsaAbsolute } from "./path-contract.ts"
 import {
   loadProbes,
   matchProbes,
@@ -48,14 +49,21 @@ export interface EngagementPlan {
   readonly tier: 3 | 4 | 5
   readonly isaPath: string
   readonly effort: string
+  readonly classifierReason: string
   readonly sections: ReadonlyArray<IsaSectionName>
+}
+
+export interface EngagementDirectiveOptions {
+  readonly activeIsaPath?: string | null
 }
 
 /**
  * Decide whether the classification demands an ISA engagement and, if so,
  * return everything the directive renderer needs. Returns `null` for
- * MINIMAL, NATIVE, or ALGORITHM tier < 3 — the caller treats `null` as
- * "no engagement directive line, engagement_required = false".
+ * MINIMAL, NATIVE, or ALGORITHM tier < 3. Callers may still preserve an
+ * already-active engagement from earlier in the same session; `null` only
+ * means this prompt does not start a new engagement or render a new
+ * directive.
  */
 export const planEngagement = (
   c: Classification,
@@ -67,6 +75,7 @@ export const planEngagement = (
     tier,
     isaPath: expectedIsaPathFor(sessionId),
     effort: EFFORT_BY_TIER[tier],
+    classifierReason: c.reason,
     sections: REQUIRED_SECTIONS_BY_TIER[tier],
   }
 }
@@ -77,18 +86,37 @@ export const planEngagement = (
  * placement are part of the contract — downstream gates and operator
  * expectations key on it — so changes here are observable behavior.
  */
-export const renderEngagementDirective = (plan: EngagementPlan): string => {
+export const renderEngagementDirective = (
+  plan: EngagementPlan,
+  options: EngagementDirectiveOptions = {},
+): string => {
   const sections = plan.sections.join(", ")
+  const activeIsaPath = options.activeIsaPath ?? null
+  const action =
+    activeIsaPath === null
+      ? `FIRST ACTION NOW: create or update the ISA at \`${plan.isaPath}\` ` +
+        `(or, if a project ISA exists at \`<repo>/ISA.md\`, append to it). ` +
+        `Do not probe with implementation tools just to discover this gate; ` +
+        `write the ISA first after any explicitly-requested pre-ISA inspection. ` +
+        `Minimum frontmatter: \`effort: ${plan.effort}\`, ` +
+        `\`phase: observe\`, \`classifier_mode: ALGORITHM\`, ` +
+        `\`classifier_tier: E${plan.tier}\`, ` +
+        `\`classifier_reason: ${plan.classifierReason}\`. `
+      : `UPDATE EXISTING ISA: update the active ISA at \`${activeIsaPath}\`. ` +
+        `Do not create a second ISA, and do not reset \`phase: complete\` back ` +
+        `to \`phase: observe\` unless the criteria are genuinely reopened. `
   return (
     `ENGAGE: ALGORITHM_ENGAGEMENT_REQUIRED=true | TIER=E${plan.tier} | ` +
     `ISA_PATH=${plan.isaPath}\n` +
-    `MANDATORY FIRST ACTION before any non-ISA implementation work: ` +
-    `create or update the ISA at \`${plan.isaPath}\` (or, if a project ISA ` +
-    `exists at \`<repo>/ISA.md\`, append to it). ` +
-    `Minimum frontmatter: \`effort: ${plan.effort}\`, \`phase: observe\`. ` +
+    action +
     `Required sections for E${plan.tier}: ${sections}. ` +
+    `Use exact H2 headings for those sections, e.g. \`## Problem\`, not ` +
+    `single-# headings. When repairing ISA readiness issues, update the ISA ` +
+    `in one bulk write/edit rather than one tool call per heading or line. ` +
     `Do not mark \`phase: complete\` until each ISC under \`## Criteria\` ` +
     `has matching evidence under \`## Verification\`. ` +
+    `The Stop gate blocks if this run leaves the active ISA in a non-complete ` +
+    `phase while declaring done. ` +
     `The Stop gate now blocks once if this run ends without an ISA at the ` +
     `expected path; absence is treated as failure, not noop. Skipping ISA ` +
     `creation is a CRITICAL FAILURE.`
@@ -105,7 +133,11 @@ export const renderEngagementDirective = (plan: EngagementPlan): string => {
  */
 export type ResolveActiveIsaRecord = Pick<
   SessionStateRecord,
-  "engagement_required" | "expected_isa_path_absolute" | "expected_isa_path"
+  | "engagement_required"
+  | "expected_isa_path_absolute"
+  | "expected_isa_path"
+  | "last_mode"
+  | "last_tier"
 >
 
 export interface ResolveActiveIsaInput {
@@ -134,11 +166,7 @@ export const resolveActiveIsa = (input: ResolveActiveIsaInput): string | null =>
   const projectIsa = findProjectIsa(sessionRoot)
   if (projectIsa !== null && existsSync(projectIsa)) return projectIsa
 
-  const expected =
-    record.expected_isa_path_absolute ??
-    (record.expected_isa_path === null
-      ? null
-      : safeResolvePath(sessionRoot, record.expected_isa_path))
+  const expected = resolveExpectedIsaAbsolute(sessionRoot, record)
   if (expected !== null && existsSync(expected)) return expected
 
   if (!record.engagement_required) {
@@ -228,10 +256,11 @@ export interface StopReadinessInput {
  * a model-actionable reason, or a `noop` when nothing about the ISA should
  * stop this Stop.
  *
- * Two block conditions, both per Algorithm v6.3.0 + IsaFormat.md doctrine:
- *   1. ISA frontmatter says `phase: complete` but the Tier Completeness Gate
+ * Three block conditions, per Algorithm v6.3.0 + IsaFormat.md doctrine:
+ *   1. An engaged ALGORITHM run has an active ISA whose phase is not complete.
+ *   2. ISA frontmatter says `phase: complete` but the Tier Completeness Gate
  *      (IsaFormat.md:191-201) shows missing required sections.
- *   2. ISA frontmatter says `phase: complete` but `progress` shows unchecked
+ *   3. ISA frontmatter says `phase: complete` but `progress` shows unchecked
  *      ISCs (i.e., not all criteria passed).
  *
  * Path adaptation: project-ISA detection uses `cwd`. The check is skipped
@@ -263,7 +292,52 @@ export const checkStopReadiness = (
   if (fm === null) return { _tag: "noop" }
 
   const phase = (fm["phase"] ?? "").toLowerCase().trim()
-  if (phase !== "complete") return { _tag: "noop" }
+  if (phase !== "complete") {
+    if (input.record?.engagement_required === true) {
+      const phaseLabel = phase.length > 0 ? `phase: ${phase}` : "missing phase"
+      return {
+        _tag: "block",
+        reason:
+          `ISA at ${isaPath} is still ${phaseLabel}. Engaged ALGORITHM ` +
+          `runs cannot declare completion until the ISA records ` +
+          `Verification evidence for each ISC and sets \`phase: complete\`. ` +
+          `Update the ISA with evidence-backed Verification, or continue the ` +
+          `task instead of finishing.`,
+      }
+    }
+    return { _tag: "noop" }
+  }
+
+  if (input.record?.engagement_required === true) {
+    const expectedTier =
+      typeof input.record.last_tier === "number"
+        ? `E${input.record.last_tier}`
+        : null
+    const actualMode = (fm["classifier_mode"] ?? "").trim()
+    const actualTier = (fm["classifier_tier"] ?? "").trim().toUpperCase()
+    const actualReason = (fm["classifier_reason"] ?? "").trim()
+    const expectedMode = input.record.last_mode ?? null
+    const problems: string[] = []
+    if (expectedMode !== null && actualMode !== expectedMode) {
+      problems.push(`classifier_mode expected ${expectedMode}, got ${actualMode || "<missing>"}`)
+    }
+    if (expectedTier !== null && actualTier !== expectedTier) {
+      problems.push(`classifier_tier expected ${expectedTier}, got ${actualTier || "<missing>"}`)
+    }
+    if (actualReason.length === 0) {
+      problems.push("classifier_reason is missing")
+    }
+    if (problems.length > 0) {
+      return {
+        _tag: "block",
+        reason:
+          `ISA at ${isaPath} declares phase: complete but classifier telemetry ` +
+          `does not match the engaged route: ${problems.join("; ")}. ` +
+          `Update the frontmatter telemetry or roll the phase back to a ` +
+          `non-complete state before declaring done.`,
+      }
+    }
+  }
 
   // Phase claims complete — apply both gates.
   const tier = parseTier(fm)
@@ -277,8 +351,10 @@ export const checkStopReadiness = (
           `ISA at ${isaPath} declares phase: complete but the Tier ` +
           `Completeness Gate (IsaFormat.md:191-201) reports missing ` +
           `sections for tier E${report.tier}: ${report.missing.join(", ")}. ` +
-          `Add the required sections OR roll the phase back to a non-complete ` +
-          `state before declaring done.`,
+          `Repair the ISA in one bulk write/edit using exact H2 headings ` +
+          `(\`## Problem\`, \`## Vision\`, etc.), OR roll the phase back to a ` +
+          `non-complete state before declaring done. Do not issue one tool ` +
+          `call per heading.`,
       }
     }
   }
@@ -330,7 +406,7 @@ const flipIscCheckbox = (isaPath: string, iscId: string): boolean => {
     writeFileSync(isaPath, next, "utf-8")
     return true
   } catch (err) {
-    process.stderr.write(`[probes] failed to flip ${iscId}: ${String(err)}\n`)
+    logWarningSync(`[probes] failed to flip ${iscId}: ${String(err)}`)
     return false
   }
 }
@@ -348,7 +424,7 @@ const flipIscCheckbox = (isaPath: string, iscId: string): boolean => {
  * coupling — flip and checkpoint are a single atomic unit — to prevent
  * the F3-style flip-without-commit class of bug from reappearing.
  *
- * Non-blocking: errors are logged to stderr; the returned Effect never
+ * Non-blocking: errors are warning-logged; the returned Effect never
  * fails (defects are caught and swallowed at the boundary).
  *
  * No-ops when:
@@ -403,8 +479,8 @@ export const handlePostToolUseIsaEffects = (
           miss.registeredNames.length === 0
             ? "registry is empty"
             : `registry has [${miss.registeredNames.join(", ")}]`
-        process.stderr.write(
-          `[probes] ${miss.iscId} declares probe '${miss.probeName}' but ${known} — check that probes.ts exports a key matching the ISA's 'tool' column\n`,
+        logWarningSync(
+          `[probes] ${miss.iscId} declares probe '${miss.probeName}' but ${known} - check that probes.ts exports a key matching the ISA's 'tool' column`,
         )
       })
       let anyFlipped = false
@@ -422,16 +498,14 @@ export const handlePostToolUseIsaEffects = (
       // is the F3-style bug class this façade exists to prevent.
       if (anyFlipped) {
         try {
-          runCheckpoint(isa, cwd)
+          await runCheckpoint(isa, cwd)
         } catch (err) {
-          process.stderr.write(
-            `[probes] post-flip checkpoint failed: ${String(err)}\n`,
-          )
+          logWarningSync(`[probes] post-flip checkpoint failed: ${String(err)}`)
         }
       }
     },
     catch: (cause) => {
-      process.stderr.write(`[probes] uncaught: ${String(cause)}\n`)
+      logWarningSync(`[probes] uncaught: ${String(cause)}`)
       return new Error(String(cause))
     },
   }).pipe(Effect.catchAll(() => Effect.succeed(undefined)))

@@ -9,6 +9,7 @@ import {
   type Classification,
 } from "../../src/services/inference.ts"
 import { ClassifierTelemetryTest } from "../../src/services/classifier-telemetry.ts"
+import { CommandRunnerTest } from "../../src/services/command-runner.ts"
 
 const decode = (raw: unknown) => Schema.decodeUnknownSync(HookPayload)(raw)
 
@@ -38,6 +39,7 @@ const runHandler = async (
       Effect.provide(layer),
       Effect.provide(ClaudeSubprocessTest()),
       Effect.provide(ClassifierTelemetryTest().layer),
+      Effect.provide(CommandRunnerTest()),
     ),
   )
   const out = decision as {
@@ -90,7 +92,7 @@ describe("UserPromptSubmit emits BOTH layered classifier lines (B4)", () => {
       baseAlgoT3,
     )
     // the classifier: process.exit(0) without emission. We return
-    // SAFE_DEFAULT (empty {}), so additionalContext is undefined → raw is "".
+    // NO_DECISION (empty {}), so additionalContext is undefined → raw is "".
     expect(raw).toBe("")
     expect(inferenceCalls).toBe(0)
   })
@@ -165,6 +167,8 @@ describe("UserPromptSubmit emits BOTH layered classifier lines (B4)", () => {
     expect(lines[2]?.startsWith("ENGAGE: ALGORITHM_ENGAGEMENT_REQUIRED=true")).toBe(
       true,
     )
-    expect(raw).toContain("MANDATORY FIRST ACTION")
+    expect(raw).toContain("FIRST ACTION NOW")
+    expect(raw).toContain("Use exact H2 headings")
+    expect(raw).toContain("one bulk write/edit")
   })
 })

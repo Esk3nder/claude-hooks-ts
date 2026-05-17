@@ -1,9 +1,7 @@
-import { Context, Effect, Exit, Layer } from "effect";
+import { Context, Effect, Layer } from "effect";
 import * as fs from "node:fs/promises";
-import * as fsSync from "node:fs";
-import * as path from "node:path";
 import { FsError } from "../schema/errors.ts";
-import { withFileLock } from "./file-lock.ts";
+import { FileLock, FileLockPlatformLive, LockFailure } from "./file-lock.ts";
 
 export interface FileSystemApi {
   readonly readFile: (path: string) => Effect.Effect<string, FsError>;
@@ -37,13 +35,9 @@ export class FileSystem extends Context.Tag("FileSystem")<
   FileSystemApi
 >() {}
 
-class LockedBodyFailure {
-  constructor(readonly exit: Exit.Exit<unknown, unknown>) {}
-}
-
-export const FileSystemLive = Layer.succeed(
+export const FileSystemLiveBase = Layer.effect(
   FileSystem,
-  FileSystem.of({
+  Effect.map(FileLock, (locks) => FileSystem.of({
     readFile: (path) =>
       Effect.tryPromise({
         try: () => fs.readFile(path, "utf8"),
@@ -80,47 +74,22 @@ export const FileSystemLive = Layer.succeed(
           new FsError({ op: "stat", path, message: String(cause), cause }),
       }),
     withLock: <A, E>(targetPath: string, body: Effect.Effect<A, E>) =>
-      Effect.async<A, E | FsError>((resume) => {
-        const run = async (): Promise<void> => {
-          try {
-            // Make sure parent dir exists so the sentinel can be created.
-            try {
-              fsSync.mkdirSync(path.dirname(targetPath), { recursive: true });
-            } catch {
-              // best-effort
-            }
-            const result = await withFileLock(targetPath, async () => {
-              const exit = await Effect.runPromiseExit(body);
-              if (Exit.isSuccess(exit)) return exit.value;
-              throw new LockedBodyFailure(exit);
-            });
-            resume(Effect.succeed(result));
-          } catch (cause) {
-            if (cause instanceof LockedBodyFailure) {
-              const exit = cause.exit as Exit.Exit<A, E>;
-              if (Exit.isSuccess(exit)) {
-                resume(Effect.succeed(exit.value));
-              } else {
-                resume(Effect.failCause(exit.cause));
-              }
-              return;
-            }
-            resume(
-              Effect.fail(
-                new FsError({
-                  op: "withLock",
-                  path: targetPath,
-                  message: String(cause),
-                  cause,
-                }),
-              ),
-            );
-          }
-        };
-        void run();
-      }),
-  }),
+      locks.withLock(targetPath, body).pipe(
+        Effect.mapError((cause) =>
+          cause instanceof LockFailure
+            ? new FsError({
+                op: "withLock",
+                path: targetPath,
+                message: String(cause),
+                cause,
+              })
+            : cause,
+        ),
+      ),
+  })),
 );
+
+export const FileSystemLive = Layer.provide(FileSystemLiveBase, FileLockPlatformLive);
 
 // In-memory test layer
 export const FileSystemTest = (

@@ -1,12 +1,11 @@
 import { Effect } from "effect"
-import { execFile } from "node:child_process"
 import { existsSync } from "node:fs"
-import { promisify } from "node:util"
 import type { HookPayload } from "../schema/payloads.ts"
 import type { HookDecision } from "../schema/decisions.ts"
-import { SAFE_DEFAULT } from "../schema/decisions.ts"
+import { NO_DECISION } from "../schema/decisions.ts"
 import { SessionState } from "../services/session-state.ts"
 import { checkStopReadiness, resolveActiveIsa } from "../algorithm/isa/lifecycle.ts"
+import { resolveExpectedIsaAbsolute } from "../algorithm/isa/path-contract.ts"
 import { loadRegenerateRules, matchRules } from "../policies/regenerate.ts"
 import { expandPathMatchCandidates } from "../policies/path-utils.ts"
 import {
@@ -15,8 +14,9 @@ import {
   selectVerifyCommand,
   tailOf,
 } from "../policies/verify-map.ts"
-
-const execFileAsync = promisify(execFile)
+import { runCommandLive, runShellCommandLive } from "../services/command-runner.ts"
+import { logWarning } from "../services/diagnostics.ts"
+import { reportHookFailure } from "../services/hook-failure.ts"
 const REGEN_TIMEOUT_MS = 10_000
 // Total wall-clock budget the Stop handler is willing to spend. Sits under
 // the dispatcher Stop cap (28_000 ms) and the installer's external 30_000 ms
@@ -28,37 +28,147 @@ const BLOCK_REASON =
   "Code changed but no verification command has run. Run the smallest relevant test/typecheck now, then summarize the result."
 
 const RESEARCH_BLOCK_REASON =
-  "Research answer is not ready: source ledger has unsupported claims. Reconcile claims to sources and state uncertainties before final response."
+  "Source-backed answer is not ready: the source ledger has no fetched/recorded URLs for the current benchmark claims. Fetch or search the cited sources, record the URLs in session state, update the artifact/ISA with evidence-backed values, and state any remaining uncertainties. Do not satisfy this gate with a prose reconciliation alone."
+
+const STATE_READ_BLOCK_REASON =
+  "Hook state could not be read, so verification status is unknown. Re-run the smallest relevant verification command, then try Stop again."
+
+const hasUnquotedShellControl = (cmd: string): boolean => {
+  let quote: "'" | "\"" | null = null
+  for (let i = 0; i < cmd.length; i += 1) {
+    const ch = cmd.charAt(i)
+    if (ch === "\n" || ch === "\r" || ch === "`" || ch === "$") return true
+    if (ch === "'" || ch === "\"") {
+      quote = quote === ch ? null : quote === null ? ch : quote
+      continue
+    }
+    if (quote === null && /[;&|<>]/.test(ch)) return true
+  }
+  return quote !== null
+}
+
+const shellWords = (cmd: string): ReadonlyArray<string> | null => {
+  const words: string[] = []
+  let current = ""
+  let quote: "'" | "\"" | null = null
+  for (let i = 0; i < cmd.length; i += 1) {
+    const ch = cmd.charAt(i)
+    if (ch === "'" || ch === "\"") {
+      quote = quote === ch ? null : quote === null ? ch : quote
+      continue
+    }
+    if (quote === null && /\s/.test(ch)) {
+      if (current.length > 0) {
+        words.push(current)
+        current = ""
+      }
+      continue
+    }
+    current += ch
+  }
+  if (quote !== null) return null
+  if (current.length > 0) words.push(current)
+  return words
+}
+
+const isSafeRipgrepInspection = (trimmed: string): boolean => {
+  const words = shellWords(trimmed)
+  if (words === null || words[0] !== "rg") return false
+  return !words.slice(1).some((word) =>
+    word === "--pre" ||
+    word.startsWith("--pre=") ||
+    word === "--pre-glob" ||
+    word.startsWith("--pre-glob=") ||
+    word === "--config" ||
+    word.startsWith("--config=")
+  )
+}
+
+const isPreIsaInspectionCommand = (cmd: string): boolean => {
+  const trimmed = cmd.trim()
+  if (hasUnquotedShellControl(trimmed)) return false
+  if (trimmed === "pwd") return true
+  if (isSafeRipgrepInspection(trimmed)) return true
+  return (
+    trimmed === "./bin/claude-hooks-workers list" ||
+    trimmed === "./bin/claude-hooks-workers list --json"
+  )
+}
+
+const isInspectionOnlyEngagement = (record: {
+  readonly files_read: ReadonlyArray<string>
+  readonly files_changed: ReadonlyArray<string>
+  readonly commands_run: ReadonlyArray<string>
+  readonly commands_failed: ReadonlyArray<string>
+  readonly tests_run: ReadonlyArray<string>
+  readonly subagent_starts: ReadonlyArray<string>
+}): boolean =>
+  (record.files_read.length > 0 ||
+    record.commands_run.length > 0 ||
+    record.subagent_starts.length > 0) &&
+  record.files_changed.length === 0 &&
+  record.commands_failed.length === 0 &&
+  record.tests_run.length === 0 &&
+  !record.subagent_starts.some((entry) => entry.endsWith(":worker-contract")) &&
+  record.commands_run.every(isPreIsaInspectionCommand)
+
+const reportStateWriteFailure = (
+  sessionId: string,
+  op: string,
+  cause: unknown,
+): Effect.Effect<void> =>
+  reportHookFailure({
+    kind: "state_write_failed",
+    event: "Stop",
+    sessionId,
+    cause,
+    hookSafe: true,
+    context: { op },
+  })
+
+const combineBlockReasons = (reasons: ReadonlyArray<string>): string => {
+  if (reasons.length === 1) return reasons[0] ?? ""
+  return [
+    `Stop blocked by ${reasons.length} readiness issues:`,
+    ...reasons.map((reason, i) => `${i + 1}. ${reason}`),
+  ].join("\n\n")
+}
 
 /**
  * Stop handler.
  *
- * Loop protection is session-state driven inside this Effect handler:
- * `SessionState.stop_blocked_once` is the only loop guard. Any external or
- * doc-derived `stop_hook_active` payload semantics are intentionally ignored,
- * so once a session has blocked one Stop, the next Stop in that session is
- * allowed through to avoid an infinite block loop.
+ * Loop protection is session-state driven inside this Effect handler.
+ * `SessionState.stop_blocked_once` is deliberately scoped to the ISA-absence
+ * reminder only. Source and verification readiness gates keep blocking until
+ * the missing evidence is actually present; otherwise a first Stop block for
+ * one readiness issue can mask a second unresolved issue later in the same
+ * session.
  */
 export const handleStop = (
   payload: HookPayload,
 ): Effect.Effect<HookDecision, never, SessionState> =>
   Effect.gen(function* () {
-    if (payload._tag !== "Stop") return SAFE_DEFAULT
+    if (payload._tag !== "Stop") return NO_DECISION
     const state = yield* SessionState
     const sid = payload.session_id
-    const record = yield* state
-      .get(sid)
-      .pipe(
-        Effect.catchAll((cause) => {
-          process.stderr.write(
-            `[Stop] session-state op=get failed: sid=${sid} cause=${String(cause).slice(0, 160)}\n`,
-          )
-          return Effect.succeed(null)
-        }),
-      )
-    if (record === null) return SAFE_DEFAULT
-    // Local loop-guard: never block twice in the same session.
-    if (record.stop_blocked_once) return SAFE_DEFAULT
+    const stateReadFallback: HookDecision = {
+      decision: "block",
+      reason: STATE_READ_BLOCK_REASON,
+    }
+    const recordEither = yield* Effect.either(state.get(sid))
+    if (recordEither._tag === "Left") {
+      yield* reportHookFailure({
+        kind: "state_read_failed",
+        event: "Stop",
+        sessionId: sid,
+        cause: recordEither.left,
+        fallbackDecision: stateReadFallback,
+        hookSafe: true,
+        context: { op: "session-state.get" },
+      })
+      return stateReadFallback
+    }
+    const record = recordEither.right
 
     // ISA completeness gate — runs first because an ISA declaring
     // phase: complete with missing sections / unchecked ISCs is a
@@ -77,49 +187,76 @@ export const handleStop = (
         : process.cwd()
     const stopStartedAt = Date.now()
     const sessionRoot = record.session_root ?? currentCwd
+    const preflightBlockReasons: string[] = []
+    let shouldMarkStopBlockedOnce = false
     const isaVerdict = checkStopReadiness({ cwd: sessionRoot, record })
     if (isaVerdict._tag === "block") {
-      yield* state
-        .update(sid, { stop_blocked_once: true })
-        .pipe(
-          Effect.catchAll((cause) => {
-            process.stderr.write(
-              `[Stop] session-state op=stop-blocked-once failed: sid=${sid} cause=${String(cause).slice(0, 160)}\n`,
-            )
-            return Effect.succeed(undefined)
-          }),
-        )
-      const out: HookDecision = {
-        decision: "block",
-        reason: isaVerdict.reason,
-      }
-      return out
+      preflightBlockReasons.push(isaVerdict.reason)
     }
 
-    // Research-mode source-ledger gate.
+    // Source-required source-ledger gate.
     //
     // Keys off `requires_web_sources` (set by the prompt-router from a STRICT
-    // web-research regex), NOT the loose `last_workflow` priming tag. Prior
-    // behavior gated whenever `last_workflow.startsWith("research.")`, which
-    // included `research.repo` ("find the function") and `research.synthesis`
-    // ("compare X and Y") — neither warrants a source-URL ledger — and also
-    // fired on a bare `latest` keyword in the priming regex (e.g. "are we on
-    // the latest"). The new boolean is set only by `requiresWebSources` in
-    // policies/workflow-classifier.ts.
+    // web-source regex), NOT the loose `last_workflow` priming tag. This
+    // applies to coding/build tasks too when the user explicitly asks for
+    // current real data or cited sources.
     if (record.requires_web_sources && record.source_urls.length === 0) {
-      yield* state
-        .update(sid, { stop_blocked_once: true })
-        .pipe(
-          Effect.catchAll((cause) => {
-            process.stderr.write(
-              `[Stop] session-state op=stop-blocked-once failed: sid=${sid} cause=${String(cause).slice(0, 160)}\n`,
-            )
-            return Effect.succeed(undefined)
-          }),
+      preflightBlockReasons.push(RESEARCH_BLOCK_REASON)
+    }
+
+    // Engagement absence gate — when ALGORITHM tier ≥ 3 was classified
+    // upstream, the run MUST have produced an ISA. This participates in the
+    // first-stop preflight bundle so a missing ISA cannot be masked by another
+    // one-shot Stop gate such as missing sources.
+    if (record.engagement_required && !record.stop_blocked_once) {
+      // Session-scoped: a project ISA or the session's OWN expected ISA
+      // satisfies the gate. A stale foreign-slug ISA under session_root
+      // must NOT — that's the bug this resolver fixes.
+      const activeIsa = resolveActiveIsa({ sessionRoot, record })
+      const hasAnyIsa = activeIsa !== null && existsSync(activeIsa)
+      if (!hasAnyIsa && !isInspectionOnlyEngagement(record)) {
+        const tierLabel =
+          typeof record.last_tier === "number"
+            ? `E${record.last_tier}`
+            : "E3+"
+        const expectedRel =
+          record.expected_isa_path ?? "<.claude-hooks/work/<slug>/ISA.md>"
+        // Surface the frozen absolute path alongside the relative one so
+        // the model can write to it unambiguously even from a drifted cwd.
+        const expectedAbs = resolveExpectedIsaAbsolute(sessionRoot, record)
+        const expectedDisplay =
+          expectedAbs !== null && expectedAbs !== expectedRel
+            ? `\`${expectedRel}\` (absolute: \`${expectedAbs}\`)`
+            : `\`${expectedRel}\``
+        preflightBlockReasons.push(
+          `ALGORITHM ${tierLabel} run is finishing without an ISA. ` +
+            `Create it now at ${expectedDisplay} (or at \`<repo>/ISA.md\` if ` +
+            `this is a project-level effort) with at minimum frontmatter ` +
+            `(\`effort:\`, \`phase:\`), \`## Goal\`, and \`## Criteria\`. ` +
+            `The downstream verification gates only fire on a real artifact; ` +
+            `Stop will not block again on this session.`,
         )
+        shouldMarkStopBlockedOnce = true
+      }
+    }
+
+    if (
+      preflightBlockReasons.length > 0 &&
+      record.files_changed.length > 0 &&
+      record.verification_status !== "passed"
+    ) {
+      preflightBlockReasons.push(BLOCK_REASON)
+    }
+
+    if (preflightBlockReasons.length > 0) {
+      if (shouldMarkStopBlockedOnce) {
+        yield* state
+          .update(sid, { stop_blocked_once: true })
+          .pipe(Effect.catchAll((cause) => reportStateWriteFailure(sid, "stop-blocked-once", cause)))
+      }
       const out: HookDecision = {
         decision: "block",
-        reason: RESEARCH_BLOCK_REASON,
+        reason: combineBlockReasons(preflightBlockReasons),
       }
       return out
     }
@@ -140,13 +277,12 @@ export const handleStop = (
         const cmdPreview = Array.isArray(selectedVerify.command)
           ? selectedVerify.command.join(" ")
           : selectedVerify.command
-        process.stderr.write(
-          `[verify-map] running (timeoutMs=${selectedVerify.timeoutMs}): ${cmdPreview.slice(0, 200)}${cmdPreview.length > 200 ? "..." : ""}\n`,
+        yield* logWarning(
+          `[verify-map] running (timeoutMs=${selectedVerify.timeoutMs}): ${cmdPreview.slice(0, 200)}${cmdPreview.length > 200 ? "..." : ""}`,
         )
-        // runVerifyCommand is internally fault-tolerant — it converts
-        // both successful exits and Node `execFile` errors into a
-        // VerifyRunResult, so this Effect should never fail. But if the
-        // runtime layer itself rejects (effect scheduler issue,
+        // runVerifyCommand is internally fault-tolerant: it converts
+        // successful exits and command-runner failures into a
+        // VerifyRunResult. If the runtime layer itself rejects,
         // unexpected exception), don't swallow silently — log the cause
         // and fall through to the reminder block.
         const result = yield* Effect.tryPromise({
@@ -154,11 +290,7 @@ export const handleStop = (
           catch: (cause) => new Error(String(cause)),
         }).pipe(
           Effect.tapError((cause) =>
-            Effect.sync(() => {
-              process.stderr.write(
-                `[verify-map] runner crashed: ${String(cause).slice(0, 200)}\n`,
-              )
-            }),
+            logWarning(`[verify-map] runner crashed: ${String(cause).slice(0, 200)}`),
           ),
           Effect.orElseSucceed(() => null),
         )
@@ -169,14 +301,14 @@ export const handleStop = (
             .update(sid, {
               verification_status: passed ? "passed" : "failed",
             })
-            .pipe(Effect.catchAll(() => Effect.succeed(undefined)))
+            .pipe(Effect.catchAll((cause) => reportStateWriteFailure(sid, "verification-status", cause)))
           yield* state
             .append(
               sid,
               passed ? "tests_run" : "commands_failed",
               result.commandPreview,
             )
-            .pipe(Effect.catchAll(() => Effect.succeed(undefined)))
+            .pipe(Effect.catchAll((cause) => reportStateWriteFailure(sid, "verification-command", cause)))
 
           if (passed) {
             verifiedThisStop = true
@@ -201,66 +333,11 @@ export const handleStop = (
       record.verification_status !== "passed" &&
       !verifiedThisStop
     ) {
-      yield* state
-        .update(sid, { stop_blocked_once: true })
-        .pipe(
-          Effect.catchAll((cause) => {
-            process.stderr.write(
-              `[Stop] session-state op=stop-blocked-once failed: sid=${sid} cause=${String(cause).slice(0, 160)}\n`,
-            )
-            return Effect.succeed(undefined)
-          }),
-        )
       const out: HookDecision = {
         decision: "block",
         reason: BLOCK_REASON,
       }
       return out
-    }
-
-    // Engagement absence gate (last among blocking gates) — when ALGORITHM
-    // tier ≥ 3 was classified upstream, the run MUST have produced an ISA.
-    // Absence is the failure mode the prompt-router engagement directive
-    // is designed to prevent; here we make it a real gate instead of a hint.
-    // Runs LAST so workflow-specific gates (research source-ledger, files-
-    // changed-without-verification) get to fire on their own more-actionable
-    // reasons first; this gate is the doctrinal fallback. Fires once per
-    // session via stop_blocked_once.
-    if (record.engagement_required) {
-      // Session-scoped: a project ISA or the session's OWN expected ISA
-      // satisfies the gate. A stale foreign-slug ISA under session_root
-      // must NOT — that's the bug this resolver fixes.
-      const activeIsa = resolveActiveIsa({ sessionRoot, record })
-      const hasAnyIsa = activeIsa !== null && existsSync(activeIsa)
-      if (!hasAnyIsa) {
-        yield* state
-          .update(payload.session_id, { stop_blocked_once: true })
-          .pipe(Effect.catchAll(() => Effect.succeed(undefined)))
-        const tierLabel =
-          typeof record.last_tier === "number"
-            ? `E${record.last_tier}`
-            : "E3+"
-        const expectedRel =
-          record.expected_isa_path ?? "<.claude-hooks/work/<slug>/ISA.md>"
-        // Surface the frozen absolute path alongside the relative one so
-        // the model can write to it unambiguously even from a drifted cwd.
-        const expectedAbs = record.expected_isa_path_absolute
-        const expectedDisplay =
-          expectedAbs !== null && expectedAbs !== expectedRel
-            ? `\`${expectedRel}\` (absolute: \`${expectedAbs}\`)`
-            : `\`${expectedRel}\``
-        const out: HookDecision = {
-          decision: "block",
-          reason:
-            `ALGORITHM ${tierLabel} run is finishing without an ISA. ` +
-            `Create it now at ${expectedDisplay} (or at \`<repo>/ISA.md\` if ` +
-            `this is a project-level effort) with at minimum frontmatter ` +
-            `(\`effort:\`, \`phase:\`), \`## Goal\`, and \`## Criteria\`. ` +
-            `The downstream verification gates only fire on a real artifact; ` +
-            `Stop will not block again on this session.`,
-        }
-        return out
-      }
     }
 
     // 4b doc-integrity regen: best-effort run of declarative regenerate.yaml
@@ -275,23 +352,23 @@ export const handleStop = (
         const remaining = STOP_BUDGET_MS - elapsed
         // Require REGEN_TIMEOUT_MS + 1s safety margin so a regen that
         // runs to its own timeout still leaves headroom for state I/O
-        // and the SIGTERM/exit handshake before we hit the dispatcher
-        // cap (which would turn our decision into SAFE_DEFAULT).
+        // and command-runner cleanup before we hit the dispatcher cap
+        // (which would force the dispatcher to emit its hook-safe fallback).
         const REGEN_SAFETY_MARGIN_MS = 1_000
         if (remaining < REGEN_TIMEOUT_MS + REGEN_SAFETY_MARGIN_MS) {
-          process.stderr.write(
-            `[regenerate] skipping ${rule.derived}: ${remaining}ms remaining, need ${REGEN_TIMEOUT_MS + REGEN_SAFETY_MARGIN_MS}ms\n`,
+          yield* logWarning(
+            `[regenerate] skipping ${rule.derived}: ${remaining}ms remaining, need ${REGEN_TIMEOUT_MS + REGEN_SAFETY_MARGIN_MS}ms`,
           )
           continue
         }
-        // F6: log what we're about to run BEFORE exec so users have a paper
+        // F6: log what we're about to run before execution so users have a paper
         // trail of what their regenerate.yaml is doing on their behalf.
         // Truncate the command preview at 160 chars to keep the line scannable.
         const cmdPreview = Array.isArray(rule.command)
           ? rule.command.join(" ")
           : rule.command
-        process.stderr.write(
-          `[regenerate] running for ${rule.derived}: ${cmdPreview.slice(0, 160)}${cmdPreview.length > 160 ? "..." : ""}\n`,
+        yield* logWarning(
+          `[regenerate] running for ${rule.derived}: ${cmdPreview.slice(0, 160)}${cmdPreview.length > 160 ? "..." : ""}`,
         )
         yield* Effect.tryPromise({
           try: async () => {
@@ -299,20 +376,32 @@ export const handleStop = (
               ? { cmd: rule.command[0] ?? "", argv: rule.command.slice(1) }
               : { cmd: "sh", argv: ["-c", rule.command as string] }
             if (args.cmd.length === 0) return
-            await execFileAsync(args.cmd, args.argv as string[], {
-              cwd: currentCwd,
-              timeout: REGEN_TIMEOUT_MS,
-            })
+            const result = Array.isArray(rule.command)
+              ? await runCommandLive(args.cmd, args.argv as string[], {
+                  cwd: currentCwd,
+                  timeoutMs: REGEN_TIMEOUT_MS,
+                })
+              : await runShellCommandLive(rule.command as string, {
+                  cwd: currentCwd,
+                  timeoutMs: REGEN_TIMEOUT_MS,
+                })
+            if (result.exitCode !== 0 || result.timedOut) {
+              throw new Error(
+                result.timedOut
+                  ? `timeout ${REGEN_TIMEOUT_MS}ms`
+                  : `exit ${result.exitCode}: ${result.stderr || result.stdout}`,
+              )
+            }
           },
-          catch: (cause) => {
-            process.stderr.write(
-              `[regenerate] ${rule.derived} failed: ${String(cause).slice(0, 200)}\n`,
-            )
-            return new Error(String(cause))
-          },
-        }).pipe(Effect.catchAll(() => Effect.succeed(undefined)))
+          catch: (cause) => new Error(String(cause)),
+        }).pipe(
+          Effect.tapError((cause) =>
+            logWarning(`[regenerate] ${rule.derived} failed: ${String(cause).slice(0, 200)}`),
+          ),
+          Effect.catchAll(() => Effect.succeed(undefined)),
+        )
       }
     }
 
-    return SAFE_DEFAULT
+    return NO_DECISION
   })

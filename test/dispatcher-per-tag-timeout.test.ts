@@ -30,7 +30,7 @@ describe("dispatcher per-tag timeout (B1)", () => {
     // We don't want the test to actually wait 15s, so we instead assert the
     // handler is still running past the 5s mark without having returned. We
     // give the dispatcher 6s of wall time and then kill the process — if the
-    // 4s cap had fired (regression), it would have emitted SAFE_DEFAULT well
+    // 4s cap had fired (regression), it would have emitted the safe fallback well
     // before our 6s deadline.
     const payload = JSON.stringify({
       _tag: "UserPromptSubmit",

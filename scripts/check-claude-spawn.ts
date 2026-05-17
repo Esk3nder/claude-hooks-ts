@@ -29,6 +29,11 @@ import { join, relative } from "node:path"
 
 const REPO_ROOT = new URL("..", import.meta.url).pathname.replace(/\/$/, "")
 const SRC_ROOT = join(REPO_ROOT, "src")
+const writeGuardStdout = (message: string): Promise<number> =>
+  Bun.write(Bun.stdout, message)
+
+const writeGuardStderr = (message: string): Promise<number> =>
+  Bun.write(Bun.stderr, message)
 /**
  * The chokepoint file is the only sanctioned `claude` spawn site in production.
  * The guard scans src/, test/, and scripts/ to catch test bypasses too — a
@@ -119,18 +124,20 @@ const scan = async (): Promise<ReadonlyArray<Hit>> => {
 const main = async (): Promise<void> => {
   const hits = await scan()
   if (hits.length === 0) {
-    console.log("check-claude-spawn: OK (no direct claude spawns outside the chokepoint)")
+    await writeGuardStdout("check-claude-spawn: OK (no direct claude spawns outside the chokepoint)\n")
     return
   }
-  console.error("check-claude-spawn: FAIL — direct `claude` spawns found outside src/services/claude-subprocess.ts:")
-  console.error("")
+  await writeGuardStderr(
+    "check-claude-spawn: FAIL — direct `claude` spawns found outside src/services/claude-subprocess.ts:\n",
+  )
+  await writeGuardStderr("\n")
   for (const h of hits) {
-    console.error(`  ${h.file}:${h.line}  [${h.pattern}]`)
-    console.error(`    ${h.text}`)
+    await writeGuardStderr(`  ${h.file}:${h.line}  [${h.pattern}]\n`)
+    await writeGuardStderr(`    ${h.text}\n`)
   }
-  console.error("")
-  console.error("Route the call through ClaudeSubprocess.spawn() instead — env scrubbing")
-  console.error("is mandatory to keep work on subscription billing (see B2 in plan).")
+  await writeGuardStderr("\n")
+  await writeGuardStderr("Route the call through ClaudeSubprocess.spawn() instead — env scrubbing\n")
+  await writeGuardStderr("is mandatory to keep work on subscription billing (see B2 in plan).\n")
   process.exit(1)
 }
 

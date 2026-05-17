@@ -69,27 +69,38 @@ describe("evaluateEngagementGate — passthrough cases", () => {
     },
   )
 
-  test("Write to expected_isa_path → passthrough", () => {
+  test("Write to expected_isa_path → explicit allow", () => {
     const v = evaluateEngagementGate({
       ...baseCtx,
       toolName: "Write",
       toolInput: { file_path: EXPECTED_ABS },
       resolvedToolFilePath: EXPECTED_ABS,
     })
-    expect(v.kind).toBe("passthrough")
+    expect(v.kind).toBe("allow")
   })
 
-  test("Edit to expected_isa_path → passthrough", () => {
+  test("Edit to expected_isa_path → explicit allow", () => {
     const v = evaluateEngagementGate({
       ...baseCtx,
       toolName: "Edit",
       toolInput: { file_path: EXPECTED_ABS },
       resolvedToolFilePath: EXPECTED_ABS,
     })
-    expect(v.kind).toBe("passthrough")
+    expect(v.kind).toBe("allow")
   })
 
-  test("Edit to existing project ISA → passthrough (Stop-gate alignment)", () => {
+  test("Update to expected_isa_path remains explicit allow after ISA exists", () => {
+    const v = evaluateEngagementGate({
+      ...baseCtx,
+      anyAcceptedIsaExists: true,
+      toolName: "Update",
+      toolInput: { file_path: EXPECTED_ABS },
+      resolvedToolFilePath: EXPECTED_ABS,
+    })
+    expect(v.kind).toBe("allow")
+  })
+
+  test("Edit to existing project ISA → explicit allow (Stop-gate alignment)", () => {
     const v = evaluateEngagementGate({
       ...baseCtx,
       acceptedEditPaths: [EXPECTED_ABS, PROJECT_ISA_ABS],
@@ -97,10 +108,10 @@ describe("evaluateEngagementGate — passthrough cases", () => {
       toolInput: { file_path: PROJECT_ISA_ABS },
       resolvedToolFilePath: PROJECT_ISA_ABS,
     })
-    expect(v.kind).toBe("passthrough")
+    expect(v.kind).toBe("allow")
   })
 
-  test("MultiEdit to existing project ISA → passthrough", () => {
+  test("MultiEdit to existing project ISA → explicit allow", () => {
     const v = evaluateEngagementGate({
       ...baseCtx,
       acceptedEditPaths: [EXPECTED_ABS, PROJECT_ISA_ABS],
@@ -108,7 +119,7 @@ describe("evaluateEngagementGate — passthrough cases", () => {
       toolInput: { file_path: PROJECT_ISA_ABS },
       resolvedToolFilePath: PROJECT_ISA_ABS,
     })
-    expect(v.kind).toBe("passthrough")
+    expect(v.kind).toBe("allow")
   })
 
   test("Bash mkdir -p <expected_dir> → passthrough", () => {
@@ -125,6 +136,33 @@ describe("evaluateEngagementGate — passthrough cases", () => {
       ...baseCtx,
       toolName: "Bash",
       toolInput: { command: "mkdir" },
+    })
+    expect(v.kind).toBe("passthrough")
+  })
+
+  test("Bash pwd → passthrough for cwd discovery before ISA exists", () => {
+    const v = evaluateEngagementGate({
+      ...baseCtx,
+      toolName: "Bash",
+      toolInput: { command: "pwd" },
+    })
+    expect(v.kind).toBe("passthrough")
+  })
+
+  test("Bash rg → passthrough for read-only inspection before ISA exists", () => {
+    const v = evaluateEngagementGate({
+      ...baseCtx,
+      toolName: "Bash",
+      toolInput: { command: "rg -n \"runGitApply|applyWorkerPatch\" src/services/worker-integration.ts" },
+    })
+    expect(v.kind).toBe("passthrough")
+  })
+
+  test("Bash claude-hooks-workers list --json → passthrough for read-only worker inspection", () => {
+    const v = evaluateEngagementGate({
+      ...baseCtx,
+      toolName: "Bash",
+      toolInput: { command: "./bin/claude-hooks-workers list --json" },
     })
     expect(v.kind).toBe("passthrough")
   })
@@ -149,9 +187,9 @@ describe("evaluateEngagementGate — deny cases", () => {
     })
     expect(v.kind).toBe("deny")
     if (v.kind === "deny") {
-      expect(v.reason).toContain("ALGORITHM engagement is required")
+      expect(v.reason).toContain("ISA required before this tool can run")
       expect(v.reason).toContain(".claude-hooks/work/sess-1/ISA.md")
-      expect(v.reason).toContain("CLAUDE_HOOKS_DISABLE_ISA_PRETOOL_GATE")
+      expect(v.reason).toContain("After the ISA exists on disk")
     }
   })
 
@@ -242,6 +280,51 @@ describe("evaluateEngagementGate — deny cases", () => {
       ...baseCtx,
       toolName: "Bash",
       toolInput: { command: `mkdir ${EXPECTED_DIR} && rm -rf /` },
+    })
+    expect(v.kind).toBe("deny")
+  })
+
+  test("Bash 'pwd && rm -rf /' → deny (diagnostic command cannot chain)", () => {
+    const v = evaluateEngagementGate({
+      ...baseCtx,
+      toolName: "Bash",
+      toolInput: { command: "pwd && rm -rf /" },
+    })
+    expect(v.kind).toBe("deny")
+  })
+
+  test("Bash 'rg ... && rm -rf /' → deny (inspection command cannot chain)", () => {
+    const v = evaluateEngagementGate({
+      ...baseCtx,
+      toolName: "Bash",
+      toolInput: { command: "rg foo src && rm -rf /" },
+    })
+    expect(v.kind).toBe("deny")
+  })
+
+  test("Bash rg --pre → deny (ripgrep preprocessor can mutate)", () => {
+    const v = evaluateEngagementGate({
+      ...baseCtx,
+      toolName: "Bash",
+      toolInput: { command: "rg --pre 'python3 -c \"print(1)\"' needle src" },
+    })
+    expect(v.kind).toBe("deny")
+  })
+
+  test("Bash rg --config → deny (config can enable preprocessors)", () => {
+    const v = evaluateEngagementGate({
+      ...baseCtx,
+      toolName: "Bash",
+      toolInput: { command: "rg --config .ripgreprc needle src" },
+    })
+    expect(v.kind).toBe("deny")
+  })
+
+  test("Bash claude-hooks-workers cancel → deny (worker mutation is not inspection)", () => {
+    const v = evaluateEngagementGate({
+      ...baseCtx,
+      toolName: "Bash",
+      toolInput: { command: "./bin/claude-hooks-workers cancel worker-1" },
     })
     expect(v.kind).toBe("deny")
   })

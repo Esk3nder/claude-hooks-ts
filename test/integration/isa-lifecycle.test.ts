@@ -22,6 +22,7 @@ import { HookPayload } from "../../src/schema/payloads.ts"
 import { FAIL_SAFE, InferenceTest } from "../../src/services/inference.ts"
 import { ClaudeSubprocessTest } from "../../src/services/claude-subprocess.ts"
 import { ClassifierTelemetryTest } from "../../src/services/classifier-telemetry.ts"
+import { CommandRunnerTest } from "../../src/services/command-runner.ts"
 import { ProjectTest } from "../../src/services/project.ts"
 import { RedactTest } from "../../src/services/redact.ts"
 import { ShellTest } from "../../src/services/shell.ts"
@@ -74,6 +75,9 @@ const initGitRepo = (dir: string): void => {
 const ISA_E3_BODY = `---
 effort: advanced
 phase: observe
+classifier_mode: ALGORITHM
+classifier_tier: E3
+classifier_reason: integration fixture
 ---
 
 ## Problem
@@ -151,6 +155,7 @@ describe("ISA lifecycle integration — choreography", () => {
           Effect.provide(inference),
           Effect.provide(ClaudeSubprocessTest()),
           Effect.provide(ClassifierTelemetryTest().layer),
+          Effect.provide(CommandRunnerTest()),
         ),
       )
       expect(record.engagement_required).toBe(true)

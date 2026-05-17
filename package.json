@@ -11,6 +11,7 @@
     "claude-hooks-install": "./bin/claude-hooks-install",
     "claude-hooks-init": "./bin/claude-hooks-init",
     "claude-hooks-tail": "./bin/claude-hooks-tail",
+    "claude-hooks-workers": "./bin/claude-hooks-workers",
     "claude-hooks-doctor": "./bin/claude-hooks-doctor"
   },
   "files": [

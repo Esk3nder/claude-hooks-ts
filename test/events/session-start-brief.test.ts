@@ -1,5 +1,8 @@
 import { describe, expect, test } from "bun:test"
 import { Effect, Layer, Schema } from "effect"
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs"
+import { tmpdir } from "node:os"
+import { join } from "node:path"
 import { handleSessionStart } from "../../src/events/session-start-brief.ts"
 import { HookPayload } from "../../src/schema/payloads.ts"
 import { GitTest } from "../../src/services/git.ts"
@@ -67,7 +70,45 @@ describe("handleSessionStart", () => {
     expect(ctx).toContain("and 5 more")
   })
 
-  test("non-SessionStart payload → SAFE_DEFAULT", async () => {
+  test("summarizes work directories and archives completed work dirs", async () => {
+    const root = mkdtempSync(join(tmpdir(), "session-start-brief-"))
+    try {
+      const completeDir = join(root, ".claude-hooks", "work", "complete-run")
+      mkdirSync(completeDir, { recursive: true })
+      writeFileSync(
+        join(completeDir, "ISA.md"),
+        "---\neffort: advanced\nphase: complete\n---\n\n## Goal\nDone\n",
+      )
+      const payload = decode({
+        _tag: "SessionStart",
+        session_id: "s",
+        hook_event_name: "SessionStart",
+        cwd: root,
+      })
+      const porcelain = [
+        "?? .claude-hooks/work/complete-run/ISA.md",
+        "?? .claude-hooks/work/active-run/ISA.md",
+        " M src/a.ts",
+      ].join("\n")
+      const d = await Effect.runPromise(
+        handleSessionStart(payload).pipe(
+          Effect.provide(layer("main", porcelain)),
+        ),
+      )
+      const ctx = (d as { hookSpecificOutput: { additionalContext: string } })
+        .hookSpecificOutput.additionalContext
+      expect(ctx).toContain("Dirty files: 2 (+2 work dir entries collapsed)")
+      expect(ctx).toContain(".claude-hooks/work/: 2 work dirs summarized")
+      expect(ctx).toContain("M src/a.ts")
+      expect(ctx).toContain("Archived stale work dirs: 1")
+      expect(existsSync(completeDir)).toBe(false)
+      expect(existsSync(join(root, ".claude-hooks", "archive"))).toBe(true)
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  test("non-SessionStart payload → NO_DECISION", async () => {
     const payload = decode({
       _tag: "Stop",
       session_id: "s",

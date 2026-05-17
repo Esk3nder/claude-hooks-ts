@@ -1,9 +1,16 @@
-import { Effect, Schema, Cause, Match, Layer } from "effect"
+import { Effect, Schema, Cause, Match, Layer, Option, Logger } from "effect"
 import * as fsSync from "node:fs"
 import * as path from "node:path"
-import { BunRuntime } from "@effect/platform-bun"
-import { HookPayload } from "./schema/payloads.ts"
-import { SAFE_DEFAULT, type HookDecision } from "./schema/decisions.ts"
+import { NO_DECISION, SAFE_DEFAULT, type HookDecision } from "./schema/decisions.ts"
+import {
+  RawHookPayload,
+  NormalizedHookEvent,
+  type NormalizedHookEvent as NormalizedHookEventType,
+} from "./schema/normalized.ts"
+import {
+  encodeHookDecision,
+  type NormalizedHookDecision,
+} from "./schema/normalized-decisions.ts"
 import { handleStub } from "./events/_stub.ts"
 import { handlePreToolUse } from "./events/pretool-policy.ts"
 import { handleConfigChange } from "./events/config-guard.ts"
@@ -46,6 +53,12 @@ import { StdinParseError } from "./schema/errors.ts"
 import { makeAppLive } from "./layers/live.ts"
 import { TracingLive } from "./services/tracing.ts"
 import { withSession } from "./services/session-context.ts"
+import {
+  RuntimeConfigService,
+  durationMillis,
+  type RuntimeConfig,
+} from "./services/runtime-config.ts"
+import { HookFailure, reportHookFailure } from "./services/hook-failure.ts"
 import type { FileSystem } from "./services/filesystem.ts"
 import type { Shell } from "./services/shell.ts"
 import type { Git } from "./services/git.ts"
@@ -55,6 +68,9 @@ import type { ClaudeSubprocess } from "./services/claude-subprocess.ts"
 import type { Inference } from "./services/inference.ts"
 import type { ClassifierTelemetry } from "./services/classifier-telemetry.ts"
 import type { Redact } from "./services/redact.ts"
+import type { EventStore } from "./services/event-store.ts"
+import type { CommandRunner } from "./services/command-runner.ts"
+import { currentProcessEnv } from "./bootstrap/env.ts"
 
 type AppServices =
   | FileSystem
@@ -70,19 +86,10 @@ type AppServices =
   | Inference
   | ClassifierTelemetry
   | Redact
-
-/**
- * Test-only override: replace one event handler with an arbitrary Effect.
- * Used by `test/dispatcher-timeout.test.ts` to inject a slow handler so the
- * Effect.timeout cap can be observed.
- *
- * Activated only when `CLAUDE_HOOKS_TEST_HANG_EVENT` is set; otherwise has no
- * runtime effect.
- */
-const testHangEvent = (): string | null => {
-  const v = process.env["CLAUDE_HOOKS_TEST_HANG_EVENT"]
-  return typeof v === "string" && v.length > 0 ? v : null
-}
+  | EventStore
+  | CommandRunner
+  | RuntimeConfigService
+  | HookFailure
 
 const readStdin = (): Effect.Effect<string> =>
   Effect.tryPromise({
@@ -106,6 +113,44 @@ const readStdin = (): Effect.Effect<string> =>
     catch: () => new Error("stdin read failed"),
   }).pipe(Effect.catchAll(() => Effect.succeed("")))
 
+const failureContextFor = (
+  payload?: Partial<NormalizedHookEventType> | null,
+  extra: Readonly<Record<string, unknown>> = {},
+): Record<string, unknown> => ({
+  ...extra,
+  ...(typeof payload?.cwd === "string" ? { cwd: payload.cwd } : {}),
+  ...(typeof (payload as { tool_name?: unknown } | undefined)?.tool_name === "string"
+    ? { tool_name: (payload as { tool_name: string }).tool_name }
+    : {}),
+})
+
+const stateRootForHook = (cwd: string): string => {
+  const override = currentProcessEnv()["CLAUDE_HOOKS_STATE_ROOT"]
+  return typeof override === "string" && override.trim().length > 0
+    ? path.resolve(override)
+    : cwd
+}
+
+const reportFallback = (input: {
+  readonly kind: Parameters<typeof reportHookFailure>[0]["kind"]
+  readonly event?: string | null | undefined
+  readonly sessionId?: string | null | undefined
+  readonly cause: unknown
+  readonly fallbackDecision?: HookDecision | undefined
+  readonly context?: Readonly<Record<string, unknown>> | undefined
+  readonly ledger?: boolean | undefined
+}): Effect.Effect<void> =>
+  reportHookFailure({
+    kind: input.kind,
+    event: input.event,
+    sessionId: input.sessionId,
+    cause: input.cause,
+    fallbackDecision: input.fallbackDecision,
+    hookSafe: true,
+    context: input.context,
+    ledger: input.ledger,
+  })
+
 /**
  * Type guard for the WorktreeCreate raw-string output shape. WorktreeCreate
  * uniquely emits `{ worktreePath: string }`, which we serialize as a bare
@@ -113,17 +158,64 @@ const readStdin = (): Effect.Effect<string> =>
  * read the path directly.
  */
 const isWorktreeCreateDecision = (
-  d: HookDecision,
+  d: NormalizedHookDecision,
 ): d is { worktreePath: string } =>
   typeof (d as { worktreePath?: unknown }).worktreePath === "string"
 
-const emit = (decision: HookDecision): Effect.Effect<void> =>
-  Effect.sync(() => {
-    if (isWorktreeCreateDecision(decision)) {
-      process.stdout.write(decision.worktreePath)
-      return
+export interface EncodedStdoutDecision {
+  readonly stdout: string
+  readonly encodeFailed: boolean
+  readonly cause?: unknown
+}
+
+export const encodeDecisionForStdout = (
+  decision: NormalizedHookDecision,
+  fallback: HookDecision = SAFE_DEFAULT,
+): EncodedStdoutDecision => {
+  const encoded = encodeHookDecision(decision)
+  if (encoded._tag === "Left") {
+    const encodedFallback = encodeHookDecision(fallback)
+    return {
+      encodeFailed: true,
+      cause: encoded.left,
+      stdout: JSON.stringify(
+        encodedFallback._tag === "Right"
+          ? encodedFallback.right
+          : SAFE_DEFAULT,
+      ),
     }
-    process.stdout.write(JSON.stringify(decision))
+  }
+  if (isWorktreeCreateDecision(encoded.right)) {
+    return { stdout: encoded.right.worktreePath, encodeFailed: false }
+  }
+  return { stdout: JSON.stringify(encoded.right), encodeFailed: false }
+}
+
+const emit = (
+  decision: NormalizedHookDecision,
+  fallback: HookDecision = SAFE_DEFAULT,
+  meta: {
+    readonly event?: string | null
+    readonly sessionId?: string | null
+    readonly context?: Readonly<Record<string, unknown>>
+  } = {},
+): Effect.Effect<void> =>
+  Effect.gen(function* () {
+    const rendered = encodeDecisionForStdout(decision, fallback)
+    if (rendered.encodeFailed) {
+      yield* reportFallback({
+        kind: "decision_encode_failed",
+        event: meta.event,
+        sessionId: meta.sessionId,
+        cause: rendered.cause ?? "decision encode failed",
+        fallbackDecision: fallback,
+        context: meta.context,
+        ledger: true,
+      })
+    }
+    yield* Effect.sync(() => {
+      process.stdout.write(rendered.stdout)
+    })
   })
 
 const MALFORMED_PRETOOL_USE_FALLBACK: HookDecision = {
@@ -150,7 +242,7 @@ const malformedPayloadFallbackFor = (action: string): HookDecision =>
  * is never delayed or compromised by ledger problems.
  */
 const appendLedger = (
-  payload: HookPayload,
+  payload: NormalizedHookEventType,
   decision: HookDecision,
 ): Effect.Effect<void, never, Ledger> =>
   Effect.flatMap(Ledger, (l) =>
@@ -162,8 +254,13 @@ const appendLedger = (
     }),
   ).pipe(
     Effect.tapError((err) =>
-      Effect.sync(() => {
-        process.stderr.write(`dispatcher: ledger append failed: ${String(err)}\n`)
+      reportFallback({
+        kind: "ledger_append_failed",
+        event: payload._tag,
+        sessionId: payload.session_id,
+        cause: err,
+        fallbackDecision: decision,
+        context: failureContextFor(payload),
       }),
     ),
     Effect.catchAll(() => Effect.succeed(undefined)),
@@ -174,12 +271,13 @@ const parseJson = (raw: string): Effect.Effect<unknown, StdinParseError> =>
     try: () => JSON.parse(raw) as unknown,
     catch: (cause) =>
       new StdinParseError({
-        message: `stdin not valid JSON: ${raw.slice(0, 80)}`,
+        message: "stdin not valid JSON",
         cause,
       }),
   })
 
-const decodePayload = Schema.decodeUnknown(HookPayload)
+const decodeRawPayload = Schema.decodeUnknown(RawHookPayload)
+const decodeNormalizedEvent = Schema.decode(NormalizedHookEvent)
 
 /**
  * Read approvals meta `last_gc` timestamp synchronously. Returns 0 on miss
@@ -200,18 +298,22 @@ const readLastGc = (cwd: string): number => {
  * Best-effort approvals gc. Runs AFTER the decision is emitted to stdout so
  * it never delays the hook response. Any failure is swallowed.
  */
-const maybeGcApprovals = (cwd: string): Effect.Effect<void, never, Approvals> =>
+const maybeGcApprovals = (cwd: string): Effect.Effect<void, never, Approvals | RuntimeConfigService> =>
   Effect.gen(function* () {
     const now = Date.now()
     const last = readLastGc(cwd)
-    if (!shouldGc(now, last)) return
+    const configService = yield* RuntimeConfigService
+    const config = yield* configService.load()
+    if (!shouldGc(now, last, durationMillis(config.approvalGcInterval))) return
     const approvals = yield* Approvals
     yield* approvals.gc(cwd, now).pipe(
       Effect.tapError((err) =>
-        Effect.sync(() => {
-          process.stderr.write(
-            `dispatcher: approvals.gc failed: ${String(err)}\n`,
-          )
+        reportFallback({
+          kind: "state_write_failed",
+          event: "ApprovalsGc",
+          cause: err,
+          fallbackDecision: SAFE_DEFAULT,
+          context: { cwd, op: "approvals.gc" },
         }),
       ),
       Effect.catchAll(() => Effect.succeed(undefined)),
@@ -223,9 +325,9 @@ const maybeGcApprovals = (cwd: string): Effect.Effect<void, never, Approvals> =>
  * HookPayload variant is unhandled.
  */
 const routeByTag = (
-  payload: HookPayload,
+  payload: NormalizedHookEventType,
 ): Effect.Effect<HookDecision, never, AppServices> =>
-  Match.type<HookPayload>().pipe(
+  Match.type<NormalizedHookEventType>().pipe(
     Match.tagsExhaustive({
       PreToolUse: (p) => handlePreToolUse(p),
       Stop: (p) => handleStop(p),
@@ -271,114 +373,183 @@ const routeByTag = (
  * old cap would have fired. Don't raise globally — a slow handler on any
  * other tag is a bug, not a budget request.
  */
-const HANDLER_TIMEOUT_MS: Partial<Record<HookPayload["_tag"], number>> = {
-  UserPromptSubmit: 30_000,
-  // Stop may run one verify-map command (capped at 22s) plus local gate and
-  // state I/O. Keep this under Claude's 30s hook envelope; the Stop handler
-  // also skips best-effort regenerate work when the remaining budget is tight.
-  Stop: 28_000,
+export const handlerTimeoutFor = (
+  tag: NormalizedHookEventType["_tag"],
+  config: RuntimeConfig,
+): number => {
+  switch (tag) {
+    case "UserPromptSubmit":
+      return durationMillis(config.userPromptSubmitTimeoutMs)
+    case "Stop":
+      return durationMillis(config.stopTimeoutMs)
+    default:
+      return durationMillis(config.defaultHandlerTimeoutMs)
+  }
 }
-const DEFAULT_HANDLER_TIMEOUT_MS = 4_000
-
-const handlerTimeoutFor = (tag: HookPayload["_tag"]): number =>
-  HANDLER_TIMEOUT_MS[tag] ?? DEFAULT_HANDLER_TIMEOUT_MS
 
 const dispatchPayload = (
   _action: string,
-  payload: HookPayload,
-): Effect.Effect<HookDecision, never, AppServices> => {
-  const hang = testHangEvent()
-  const cap = handlerTimeoutFor(payload._tag)
-  // Hang test sleeps 1s past the per-tag cap so the timeout always fires.
-  const hangSleepMs = cap + 1_000
-  const baseHandler: Effect.Effect<HookDecision, never, AppServices> =
-    hang !== null && hang === payload._tag
-      ? Effect.sleep(`${hangSleepMs} millis`).pipe(Effect.as(SAFE_DEFAULT))
-      : routeByTag(payload)
+  payload: NormalizedHookEventType,
+): Effect.Effect<HookDecision, never, AppServices> =>
+  Effect.gen(function* () {
+    const configService = yield* RuntimeConfigService
+    const config = yield* configService.load()
+    const hang = Option.getOrNull(config.testHangEvent)
+    const cap = handlerTimeoutFor(payload._tag, config)
+    // Hang test sleeps 1s past the per-tag cap so the timeout always fires.
+    const hangSleepMs = cap + 1_000
+    const baseHandler: Effect.Effect<HookDecision, never, AppServices> =
+      hang !== null && hang === payload._tag
+        ? Effect.sleep(`${hangSleepMs} millis`).pipe(Effect.as(NO_DECISION))
+        : routeByTag(payload)
 
-  // Per-handler cap (per-tag) → on timeout, fall back to safe default ({}).
-  const guarded = baseHandler.pipe(
-    Effect.withSpan(`handler.${payload._tag}`),
-    Effect.timeout(`${cap} millis`),
-    Effect.catchTag("TimeoutException", () => Effect.succeed(SAFE_DEFAULT)),
-  ) as Effect.Effect<HookDecision, never, AppServices>
+    // Per-handler cap (per-tag) → on timeout, fall back to safe default ({}).
+    const guarded = baseHandler.pipe(
+      Effect.catchAllCause((cause) =>
+        reportFallback({
+          kind: "handler_failed",
+          event: payload._tag,
+          sessionId: payload.session_id,
+          cause: Cause.pretty(cause),
+          fallbackDecision: SAFE_DEFAULT,
+          context: failureContextFor(payload),
+          ledger: true,
+        }).pipe(Effect.as(SAFE_DEFAULT)),
+      ),
+      Effect.withSpan(`handler.${payload._tag}`),
+      Effect.timeout(`${cap} millis`),
+      Effect.catchTag("TimeoutException", (err) =>
+        reportFallback({
+          kind: "handler_timeout",
+          event: payload._tag,
+          sessionId: payload.session_id,
+          cause: err,
+          fallbackDecision: SAFE_DEFAULT,
+          context: failureContextFor(payload, { cap_ms: cap }),
+          ledger: true,
+        }).pipe(Effect.as(SAFE_DEFAULT)),
+      ),
+    ) as Effect.Effect<HookDecision, never, AppServices>
 
-  return guarded.pipe(
-    Effect.withSpan("dispatch", {
-      attributes: { event: payload._tag },
-    }),
-  ) as Effect.Effect<HookDecision, never, AppServices>
+    return yield* guarded.pipe(
+      Effect.withSpan("dispatch", {
+        attributes: { event: payload._tag },
+      }),
+    ) as Effect.Effect<HookDecision, never, AppServices>
 
-  // _stub kept reachable for non-tag-shaped fallback; not used post-Match.
-  void handleStub
-}
+    // _stub kept reachable for non-tag-shaped fallback; not used post-Match.
+    void handleStub
+  })
+
 
 export const program = (argv: ReadonlyArray<string>): Effect.Effect<void> =>
   Effect.gen(function* () {
     const action = argv[2]
     if (!action) {
-      yield* Effect.sync(() => {
-        process.stderr.write("dispatcher: missing action argument" + "\n")
+      const fallback = SAFE_DEFAULT
+      yield* reportFallback({
+        kind: "handler_failed",
+        event: "unknown",
+        cause: "missing action argument",
+        fallbackDecision: fallback,
       })
-      yield* emit(SAFE_DEFAULT)
+      yield* emit(fallback, fallback, { event: "unknown" })
       return
     }
     const raw = yield* readStdin()
     if (raw.trim().length === 0) {
-      yield* Effect.sync(() => {
-        process.stderr.write("dispatcher: stdin was empty\n")
+      const fallback = malformedPayloadFallbackFor(action)
+      yield* reportFallback({
+        kind: "stdin_empty",
+        event: action,
+        cause: "stdin was empty",
+        fallbackDecision: fallback,
       })
-      yield* emit(malformedPayloadFallbackFor(action))
+      yield* emit(fallback, fallback, { event: action })
       return
     }
     const parsedE = yield* Effect.either(parseJson(raw))
     if (parsedE._tag === "Left") {
-      yield* Effect.sync(() => {
-        process.stderr.write(`dispatcher: ${parsedE.left.message}` + "\n")
+      const fallback = malformedPayloadFallbackFor(action)
+      yield* reportFallback({
+        kind: "json_parse_failed",
+        event: action,
+        cause: parsedE.left,
+        fallbackDecision: fallback,
+        context: { raw_bytes: Buffer.byteLength(raw, "utf8") },
       })
-      yield* emit(malformedPayloadFallbackFor(action))
+      yield* emit(fallback, fallback, { event: action })
       return
     }
-    const decodedE = yield* Effect.either(decodePayload(parsedE.right))
+    const decodedE = yield* Effect.either(decodeRawPayload(parsedE.right))
     if (decodedE._tag === "Left") {
-      yield* Effect.sync(() => {
-        process.stderr.write("dispatcher: payload schema decode failed" + "\n")
+      const fallback = malformedPayloadFallbackFor(action)
+      yield* reportFallback({
+        kind: "payload_decode_failed",
+        event: action,
+        cause: "raw payload schema mismatch",
+        fallbackDecision: fallback,
+        context: { stage: "raw_payload" },
       })
-      yield* emit(malformedPayloadFallbackFor(action))
+      yield* emit(fallback, fallback, { event: action })
       return
     }
-    const payload = decodedE.right
+    const normalizedE = yield* Effect.either(decodeNormalizedEvent(decodedE.right))
+    if (normalizedE._tag === "Left") {
+      const fallback = malformedPayloadFallbackFor(action)
+      yield* reportFallback({
+        kind: "payload_decode_failed",
+        event: action,
+        cause: "normalized payload schema mismatch",
+        fallbackDecision: fallback,
+        context: { stage: "normalized_payload" },
+      })
+      yield* emit(fallback, fallback, { event: action })
+      return
+    }
+    const payload = normalizedE.right
     const cwd =
       typeof payload.cwd === "string" && payload.cwd.length > 0
         ? payload.cwd
         : process.cwd()
-    const layer = Layer.mergeAll(makeAppLive(cwd), TracingLive)
+    const stateRoot = stateRootForHook(cwd)
+    const layer = Layer.mergeAll(makeAppLive(stateRoot), TracingLive)
     const decision = yield* withSession(
       payload.session_id,
       dispatchPayload(action, payload).pipe(Effect.provide(layer)),
     )
-    yield* emit(decision)
+    yield* emit(decision, malformedPayloadFallbackFor(payload._tag), {
+      event: payload._tag,
+      sessionId: payload.session_id,
+      context: failureContextFor(payload),
+    }).pipe(Effect.provide(layer))
     // Persist decision to per-session ledger.jsonl. Best-effort and post-emit
     // so a slow/failing ledger never blocks the hook response.
     yield* appendLedger(payload, decision).pipe(Effect.provide(layer))
     // Best-effort post-emit gc — never blocks or affects the response.
-    yield* maybeGcApprovals(cwd).pipe(
+    yield* maybeGcApprovals(stateRoot).pipe(
       Effect.provide(layer),
       Effect.catchAll(() => Effect.succeed(undefined)),
     )
   }).pipe(
     Effect.catchAllCause((cause) =>
       Effect.gen(function* () {
-        yield* Effect.sync(() => {
-          process.stderr.write(
-            "dispatcher: uncaught cause: " + Cause.pretty(cause) + "\n",
-          )
+        yield* reportFallback({
+          kind: "handler_failed",
+          event: "unknown",
+          cause: Cause.pretty(cause),
+          fallbackDecision: SAFE_DEFAULT,
         })
-        yield* emit(SAFE_DEFAULT)
+        yield* emit(SAFE_DEFAULT, SAFE_DEFAULT, { event: "unknown" })
       }),
     ),
   )
 
+const HookLoggerLive = Layer.mergeAll(
+  Logger.remove(Logger.defaultLogger),
+  Logger.add(Logger.withConsoleError(Logger.logfmtLogger)),
+)
+
 if (import.meta.main) {
-  BunRuntime.runMain(program(process.argv))
+  await Effect.runPromise(program(process.argv).pipe(Effect.provide(HookLoggerLive)))
 }

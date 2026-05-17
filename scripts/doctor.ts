@@ -15,6 +15,13 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import * as os from "node:os";
+import { Option, Redacted } from "effect";
+import { currentProcessEnv, type EnvMap } from "../src/bootstrap/env.ts";
+import {
+  runtimeConfigFromEnv,
+  summarizeRuntimeConfig,
+  type RuntimeConfig,
+} from "../src/services/runtime-config.ts";
 import { loadProbes, parseTestStrategy } from "../src/algorithm/isa/probes.ts";
 import { parseSections } from "../src/algorithm/isa/sections.ts";
 import { splitShellWords } from "../src/services/shell-words.ts";
@@ -22,6 +29,7 @@ import {
   parseVerifyMapYaml,
   verifyMapPathFor,
 } from "../src/policies/verify-map.ts";
+import { runCommandLive } from "../src/services/command-runner.ts";
 
 interface CliArgs {
   target: string;
@@ -64,6 +72,8 @@ const SYNTHETIC_PAYLOAD = JSON.stringify({
   source: "startup",
   model: "opus",
 });
+
+const LEDGER_TAIL_MAX_BYTES = 64 * 1024;
 
 const parseArgs = (argv: ReadonlyArray<string>): CliArgs => {
   let target = DEFAULT_TARGET;
@@ -201,7 +211,9 @@ const checkWiredCommands = (entries: WiredEntry[]): CheckResult => {
   const broken: string[] = [];
   for (const e of entries) {
     if (!fs.existsSync(e.scriptPath)) {
-      broken.push(`${e.event}: ${e.scriptPath} (missing)`);
+      // Include the raw command so cross-version skew (parser-out-of-sync-with-writer)
+      // is obvious from one line of output instead of indistinguishable from a missing file.
+      broken.push(`${e.event}: ${e.scriptPath} (missing) [raw command: ${e.command}]`);
       continue;
     }
     if (!isExecutable(e.scriptPath)) {
@@ -209,7 +221,7 @@ const checkWiredCommands = (entries: WiredEntry[]): CheckResult => {
       if (e.scriptPath.endsWith(".ts")) {
         continue;
       }
-      broken.push(`${e.event}: ${e.scriptPath} (not executable)`);
+      broken.push(`${e.event}: ${e.scriptPath} (not executable) [raw command: ${e.command}]`);
     }
   }
   if (broken.length > 0) {
@@ -278,33 +290,20 @@ const checkDispatcherRoundtrip = async (
     argv.unshift("bash");
   }
   try {
-    const proc = Bun.spawn(argv, {
-      stdin: "pipe",
-      stdout: "pipe",
-      stderr: "pipe",
-    });
-    proc.stdin.write(SYNTHETIC_PAYLOAD);
-    await proc.stdin.end();
     const timeoutMs = 5000;
-    const exitPromise = proc.exited;
-    const timeout = new Promise<"timeout">((resolve) =>
-      setTimeout(() => resolve("timeout"), timeoutMs),
-    );
-    const winner = await Promise.race([exitPromise, timeout]);
-    if (winner === "timeout") {
-      try {
-        proc.kill();
-      } catch {
-        // ignore
-      }
+    const run = await runCommandLive(argv[0]!, argv.slice(1), {
+      stdin: SYNTHETIC_PAYLOAD,
+      timeoutMs,
+    });
+    if (run.timedOut) {
       return {
         name: "dispatcher round-trip",
         status: "FAIL",
         detail: "5s timeout",
       };
     }
-    const code = proc.exitCode ?? -1;
-    const stdout = await new Response(proc.stdout).text();
+    const code = run.exitCode;
+    const stdout = run.stdout;
     if (code !== 0) {
       return {
         name: "dispatcher round-trip",
@@ -369,10 +368,7 @@ const checkLedgerEntries = (cwd: string): CheckResult => {
   const lines: string[] = [];
   for (const f of found) {
     try {
-      const raw = fs.readFileSync(f, "utf8").trim();
-      if (raw.length === 0) continue;
-      const fileLines = raw.split("\n");
-      for (const l of fileLines) lines.push(l);
+      lines.push(...readLedgerTailLines(f));
     } catch {
       // skip
     }
@@ -381,35 +377,80 @@ const checkLedgerEntries = (cwd: string): CheckResult => {
   return {
     name: "last 5 ledger entries",
     status: "INFO",
-    detail: `${found.length} ledgers, ${lines.length} entries; tail:\n${tail.join("\n")}`,
+    detail: `${found.length} ledgers, ${lines.length} entries sampled; tail:\n${tail.join("\n")}`,
   };
 };
 
-const checkOtelEndpoint = async (): Promise<CheckResult | null> => {
-  const ep = process.env["OTEL_EXPORTER_OTLP_ENDPOINT"];
-  if (!ep || ep.length === 0) return null;
+const readLedgerTailLines = (file: string): string[] => {
+  const stat = fs.statSync(file);
+  if (!stat.isFile() || stat.size <= 0) return [];
+  const length = Math.min(stat.size, LEDGER_TAIL_MAX_BYTES);
+  const start = Math.max(0, stat.size - length);
+  const fd = fs.openSync(file, "r");
   try {
-    const ctrl = new AbortController();
-    const timer = setTimeout(() => ctrl.abort(), 1000);
-    const res = await fetch(ep, { method: "HEAD", signal: ctrl.signal });
-    clearTimeout(timer);
+    const buffer = Buffer.alloc(length);
+    const bytesRead = fs.readSync(fd, buffer, 0, length, start);
+    let raw = buffer.subarray(0, bytesRead).toString("utf8");
+    if (start > 0) {
+      const previous = Buffer.alloc(1);
+      const previousBytes = fs.readSync(fd, previous, 0, 1, start - 1);
+      const startsOnLineBoundary = previousBytes === 1 && (previous[0] === 0x0a || previous[0] === 0x0d);
+      if (!startsOnLineBoundary) {
+        const firstLineEnd = raw.indexOf("\n");
+        raw = firstLineEnd >= 0 ? raw.slice(firstLineEnd + 1) : "";
+      }
+    }
+    return raw.split(/\r?\n/).filter((line) => line.trim().length > 0);
+  } finally {
+    fs.closeSync(fd);
+  }
+};
+
+const displayEndpoint = (endpoint: string): string => {
+  try {
+    const url = new URL(endpoint);
+    const pathName = url.pathname.replace(/[A-Za-z0-9._~-]{16,}/g, "[redacted]");
+    return `${url.protocol}//${url.host}${pathName === "/" ? "" : pathName}`;
+  } catch {
+    return "[configured endpoint]";
+  }
+};
+
+const displayEndpointError = (cause: unknown): string => {
+  if (cause instanceof Error) {
+    return cause.name;
+  }
+  return "request failed";
+};
+
+const checkOtelEndpoint = async (
+  config: RuntimeConfig,
+): Promise<CheckResult | null> => {
+  if (Option.isNone(config.otelEndpoint)) return null;
+  const ep = Redacted.value(config.otelEndpoint.value);
+  const shown = displayEndpoint(ep);
+  try {
+    const res = await fetch(ep, {
+      method: "HEAD",
+      signal: AbortSignal.timeout(1000),
+    });
     if (res.status >= 200 && res.status < 300) {
       return {
         name: "OTel endpoint",
         status: "PASS",
-        detail: `${ep} -> ${res.status}`,
+        detail: `${shown} -> ${res.status}`,
       };
     }
     return {
       name: "OTel endpoint",
       status: "FAIL",
-      detail: `${ep} -> ${res.status}`,
+      detail: `${shown} -> ${res.status}`,
     };
   } catch (e) {
     return {
       name: "OTel endpoint",
       status: "FAIL",
-      detail: `${ep}: ${String(e)}`,
+      detail: `${shown}: ${displayEndpointError(e)}`,
     };
   }
 };
@@ -434,11 +475,9 @@ const formatHuman = (results: CheckResult[]): string => {
  * runs in fail-safe (everything → ALGORITHM E3) without ever invoking
  * Sonnet. That's safe but undermines the design.
  */
-const checkClassifierEnv = (): CheckResult => {
+const checkClassifierEnv = (config: RuntimeConfig): CheckResult => {
   const claudeBin = Bun.which("claude");
-  const bypass =
-    process.env["CLAUDE_HOOKS_DISABLE_CLASSIFIER"] === "1" ||
-    process.env["CLAUDE_HOOKS_DISABLE_CLASSIFIER"] === "true";
+  const bypass = config.classifierDisabled;
   // Bypass is reported FIRST — it's the most actionable signal regardless
   // of whether `claude` is installed: even with a working `claude` on PATH,
   // the bypass env var would prevent the subprocess from being invoked. So
@@ -478,10 +517,10 @@ const checkClassifierEnv = (): CheckResult => {
  * Loud warning when API keys are present in env (their work won't be billed
  * as expected even though we scrub — they may be mis-configuring elsewhere).
  */
-const checkClassifierAuth = (): CheckResult => {
-  const hasApiKey = typeof process.env["ANTHROPIC_API_KEY"] === "string";
-  const hasAuthToken = typeof process.env["ANTHROPIC_AUTH_TOKEN"] === "string";
-  const hasOauthToken = typeof process.env["CLAUDE_CODE_OAUTH_TOKEN"] === "string";
+const checkClassifierAuth = (env: EnvMap): CheckResult => {
+  const hasApiKey = typeof env["ANTHROPIC_API_KEY"] === "string";
+  const hasAuthToken = typeof env["ANTHROPIC_AUTH_TOKEN"] === "string";
+  const hasOauthToken = typeof env["CLAUDE_CODE_OAUTH_TOKEN"] === "string";
   if (hasApiKey || hasAuthToken) {
     return {
       name: "classifier billing path",
@@ -828,7 +867,14 @@ export const runDoctor = async (
   out: NodeJS.WritableStream = process.stdout,
 ): Promise<number> => {
   const args = parseArgs(argv);
+  const env = currentProcessEnv();
+  const runtimeConfig = runtimeConfigFromEnv(env);
   const results: CheckResult[] = [];
+  results.push({
+    name: "effective runtime config",
+    status: "INFO",
+    detail: JSON.stringify(summarizeRuntimeConfig(runtimeConfig)),
+  });
 
   results.push(await checkBun());
 
@@ -862,8 +908,8 @@ export const runDoctor = async (
   results.push(checkLedgerEntries(args.cwd));
 
   // Algorithm-aware checks (Phase 5).
-  results.push(checkClassifierEnv());
-  results.push(checkClassifierAuth());
+  results.push(checkClassifierEnv(runtimeConfig));
+  results.push(checkClassifierAuth(env));
   results.push(checkSkillBundle());
   results.push(checkActiveIsa(args.cwd));
 
@@ -876,7 +922,7 @@ export const runDoctor = async (
   const verifyMapCheck = checkVerifyMap(args.cwd);
   if (verifyMapCheck !== null) results.push(verifyMapCheck);
 
-  const otel = await checkOtelEndpoint();
+  const otel = await checkOtelEndpoint(runtimeConfig);
   if (otel !== null) results.push(otel);
 
   if (args.json) {

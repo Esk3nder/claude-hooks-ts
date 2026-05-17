@@ -8,7 +8,7 @@
  * of any other ISAs in the project.
  */
 import { afterEach, beforeEach, describe, expect, test } from "bun:test"
-import { Effect, Schema } from "effect"
+import { Effect, Layer, Schema } from "effect"
 import * as fs from "node:fs"
 import * as os from "node:os"
 import * as path from "node:path"
@@ -19,6 +19,7 @@ import {
   EMPTY_SESSION_STATE,
   type SessionStateRecord,
 } from "../../src/services/session-state.ts"
+import { RuntimeConfigTest, type RuntimeConfig } from "../../src/services/runtime-config.ts"
 
 const decode = (raw: unknown) => Schema.decodeUnknownSync(HookPayload)(raw)
 
@@ -42,6 +43,7 @@ const runPretool = async (
   toolName: string,
   toolInput: unknown,
   state: Partial<SessionStateRecord>,
+  runtimeConfig: Partial<RuntimeConfig> = {},
 ): Promise<{ hookSpecificOutput?: { permissionDecision?: string; permissionDecisionReason?: string } }> => {
   const sid = "eng-1"
   const seed = new Map([[sid, { ...EMPTY_SESSION_STATE, ...state }]])
@@ -53,8 +55,9 @@ const runPretool = async (
     tool_name: toolName,
     tool_input: toolInput,
   })
+  const layer = Layer.mergeAll(SessionStateTest(seed), RuntimeConfigTest(runtimeConfig))
   const out = await Effect.runPromise(
-    handlePreToolUse(payload).pipe(Effect.provide(SessionStateTest(seed))),
+    handlePreToolUse(payload).pipe(Effect.provide(layer)),
   )
   return out as { hookSpecificOutput?: { permissionDecision?: string; permissionDecisionReason?: string } }
 }
@@ -71,14 +74,14 @@ describe("PreToolUse engagement gate — wiring", () => {
       )
       expect(out.hookSpecificOutput?.permissionDecision).toBe("deny")
       expect(out.hookSpecificOutput?.permissionDecisionReason ?? "").toContain(
-        "ALGORITHM engagement is required",
+        "ISA required before this tool can run",
       )
     } finally {
       cleanup()
     }
   })
 
-  test("engagement_required + no ISA + Write to expected ISA path → allowed", async () => {
+  test("engagement_required + no ISA + Write to expected ISA path → explicitly allowed", async () => {
     const { root, cleanup } = stage()
     try {
       const out = await runPretool(
@@ -90,7 +93,10 @@ describe("PreToolUse engagement gate — wiring", () => {
         },
         ENGAGED_STATE,
       )
-      expect(out.hookSpecificOutput?.permissionDecision).not.toBe("deny")
+      expect(out.hookSpecificOutput?.permissionDecision).toBe("allow")
+      expect(out.hookSpecificOutput?.permissionDecisionReason ?? "").toContain(
+        "Scoped ISA artifact write allowed",
+      )
     } finally {
       cleanup()
     }
@@ -133,9 +139,8 @@ describe("PreToolUse engagement gate — wiring", () => {
         ENGAGED_STATE,
       )
       // Engagement gate aligned with Stop: existing project ISA can be
-      // updated. (Once the project ISA exists, the gate also releases on
-      // the next call — see the inert test below.)
-      expect(out.hookSpecificOutput?.permissionDecision).not.toBe("deny")
+      // updated without a human approval prompt.
+      expect(out.hookSpecificOutput?.permissionDecision).toBe("allow")
     } finally {
       cleanup()
     }
@@ -161,6 +166,35 @@ describe("PreToolUse engagement gate — wiring", () => {
       // Engagement gate doesn't fire (expected ISA exists). Default
       // policy passes the write through.
       expect(out.hookSpecificOutput?.permissionDecision).not.toBe("deny")
+    } finally {
+      cleanup()
+    }
+  })
+
+  test("engagement_required + ISA exists + Update to expected ISA path → explicitly allowed", async () => {
+    const { root, cleanup } = stage()
+    try {
+      const isaAbs = path.join(root, EXPECTED_ISA_REL)
+      fs.mkdirSync(path.dirname(isaAbs), { recursive: true })
+      fs.writeFileSync(
+        isaAbs,
+        "---\neffort: advanced\nphase: observe\n---\n\n## Goal\nx\n\n## Criteria\n- [ ] ISC-1\n",
+        "utf-8",
+      )
+      const out = await runPretool(
+        root,
+        "Update",
+        {
+          file_path: isaAbs,
+          old_string: "phase: observe",
+          new_string: "phase: complete",
+        },
+        ENGAGED_STATE,
+      )
+      expect(out.hookSpecificOutput?.permissionDecision).toBe("allow")
+      expect(out.hookSpecificOutput?.permissionDecisionReason ?? "").toContain(
+        "Scoped ISA artifact write allowed",
+      )
     } finally {
       cleanup()
     }
@@ -213,6 +247,53 @@ describe("PreToolUse engagement gate — wiring", () => {
         root,
         "Bash",
         { command: `mkdir -p ${EXPECTED_DIR_REL}` },
+        ENGAGED_STATE,
+      )
+      expect(out.hookSpecificOutput?.permissionDecision).not.toBe("deny")
+    } finally {
+      cleanup()
+    }
+  })
+
+  test("engagement_required + Bash pwd before ISA exists → allowed", async () => {
+    const { root, cleanup } = stage()
+    try {
+      const out = await runPretool(
+        root,
+        "Bash",
+        { command: "pwd" },
+        ENGAGED_STATE,
+      )
+      expect(out.hookSpecificOutput?.permissionDecision).not.toBe("deny")
+    } finally {
+      cleanup()
+    }
+  })
+
+  test("engagement_required + Bash rg inspection before ISA exists → allowed", async () => {
+    const { root, cleanup } = stage()
+    try {
+      const out = await runPretool(
+        root,
+        "Bash",
+        {
+          command: "rg -n \"runGitApply|applyWorkerPatch\" src/services/worker-integration.ts",
+        },
+        ENGAGED_STATE,
+      )
+      expect(out.hookSpecificOutput?.permissionDecision).not.toBe("deny")
+    } finally {
+      cleanup()
+    }
+  })
+
+  test("engagement_required + workers list --json before ISA exists → allowed", async () => {
+    const { root, cleanup } = stage()
+    try {
+      const out = await runPretool(
+        root,
+        "Bash",
+        { command: "./bin/claude-hooks-workers list --json" },
         ENGAGED_STATE,
       )
       expect(out.hookSpecificOutput?.permissionDecision).not.toBe("deny")
@@ -354,7 +435,7 @@ describe("PreToolUse engagement gate — path normalization & traversal", () => 
       expect(out.hookSpecificOutput?.permissionDecision).toBe("deny")
       expect(
         out.hookSpecificOutput?.permissionDecisionReason ?? "",
-      ).toContain("ALGORITHM engagement is required")
+      ).toContain("ISA required before this tool can run")
     } finally {
       cleanup()
       fs.rmSync(escape, { recursive: true, force: true })
@@ -362,19 +443,8 @@ describe("PreToolUse engagement gate — path normalization & traversal", () => 
   })
 })
 
-describe("PreToolUse engagement gate — escape hatch", () => {
-  const ENV_KEY = "CLAUDE_HOOKS_DISABLE_ISA_PRETOOL_GATE"
-  let prior: string | undefined
-  beforeEach(() => {
-    prior = process.env[ENV_KEY]
-  })
-  afterEach(() => {
-    if (prior === undefined) delete process.env[ENV_KEY]
-    else process.env[ENV_KEY] = prior
-  })
-
-  test(`${ENV_KEY}=1 bypasses the gate even when engagement_required && no ISA`, async () => {
-    process.env[ENV_KEY] = "1"
+describe("PreToolUse engagement gate — RuntimeConfig escape hatch", () => {
+  test("isaPretoolGateDisabled bypasses the gate even when engagement_required && no ISA", async () => {
     const { root, cleanup } = stage()
     try {
       const out = await runPretool(
@@ -382,6 +452,7 @@ describe("PreToolUse engagement gate — escape hatch", () => {
         "Write",
         { file_path: path.join(root, "src", "foo.ts"), content: "x" },
         ENGAGED_STATE,
+        { isaPretoolGateDisabled: true },
       )
       // Bypassed — the engagement gate doesn't fire. Default policy is
       // permissive for this path.
@@ -391,8 +462,7 @@ describe("PreToolUse engagement gate — escape hatch", () => {
     }
   })
 
-  test(`${ENV_KEY}=0 (or unset) leaves the gate enforcing`, async () => {
-    process.env[ENV_KEY] = "0"
+  test("default config leaves the gate enforcing", async () => {
     const { root, cleanup } = stage()
     try {
       const out = await runPretool(

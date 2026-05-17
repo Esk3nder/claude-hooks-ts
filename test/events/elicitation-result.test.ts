@@ -8,6 +8,7 @@ import {
   ElicitationsTest,
   elicitationSignature,
 } from "../../src/services/elicitations.ts"
+import { containsRedactedPersistenceMarker } from "../../src/services/event-store.ts"
 import { FsError } from "../../src/schema/errors.ts"
 
 const decode = (raw: unknown) => Schema.decodeUnknownSync(HookPayload)(raw)
@@ -37,10 +38,11 @@ describe("handleElicitationResult", () => {
     const r = await Effect.runPromise(program.pipe(Effect.provide(layer)))
     expect(r.d).toEqual({})
     expect(r.stored?.action).toBe("accept")
-    expect((r.stored?.content as { answer: string }).answer).toBe("yes")
+    expect(containsRedactedPersistenceMarker(r.stored?.content)).toBe(true)
+    expect(JSON.stringify(r.stored?.content)).not.toContain("yes")
   })
 
-  test("SAFE_DEFAULT returned even if record fails", async () => {
+  test("NO_DECISION returned even if record fails", async () => {
     const failing = Layer.succeed(Elicitations, Elicitations.of({
       lookup: () => Effect.succeed(null),
       record: () => Effect.fail(new FsError({ op: "elicitations.record", path: "x", message: "boom" })),

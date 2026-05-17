@@ -89,4 +89,12 @@ describe("HookDecision schemas", () => {
       expect(decoded).toBeDefined()
     })
   }
+
+  test("union rejects populated objects that match no decision shape", () => {
+    const decoded = Schema.decodeUnknownEither(HookDecision)({
+      continue: false,
+      stopReason: "legacy shape",
+    })
+    expect(decoded._tag).toBe("Left")
+  })
 })

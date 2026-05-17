@@ -1,10 +1,23 @@
-import { Context, Effect, Layer, Ref } from "effect"
+import { Context, Effect, Layer, Ref, Schema } from "effect"
 import * as crypto from "node:crypto"
 import * as fs from "node:fs/promises"
 import * as fsSync from "node:fs"
 import * as path from "node:path"
+import { createInterface } from "node:readline"
 import { FsError } from "../schema/errors.ts"
-import { withFileLock } from "./file-lock.ts"
+import {
+  ElicitationRecordSchema,
+  eventStream,
+  PendingElicitationRecordSchema,
+} from "../schema/events.ts"
+import {
+  collectStream,
+  EventStore,
+  EventStoreLive,
+  redactForPersistence,
+  summarizeEventStoreError,
+} from "./event-store.ts"
+import { FileLock, FileLockPlatformLive } from "./file-lock.ts"
 
 export type ElicitationAction = "accept" | "decline" | "cancel"
 
@@ -29,8 +42,25 @@ export interface PendingElicitationRecord {
 
 export const DEFAULT_GC_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000
 
+const signatureInput = (value: unknown): string => {
+  try {
+    const serialized = JSON.stringify(value ?? null)
+    return typeof serialized === "string" ? serialized : String(value)
+  } catch {
+    return String(value)
+  }
+}
+
 export const elicitationSignature = (value: unknown): string =>
-  crypto.createHash("sha1").update(JSON.stringify(value ?? null)).digest("hex").slice(0, 16)
+  crypto.createHash("sha1").update(signatureInput(value)).digest("hex").slice(0, 16)
+
+const sanitizeReplayContent = (content: unknown): unknown =>
+  redactForPersistence(content, "content")
+
+const sanitizeElicitationRecord = (record: ElicitationRecord): ElicitationRecord =>
+  record.content === undefined
+    ? record
+    : { ...record, content: sanitizeReplayContent(record.content) }
 
 export interface ElicitationsApi {
   readonly lookup: (cwd: string, server: string, tool: string, signature: string) => Effect.Effect<ElicitationRecord | null, FsError>
@@ -46,63 +76,18 @@ const ledgerPath = (cwd: string): string => path.join(cwd, ".claude-hooks", "sta
 
 const pendingLedgerPath = (cwd: string): string => path.join(cwd, ".claude-hooks", "state", "elicitations-pending.jsonl")
 
-const parseLine = (line: string): ElicitationRecord | null => {
-  try {
-    const v: unknown = JSON.parse(line)
-    if (typeof v !== "object" || v === null) return null
-    const r = v as { ts?: unknown; server?: unknown; tool?: unknown; signature?: unknown; action?: unknown; content?: unknown; cwd?: unknown }
-    if (typeof r.ts !== "number" || typeof r.server !== "string" || typeof r.tool !== "string" || typeof r.signature !== "string" || typeof r.cwd !== "string" || (r.action !== "accept" && r.action !== "decline" && r.action !== "cancel")) return null
-    return { ts: r.ts, server: r.server, tool: r.tool, signature: r.signature, action: r.action, content: r.content, cwd: r.cwd }
-  } catch { return null }
-}
+const elicitationsStream = (cwd: string) =>
+  eventStream(`elicitations:${cwd}`, ledgerPath(cwd), ElicitationRecordSchema, {
+    maxRecords: 1_000,
+    strictTail: true,
+    redact: sanitizeElicitationRecord,
+  })
 
-const readAllRecords = async (file: string): Promise<ElicitationRecord[]> => {
-  if (!fsSync.existsSync(file)) return []
-  const raw = await fs.readFile(file, "utf8")
-  const out: ElicitationRecord[] = []
-  for (const line of raw.split(/\r?\n/)) {
-    if (line.trim().length === 0) continue
-    const rec = parseLine(line)
-    if (rec !== null) out.push(rec)
-  }
-  return out
-}
-
-const parsePendingLine = (line: string): PendingElicitationRecord | null => {
-  try {
-    const v: unknown = JSON.parse(line)
-    if (typeof v !== "object" || v === null) return null
-    const r = v as { ts?: unknown; sessionId?: unknown; cwd?: unknown; server?: unknown; tool?: unknown; requestSignature?: unknown }
-    if (
-      typeof r.ts !== "number" ||
-      typeof r.sessionId !== "string" ||
-      typeof r.cwd !== "string" ||
-      typeof r.server !== "string" ||
-      typeof r.tool !== "string" ||
-      typeof r.requestSignature !== "string"
-    ) return null
-    return {
-      ts: r.ts,
-      sessionId: r.sessionId,
-      cwd: r.cwd,
-      server: r.server,
-      tool: r.tool,
-      requestSignature: r.requestSignature,
-    }
-  } catch { return null }
-}
-
-const readAllPending = async (file: string): Promise<PendingElicitationRecord[]> => {
-  if (!fsSync.existsSync(file)) return []
-  const raw = await fs.readFile(file, "utf8")
-  const out: PendingElicitationRecord[] = []
-  for (const line of raw.split(/\r?\n/)) {
-    if (line.trim().length === 0) continue
-    const rec = parsePendingLine(line)
-    if (rec !== null) out.push(rec)
-  }
-  return out
-}
+const pendingElicitationsStream = (cwd: string) =>
+  eventStream(`elicitations-pending:${cwd}`, pendingLedgerPath(cwd), PendingElicitationRecordSchema, {
+    maxRecords: 1_000,
+    strictTail: true,
+  })
 
 const latestMatching = (records: ReadonlyArray<ElicitationRecord>, cwd: string, server: string, tool: string, signature: string): ElicitationRecord | null => {
   let latest: ElicitationRecord | null = null
@@ -128,74 +113,160 @@ const latestPending = (
   return latest
 }
 
-export const ElicitationsLive: Layer.Layer<Elicitations> = Layer.succeed(Elicitations, Elicitations.of({
-  lookup: (cwd, server, tool, signature) => Effect.tryPromise({
-    try: async () => latestMatching(await readAllRecords(ledgerPath(cwd)), cwd, server, tool, signature),
-    catch: (cause) => new FsError({ op: "elicitations.lookup", path: ledgerPath(cwd), message: String(cause), cause }),
-  }),
-  record: (cwd, server, tool, signature, action, content) => Effect.tryPromise({
-    try: async () => {
-      const file = ledgerPath(cwd)
-      await fs.mkdir(path.dirname(file), { recursive: true })
-      const rec: ElicitationRecord = { ts: Date.now(), server, tool, signature, action, content, cwd }
-      await withFileLock(file, async () => { await fs.appendFile(file, JSON.stringify(rec) + "\n", "utf8") })
-    },
-    catch: (cause) => new FsError({ op: "elicitations.record", path: ledgerPath(cwd), message: String(cause), cause }),
-  }),
-  recordPending: (sessionId, cwd, server, tool, requestSignature) => Effect.tryPromise({
-    try: async () => {
-      const file = pendingLedgerPath(cwd)
-      await fs.mkdir(path.dirname(file), { recursive: true })
-      const rec: PendingElicitationRecord = { ts: Date.now(), sessionId, cwd, server, tool, requestSignature }
-      await withFileLock(file, async () => { await fs.appendFile(file, JSON.stringify(rec) + "\n", "utf8") })
-    },
-    catch: (cause) => new FsError({ op: "elicitations.recordPending", path: pendingLedgerPath(cwd), message: String(cause), cause }),
-  }),
-  findLatestPending: (sessionId, cwd, server, tool) => Effect.tryPromise({
-    try: async () => latestPending(await readAllPending(pendingLedgerPath(cwd)), sessionId, cwd, server, tool),
-    catch: (cause) => new FsError({ op: "elicitations.findLatestPending", path: pendingLedgerPath(cwd), message: String(cause), cause }),
-  }),
-  gc: (cwd, now, maxAgeMs = DEFAULT_GC_MAX_AGE_MS) => Effect.tryPromise({
-    try: async () => {
-      const file = ledgerPath(cwd)
-      const cutoff = now - maxAgeMs
-      if (fsSync.existsSync(file)) {
-        await withFileLock(file, async () => {
-          const all = await readAllRecords(file)
-          const kept = all.filter((r) => r.cwd !== cwd || r.ts >= cutoff)
-          if (kept.length !== all.length) {
-            await fs.mkdir(path.dirname(file), { recursive: true })
-            const body = kept.map((r) => JSON.stringify(r)).join("\n")
-            await fs.writeFile(file, body.length === 0 ? "" : body + "\n", "utf8")
-          }
-        })
+const eventStoreFsError = (op: string, file: string, cause: unknown): FsError => {
+  const summary = summarizeEventStoreError(cause)
+  return new FsError({
+    op,
+    path: file,
+    message: summary,
+    cause: summary,
+  })
+}
+
+const fsError = (op: string, file: string, cause: unknown): FsError =>
+  cause instanceof FsError
+    ? cause
+    : new FsError({ op, path: file, message: String(cause), cause })
+
+const rewriteJsonlLedger = async <A>(
+  file: string,
+  schema: Schema.Schema<A>,
+  keep: (record: A) => boolean,
+  prepare: (record: A) => A = (record) => record,
+): Promise<void> => {
+  const tmp = `${file}.${process.pid}.${Date.now()}.gc.tmp`
+  let total = 0
+  let kept = 0
+  let changed = false
+  let output: fs.FileHandle | null = null
+  try {
+    const input = fsSync.createReadStream(file, { encoding: "utf8" })
+    output = await fs.open(tmp, "wx")
+    const lines = createInterface({ input, crlfDelay: Infinity })
+    try {
+      for await (const line of lines) {
+        if (line.trim().length === 0) continue
+        total += 1
+        const record = Schema.decodeUnknownSync(schema)(JSON.parse(line))
+        if (!keep(record)) continue
+        kept += 1
+        const serialized = JSON.stringify(prepare(record))
+        changed ||= serialized !== line
+        await output.write(`${serialized}\n`)
       }
-      const pendingFile = pendingLedgerPath(cwd)
-      if (fsSync.existsSync(pendingFile)) {
-        await withFileLock(pendingFile, async () => {
-          const all = await readAllPending(pendingFile)
-          const kept = all.filter((r) => r.cwd !== cwd || r.ts >= cutoff)
-          if (kept.length !== all.length) {
-            await fs.mkdir(path.dirname(pendingFile), { recursive: true })
-            const body = kept.map((r) => JSON.stringify(r)).join("\n")
-            await fs.writeFile(pendingFile, body.length === 0 ? "" : body + "\n", "utf8")
+    } finally {
+      await output.close()
+      output = null
+    }
+    if (kept === total && !changed) {
+      await fs.unlink(tmp)
+      return
+    }
+    await fs.rename(tmp, file)
+  } catch (cause) {
+    if (output !== null) {
+      await output.close().catch(() => undefined)
+    }
+    await fs.rm(tmp, { force: true }).catch(() => undefined)
+    throw cause
+  }
+}
+
+export const ElicitationsLiveBase: Layer.Layer<Elicitations, never, EventStore | FileLock> = Layer.effect(
+  Elicitations,
+  Effect.gen(function* () {
+    const store = yield* EventStore
+    const locks = yield* FileLock
+    const readRecent = (cwd: string) => collectStream(store.tail(elicitationsStream(cwd), 1_000))
+    const readRecentPending = (cwd: string) => collectStream(store.tail(pendingElicitationsStream(cwd), 1_000))
+    return Elicitations.of({
+      lookup: (cwd, server, tool, signature) =>
+        readRecent(cwd).pipe(
+          Effect.map((records) => latestMatching(records, cwd, server, tool, signature)),
+          Effect.mapError((cause) => eventStoreFsError("elicitations.lookup", ledgerPath(cwd), cause)),
+        ),
+      record: (cwd, server, tool, signature, action, content) => {
+        const rec: ElicitationRecord = { ts: Date.now(), server, tool, signature, action, content, cwd }
+        return store.append(elicitationsStream(cwd), rec).pipe(
+          Effect.mapError((cause) => eventStoreFsError("elicitations.record", ledgerPath(cwd), cause)),
+        )
+      },
+      recordPending: (sessionId, cwd, server, tool, requestSignature) => {
+        const rec: PendingElicitationRecord = { ts: Date.now(), sessionId, cwd, server, tool, requestSignature }
+        return store.append(pendingElicitationsStream(cwd), rec).pipe(
+          Effect.mapError((cause) => eventStoreFsError("elicitations.recordPending", pendingLedgerPath(cwd), cause)),
+        )
+      },
+      findLatestPending: (sessionId, cwd, server, tool) =>
+        readRecentPending(cwd).pipe(
+          Effect.map((records) => latestPending(records, sessionId, cwd, server, tool)),
+          Effect.mapError((cause) => eventStoreFsError("elicitations.findLatestPending", pendingLedgerPath(cwd), cause)),
+        ),
+      gc: (cwd, now, maxAgeMs = DEFAULT_GC_MAX_AGE_MS) => Effect.tryPromise({
+        try: async () => {
+          const file = ledgerPath(cwd)
+          const cutoff = now - maxAgeMs
+          if (fsSync.existsSync(file)) {
+            await Effect.runPromise(
+              locks.withLock(
+                file,
+                Effect.tryPromise({
+                  try: async () => {
+                    if (!fsSync.existsSync(file)) return
+                    await rewriteJsonlLedger(
+                      file,
+                      ElicitationRecordSchema,
+                      (r) => r.cwd !== cwd || r.ts >= cutoff,
+                      sanitizeElicitationRecord,
+                    )
+                  },
+                  catch: (cause) => fsError("elicitations.gc", file, cause),
+                }),
+              ).pipe(Effect.mapError((cause) => fsError("elicitations.gc", file, cause))),
+            )
           }
-        })
-      }
-    },
-    catch: (cause) => new FsError({ op: "elicitations.gc", path: ledgerPath(cwd), message: String(cause), cause }),
+          const pendingFile = pendingLedgerPath(cwd)
+          if (fsSync.existsSync(pendingFile)) {
+            await Effect.runPromise(
+              locks.withLock(
+                pendingFile,
+                Effect.tryPromise({
+                  try: async () => {
+                    if (!fsSync.existsSync(pendingFile)) return
+                    await rewriteJsonlLedger(
+                      pendingFile,
+                      PendingElicitationRecordSchema,
+                      (r) => r.cwd !== cwd || r.ts >= cutoff,
+                    )
+                  },
+                  catch: (cause) => fsError("elicitations.gc", pendingFile, cause),
+                }),
+              ).pipe(Effect.mapError((cause) => fsError("elicitations.gc", pendingFile, cause))),
+            )
+          }
+        },
+        catch: (cause) => new FsError({ op: "elicitations.gc", path: ledgerPath(cwd), message: String(cause), cause }),
+      }),
+    })
   }),
-}))
+)
+
+export const ElicitationsLive: Layer.Layer<Elicitations> =
+  Layer.provide(ElicitationsLiveBase, Layer.mergeAll(EventStoreLive, FileLockPlatformLive))
 
 export const ElicitationsTest = (
   initial: ReadonlyArray<ElicitationRecord> = [],
   initialPending: ReadonlyArray<PendingElicitationRecord> = [],
 ): Layer.Layer<Elicitations> => Layer.effect(Elicitations, Effect.gen(function* () {
-  const ref = yield* Ref.make<ElicitationRecord[]>([...initial])
+  const ref = yield* Ref.make<ElicitationRecord[]>(initial.map(sanitizeElicitationRecord))
   const pendingRef = yield* Ref.make<PendingElicitationRecord[]>([...initialPending])
   return Elicitations.of({
     lookup: (cwd, server, tool, signature) => Ref.get(ref).pipe(Effect.map((arr) => latestMatching(arr, cwd, server, tool, signature))),
-    record: (cwd, server, tool, signature, action, content) => Ref.update(ref, (arr) => [...arr, { ts: Date.now(), server, tool, signature, action, content, cwd }]),
+    record: (cwd, server, tool, signature, action, content) =>
+      Ref.update(ref, (arr) => [
+        ...arr,
+        sanitizeElicitationRecord({ ts: Date.now(), server, tool, signature, action, content, cwd }),
+      ]),
     recordPending: (sessionId, cwd, server, tool, requestSignature) => Ref.update(pendingRef, (arr) => [...arr, { ts: Date.now(), sessionId, cwd, server, tool, requestSignature }]),
     findLatestPending: (sessionId, cwd, server, tool) => Ref.get(pendingRef).pipe(Effect.map((arr) => latestPending(arr, sessionId, cwd, server, tool))),
     gc: (cwd, now, maxAgeMs = DEFAULT_GC_MAX_AGE_MS) => Effect.all([

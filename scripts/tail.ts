@@ -11,6 +11,9 @@ import { Effect, Stream } from "effect"
 import * as fs from "node:fs"
 import * as fsP from "node:fs/promises"
 import * as path from "node:path"
+import { writeCliStderr, writeCliStdout } from "./io.ts"
+
+const INITIAL_TAIL_MAX_BYTES = 1024 * 1024
 
 interface Args {
   readonly session: string | null
@@ -69,6 +72,56 @@ interface FileTail {
   offset: number
 }
 
+const isNotFound = (cause: unknown): boolean =>
+  typeof cause === "object" &&
+  cause !== null &&
+  (cause as { code?: unknown }).code === "ENOENT"
+
+const nonEmptyLines = (raw: string): string[] =>
+  raw.split(/\r?\n/).filter((line) => line.trim().length > 0)
+
+const readInitialTail = async (file: string): Promise<{ readonly lines: string[]; readonly offset: number }> => {
+  let stat: fs.Stats
+  try {
+    stat = await fsP.stat(file)
+  } catch (cause) {
+    if (isNotFound(cause)) return { lines: [], offset: 0 }
+    throw cause
+  }
+  const offset = stat.size
+  if (!stat.isFile() || stat.size <= 0) return { lines: [], offset }
+  const length = Math.min(stat.size, INITIAL_TAIL_MAX_BYTES)
+  const start = Math.max(0, stat.size - length)
+  const handle = await fsP.open(file, "r")
+  try {
+    const buffer = Buffer.alloc(length)
+    let bytesReadTotal = 0
+    while (bytesReadTotal < length) {
+      const { bytesRead } = await handle.read(
+        buffer,
+        bytesReadTotal,
+        length - bytesReadTotal,
+        start + bytesReadTotal,
+      )
+      if (bytesRead === 0) break
+      bytesReadTotal += bytesRead
+    }
+    let raw = buffer.subarray(0, bytesReadTotal).toString("utf8")
+    if (start > 0) {
+      const previous = Buffer.alloc(1)
+      const { bytesRead } = await handle.read(previous, 0, 1, start - 1)
+      const startsOnLineBoundary = bytesRead === 1 && (previous[0] === 0x0a || previous[0] === 0x0d)
+      if (!startsOnLineBoundary) {
+        const firstLineEnd = raw.indexOf("\n")
+        raw = firstLineEnd >= 0 ? raw.slice(firstLineEnd + 1) : ""
+      }
+    }
+    return { lines: nonEmptyLines(raw), offset }
+  } finally {
+    await handle.close()
+  }
+}
+
 const tailIterator = async function* (
   args: Args,
   pollMs: number,
@@ -86,24 +139,25 @@ const tailIterator = async function* (
   }
   await refreshFiles()
 
-  // Initial: emit existing contents.
+  // Initial: emit a bounded suffix of existing contents.
   for (const t of tails) {
     if (!fs.existsSync(t.file)) continue
-    const data = await fsP.readFile(t.file, "utf8")
-    t.offset = Buffer.byteLength(data, "utf8")
-    for (const line of data.split(/\r?\n/)) {
-      if (line.trim().length > 0) yield line
-    }
+    const initial = await readInitialTail(t.file)
+    t.offset = initial.offset
+    for (const line of initial.lines) yield line
   }
 
   // Follow.
   while (!abortSignal.aborted) {
-    await new Promise((r) => setTimeout(r, pollMs))
+    await Effect.runPromise(Effect.sleep(`${pollMs} millis`))
     if (abortSignal.aborted) break
     await refreshFiles()
     for (const t of tails) {
       if (!fs.existsSync(t.file)) continue
       const stat = await fsP.stat(t.file)
+      if (stat.size < t.offset) {
+        t.offset = 0
+      }
       if (stat.size <= t.offset) continue
       const fd = await fsP.open(t.file, "r")
       try {
@@ -111,9 +165,7 @@ const tailIterator = async function* (
         const buf = Buffer.alloc(len)
         await fd.read(buf, 0, len, t.offset)
         t.offset = stat.size
-        for (const line of buf.toString("utf8").split(/\r?\n/)) {
-          if (line.trim().length > 0) yield line
-        }
+        for (const line of nonEmptyLines(buf.toString("utf8"))) yield line
       } finally {
         await fd.close()
       }
@@ -193,15 +245,25 @@ export const runTail = (
   args: Args,
   opts: { pollMs?: number; color?: boolean } = {},
 ): Effect.Effect<void> =>
-  Effect.gen(function* () {
+  Effect.scoped(Effect.gen(function* () {
     const pollMs = opts.pollMs ?? 200
     const color = opts.color ?? Boolean(process.stdout.isTTY)
     const abortSignal = { aborted: false }
-    const onSigint = () => {
-      abortSignal.aborted = true
-    }
-    process.on("SIGINT", onSigint)
-    process.on("SIGTERM", onSigint)
+    yield* Effect.acquireRelease(
+      Effect.sync(() => {
+        const onSignal = () => {
+          abortSignal.aborted = true
+        }
+        process.on("SIGINT", onSignal)
+        process.on("SIGTERM", onSignal)
+        return onSignal
+      }),
+      (onSignal) =>
+        Effect.sync(() => {
+          process.removeListener("SIGINT", onSignal)
+          process.removeListener("SIGTERM", onSignal)
+        }),
+    )
 
     const stream = Stream.fromAsyncIterable(
       tailIterator(args, pollMs, abortSignal),
@@ -221,15 +283,20 @@ export const runTail = (
       }),
       Stream.runForEach((entry) =>
         Effect.sync(() => {
-          process.stdout.write(prettyPrint(entry, color) + "\n")
+          writeCliStdout(prettyPrint(entry, color) + "\n")
         }),
       ),
     )
 
-    yield* stream.pipe(Effect.catchAll(() => Effect.void))
-    process.removeListener("SIGINT", onSigint)
-    process.removeListener("SIGTERM", onSigint)
-  })
+    yield* stream.pipe(
+      Effect.catchAll((error) =>
+        Effect.sync(() => {
+          writeCliStderr(`[claude-hooks-tail] ${error.message}\n`)
+          process.exitCode = 1
+        }),
+      ),
+    )
+  }))
 
 // Only run when invoked directly (allows clean import in tests).
 const isMain = (() => {

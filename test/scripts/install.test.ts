@@ -40,9 +40,9 @@ afterEach(() => {
 const sinkAsStream = (s: StringSink) => s as unknown as NodeJS.WritableStream;
 
 describe("install script (VAL-M5-004)", () => {
-  test("dry-run on missing target prints diff and does not create file", () => {
+  test("dry-run on missing target prints diff and does not create file", async () => {
     const out = new StringSink();
-    const code = runInstall(
+    const code = await runInstall(
       ["--dry-run", "--target", target, "--install-root", installRoot],
       sinkAsStream(out),
     );
@@ -54,9 +54,9 @@ describe("install script (VAL-M5-004)", () => {
     expect(txt).toContain("'/opt/claude-hooks-ts/bin/claude-hook'");
   });
 
-  test("--apply writes settings atomically", () => {
+  test("--apply writes settings atomically", async () => {
     const out = new StringSink();
-    const code = runInstall(
+    const code = await runInstall(
       ["--apply", "--target", target, "--install-root", installRoot],
       sinkAsStream(out),
     );
@@ -75,10 +75,10 @@ describe("install script (VAL-M5-004)", () => {
     }
   });
 
-  test("--apply refuses to overwrite malformed existing settings", () => {
+  test("--apply refuses to overwrite malformed existing settings", async () => {
     fs.writeFileSync(target, "{ not json", "utf8");
     const out = new StringSink();
-    const code = runInstall(
+    const code = await runInstall(
       ["--apply", "--target", target, "--install-root", installRoot],
       sinkAsStream(out),
     );
@@ -87,10 +87,10 @@ describe("install script (VAL-M5-004)", () => {
     expect(stripAnsi(out.buf)).toContain("settings.json is invalid JSON");
   });
 
-  test("hook command quotes install roots with spaces", () => {
+  test("hook command quotes install roots with spaces", async () => {
     const rootWithSpaces = path.join(tmpDir, "root with spaces");
     const out = new StringSink();
-    const code = runInstall(
+    const code = await runInstall(
       [
         "--apply",
         "--no-binary",
@@ -113,13 +113,13 @@ describe("install script (VAL-M5-004)", () => {
     ]);
   });
 
-  test("--apply twice is idempotent (no duplicate hook entries)", () => {
+  test("--apply twice is idempotent (no duplicate hook entries)", async () => {
     const noop = new StringSink();
-    runInstall(
+    await runInstall(
       ["--apply", "--target", target, "--install-root", installRoot],
       sinkAsStream(noop),
     );
-    runInstall(
+    await runInstall(
       ["--apply", "--target", target, "--install-root", installRoot],
       sinkAsStream(noop),
     );
@@ -130,13 +130,13 @@ describe("install script (VAL-M5-004)", () => {
     expect(matchers.length).toBe(1);
   });
 
-  test("apply over an existing file creates a .bak.<ts> backup", () => {
+  test("apply over an existing file creates a .bak.<ts> backup", async () => {
     fs.writeFileSync(
       target,
       JSON.stringify({ env: { X: "1" } }, null, 2),
       "utf8",
     );
-    runInstall(
+    await runInstall(
       ["--apply", "--target", target, "--install-root", installRoot],
       sinkAsStream(new StringSink()),
     );
@@ -144,7 +144,7 @@ describe("install script (VAL-M5-004)", () => {
     expect(files.some((f) => f.includes(".bak."))).toBe(true);
   });
 
-  test("preserves unrelated existing hooks/keys", () => {
+  test("preserves unrelated existing hooks/keys", async () => {
     const initial = {
       env: { FOO: "bar" },
       hooks: {
@@ -154,7 +154,7 @@ describe("install script (VAL-M5-004)", () => {
       },
     };
     fs.writeFileSync(target, JSON.stringify(initial, null, 2), "utf8");
-    runInstall(
+    await runInstall(
       ["--apply", "--target", target, "--install-root", installRoot],
       sinkAsStream(new StringSink()),
     );
@@ -174,8 +174,8 @@ describe("install script (VAL-M5-004)", () => {
     expect(hasOurs).toBe(true);
   });
 
-  test("--uninstall removes our entries but keeps others", () => {
-    runInstall(
+  test("--uninstall removes our entries but keeps others", async () => {
+    await runInstall(
       ["--apply", "--target", target, "--install-root", installRoot],
       sinkAsStream(new StringSink()),
     );
@@ -183,7 +183,7 @@ describe("install script (VAL-M5-004)", () => {
       hooks: Record<string, unknown>;
     };
     expect(before.hooks["PreToolUse"]).toBeDefined();
-    runInstall(
+    await runInstall(
       [
         "--apply",
         "--uninstall",
@@ -206,7 +206,7 @@ const REPO_ROOT = path.resolve(import.meta.dir, "..", "..");
 describe("install post-apply round-trip (M12-B)", () => {
   test("happy path: --apply then verifyDispatcherRoundtrip succeeds with real shim", async () => {
     const out = new StringSink();
-    const result = runInstallDetailed(
+    const result = await runInstallDetailed(
       ["--apply", "--target", target, "--install-root", REPO_ROOT],
       sinkAsStream(out),
     );
@@ -233,7 +233,7 @@ describe("install post-apply round-trip (M12-B)", () => {
     const fakeRoot = path.join(tmpDir, "fake-root");
     fs.mkdirSync(path.join(fakeRoot, "bin"), { recursive: true });
     const out = new StringSink();
-    const result = runInstallDetailed(
+    const result = await runInstallDetailed(
       ["--apply", "--target", target, "--install-root", fakeRoot],
       sinkAsStream(out),
     );
@@ -262,7 +262,7 @@ describe("install post-apply round-trip (M12-B)", () => {
     const fakeRoot = path.join(tmpDir, "fake-root");
     fs.mkdirSync(path.join(fakeRoot, "bin"), { recursive: true });
     const out = new StringSink();
-    const result = runInstallDetailed(
+    const result = await runInstallDetailed(
       ["--apply", "--target", target, "--install-root", fakeRoot],
       sinkAsStream(out),
     );

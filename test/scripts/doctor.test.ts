@@ -114,14 +114,17 @@ describe("doctor CLI", () => {
 
   test("FAIL when wired hook command points at missing script", async () => {
     const target = path.join(tmpDir, "settings.json");
-    writeSettingsWithDispatcher(
-      target,
-      path.join(tmpDir, "does-not-exist", "claude-hook"),
-    );
+    const missingPath = path.join(tmpDir, "does-not-exist", "claude-hook");
+    writeSettingsWithDispatcher(target, missingPath);
     const res = await runDoctor(["--target", target, "--cwd", tmpDir]);
     const text = stripAnsi(res.stdout);
     expect(text).toContain("[FAIL] wired hook commands resolve");
     expect(text).toContain("missing");
+    // Diagnostic must include the raw command so parser/writer skew is obvious
+    // from one line of output (regression guard against pre-fix behavior where
+    // doctor only showed the parsed path).
+    expect(text).toContain("raw command:");
+    expect(text).toContain(missingPath);
     expect(res.code).toBe(1);
   });
 
@@ -170,6 +173,7 @@ describe("doctor CLI", () => {
     }>;
     expect(Array.isArray(parsed)).toBe(true);
     const names = parsed.map((r) => r.name);
+    expect(names).toContain("effective runtime config");
     expect(names).toContain("bun on PATH");
     expect(names).toContain("settings.json parses");
     expect(names).toContain("dispatcher round-trip");
@@ -213,6 +217,23 @@ describe("doctor CLI", () => {
     expect(res.code).toBe(1);
   }, 15000);
 
+  test("OTel check redacts credentials, query strings, and token-like path segments", async () => {
+    const target = path.join(tmpDir, "settings.json");
+    const realShim = path.join(REPO_ROOT, "bin", "claude-hook");
+    writeSettingsWithDispatcher(target, realShim);
+    const res = await runDoctor(["--target", target, "--cwd", tmpDir], {
+      OTEL_EXPORTER_OTLP_ENDPOINT:
+        "http://otel-user:TOP_SECRET_PASS@127.0.0.1:1/v1/TOP_SECRET_PATH_TOKEN_12345?api_key=TOP_SECRET_QUERY",
+    });
+    const text = stripAnsi(res.stdout);
+    expect(text).toContain("[FAIL] OTel endpoint");
+    expect(text).toContain("http://127.0.0.1:1/v1/[redacted]");
+    expect(text).not.toContain("TOP_SECRET");
+    expect(text).not.toContain("api_key");
+    expect(text).not.toContain("otel-user");
+    expect(res.code).toBe(1);
+  }, 15000);
+
   test("INFO ledger entries when ledger.jsonl exists", async () => {
     const stateDir = path.join(tmpDir, ".claude-hooks", "state", "session-x");
     fs.mkdirSync(stateDir, { recursive: true });
@@ -229,6 +250,25 @@ describe("doctor CLI", () => {
     expect(text).toContain("[INFO] last 5 ledger entries");
     expect(text).toContain("1 ledgers");
     expect(text).toContain("2 entries");
+    expect(res.code).toBe(0);
+  }, 15000);
+
+  test("INFO ledger entries samples a bounded tail without echoing old huge lines", async () => {
+    const stateDir = path.join(tmpDir, ".claude-hooks", "state", "session-x");
+    fs.mkdirSync(stateDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(stateDir, "ledger.jsonl"),
+      `${JSON.stringify({ event: "old", summary: `TOP_SECRET_OLD_${"x".repeat(80 * 1024)}` })}\n${JSON.stringify({ event: "new", summary: "visible tail" })}\n`,
+      "utf8",
+    );
+    const target = path.join(tmpDir, "settings.json");
+    const realShim = path.join(REPO_ROOT, "bin", "claude-hook");
+    writeSettingsWithDispatcher(target, realShim);
+    const res = await runDoctor(["--target", target, "--cwd", tmpDir]);
+    const text = stripAnsi(res.stdout);
+    expect(text).toContain("[INFO] last 5 ledger entries");
+    expect(text).toContain("visible tail");
+    expect(text).not.toContain("TOP_SECRET_OLD");
     expect(res.code).toBe(0);
   }, 15000);
 

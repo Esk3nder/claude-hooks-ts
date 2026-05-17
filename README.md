@@ -50,7 +50,15 @@ bun run build:bin                 # produces dist/claude-hook-<platform>-<arch>
 claude-hooks-install --apply      # auto-detects the binary, wires it directly
 ```
 
-Cuts dispatcher cold-start by ~3x, paid on every tool call. On macOS the installer falls back to `bun run` automatically since unsigned compiled binaries are killed by Gatekeeper. Force the `bun run` path anywhere with `--no-binary`.
+Cuts dispatcher cold-start by ~3x, paid on every tool call.
+
+On macOS the compiled binary is unsigned and Gatekeeper may quarantine it, in which case every wired hook silently no-ops and `claude-hooks-doctor` reports `(missing)`. If that happens, switch to the bash shim:
+
+```bash
+claude-hooks-install --no-binary --apply
+```
+
+The shim (`bin/claude-hook`) is a small wrapper that `exec bun run`s the dispatcher and is not subject to Gatekeeper. You can also use `--no-binary` proactively on macOS to avoid the compile step. Linux installs default to the compiled binary.
 
 ---
 
@@ -59,6 +67,7 @@ Cuts dispatcher cold-start by ~3x, paid on every tool call. On macOS the install
 A few of the things wired into specific events:
 
 - **`PreToolUse`** — denies edits to `protected-paths.yaml` entries, refuses writes to `generated-files.yaml`, blocks destructive shell patterns, gates ISA-required sessions to writing the spec first.
+- **`PreToolUse` + `SubagentStart` / `SubagentStop`** — turns marked `Task` / `Agent` launches into bounded workers by injecting scope/output contracts and requiring structured, evidenced output while leaving bare subagents alone.
 - **`UserPromptSubmit`** — classifies the prompt's cognitive mode (MINIMAL / NATIVE / ALGORITHM with tier E1–E5), records the classification, and injects it as `additionalContext` so the model enters the right depth. Conservative fail-safe to ALGORITHM E3 on any error.
 - **`PostToolUse`** — runs your `.claude-hooks/probes.ts` (hot-loaded) against the active ISA; on pass, flips `[ ]` to `[x]` and auto-commits.
 - **`Stop`** — blocks when the active ISA is `phase: complete` but tier-required sections are missing or ISCs are unchecked. Runs declarative regenerate rules when source files changed.
@@ -69,7 +78,7 @@ A few of the things wired into specific events:
 - **`WorktreeCreate` / `WorktreeRemove`** — mirrors `.claude-hooks/` config into worktrees; archives ledger and completed ISAs back to the main repo on removal.
 - **`Elicitation` / `ElicitationResult`** — caches MCP elicitation answers and auto-replays them.
 
-Full per-event reference (inputs, outputs, behavior, edge cases) is in [`docs/HOOK-EVENTS.md`](./docs/HOOK-EVENTS.md).
+Full per-event reference (inputs, outputs, behavior, edge cases) is in [`docs/HOOK-EVENTS.md`](./docs/HOOK-EVENTS.md). The worker-control-plane design is in [`docs/WORKER-ARCHITECTURE.md`](./docs/WORKER-ARCHITECTURE.md).
 
 ---
 
@@ -169,10 +178,10 @@ Tracing is fully no-op when the env var is unset — zero import cost. Nothing i
 
 The dispatcher is designed to fail closed in the right direction:
 
-- **Schema decode fails** → `SAFE_DEFAULT` (no block, no rewrite), exit 0.
-- **Handler throws or times out** (4s default; 30s for `UserPromptSubmit`) → `SAFE_DEFAULT`.
+- **Schema decode fails** → hook-safe fallback, exit 0. Malformed `PreToolUse` asks instead of silently allowing.
+- **Handler throws or times out** (4s default; 30s for `UserPromptSubmit`) → `SAFE_DEFAULT` with typed failure diagnostics.
 - **Classifier subprocess errors** → fail-safe to ALGORITHM E3 (over-escalate, never under-escalate).
-- **Probes fail to load or throw** → ISC stays `[ ]`, no commit, stderr logged.
+- **Probes fail to load or throw** → ISC stays `[ ]`, no commit, warning logged.
 - **Checkpoint allowlist missing or repo not in it** → no commit. Ever.
 
 The auto-checkpoint never resets, reverts, or force-pushes. It runs `git add` on the ISA and the touched files only, and commits with `--no-verify --no-gpg-sign` to a 5-second timeout.

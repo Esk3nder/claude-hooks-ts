@@ -2,9 +2,11 @@ import { Effect } from "effect"
 import * as path from "node:path"
 import type { HookPayload } from "../schema/payloads.ts"
 import type { HookDecision } from "../schema/decisions.ts"
-import { SAFE_DEFAULT } from "../schema/decisions.ts"
-import { FileSystem } from "../services/filesystem.ts"
+import { NO_DECISION } from "../schema/decisions.ts"
+import { eventStream, NotificationRecordSchema } from "../schema/events.ts"
+import { EventStore, summarizeEventStoreError } from "../services/event-store.ts"
 import { Project } from "../services/project.ts"
+import { logWarning } from "../services/diagnostics.ts"
 
 interface NotificationLedgerEntry {
   readonly session_id: string
@@ -15,15 +17,15 @@ interface NotificationLedgerEntry {
 
 /**
  * Notification — appends a ledger entry under <cwd>/.claude-hooks/state/notifications.jsonl
- * for future correlation (e.g. idle/waiting nudges). Always returns SAFE_DEFAULT.
- * Uses withLock to prevent interleaved writes from concurrent hook processes.
+ * for future correlation (e.g. idle/waiting nudges). Always returns NO_DECISION.
+ * EventStore owns locking, schema decode, redaction, and line caps.
  */
 export const handleNotification = (
   payload: HookPayload,
-): Effect.Effect<HookDecision, never, FileSystem | Project> =>
+): Effect.Effect<HookDecision, never, EventStore | Project> =>
   Effect.gen(function* () {
-    if (payload._tag !== "Notification") return SAFE_DEFAULT
-    const fs = yield* FileSystem
+    if (payload._tag !== "Notification") return NO_DECISION
+    const eventStore = yield* EventStore
     const project = yield* Project
     const root = yield* project.root()
     const ledgerPath = path.join(
@@ -38,30 +40,12 @@ export const handleNotification = (
       message: payload.message,
       ts: new Date().toISOString(),
     }
-    const append = Effect.gen(function* () {
-      const existsE = yield* Effect.either(fs.exists(ledgerPath))
-      const prior =
-        existsE._tag === "Right" && existsE.right
-          ? yield* fs
-              .readFile(ledgerPath)
-              .pipe(Effect.catchAll(() => Effect.succeed("")))
-          : ""
-      const next =
-        (prior.length === 0 || prior.endsWith("\n") ? prior : prior + "\n") +
-        JSON.stringify(entry) +
-        "\n"
-      yield* fs.writeFile(ledgerPath, next)
-    })
-    yield* fs
-      .withLock(ledgerPath, append)
+    yield* eventStore
+      .append(eventStream("notifications", ledgerPath, NotificationRecordSchema, { maxRecords: 1_000 }), entry)
       .pipe(
         Effect.catchAll((err) =>
-          Effect.sync(() => {
-            process.stderr.write(
-              `notification: ledger write failed: ${String(err).slice(0, 120)}\n`,
-            )
-          }),
+          logWarning(`notification: ledger write failed: ${summarizeEventStoreError(err)}`),
         ),
       )
-    return SAFE_DEFAULT
+    return NO_DECISION
   })

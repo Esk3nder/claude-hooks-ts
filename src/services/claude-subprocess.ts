@@ -1,8 +1,8 @@
 /**
  * The single sanctioned chokepoint for spawning the `claude` CLI from inside
- * this package. Mirrors `the classifier` lines 104-145 byte-for-byte
- * on env scrubbing, spawn library (node child_process), event-listener
- * accumulation, SIGTERM-on-timeout pattern, and result shape.
+ * this package. It delegates all process lifetime behavior to CommandRunner so
+ * env scrubbing, timeout, stdout/stderr caps, and process cleanup remain
+ * centralized.
  *
  * Why this file exists: Anthropic's credential precedence chain
  * (https://code.claude.com/docs/en/authentication#authentication-precedence)
@@ -23,8 +23,8 @@
  */
 
 import { Context, Effect, Layer } from "effect"
-import { spawn } from "node:child_process"
 import { ShellError } from "../schema/errors.ts"
+import { CommandRunner } from "./command-runner.ts"
 
 export interface ClaudeSpawnOptions {
   /** Stdin payload (typically the user prompt). */
@@ -33,6 +33,8 @@ export interface ClaudeSpawnOptions {
   readonly timeoutMs: number
   /** Optional cwd override. */
   readonly cwd?: string
+  /** Additional sanitized environment for hook correlation. */
+  readonly env?: Record<string, string | undefined>
 }
 
 export interface ClaudeSpawnResult {
@@ -79,181 +81,36 @@ export const scrubClaudeEnv = (
   return out
 }
 
-/**
- * Live impl mirroring the classifier spawn pattern (lines 104-145):
- * - node child_process.spawn (NOT Bun.spawn — match the documented behavior)
- * - stdin written then ended
- * - stdout/stderr accumulated via 'data' event listeners
- * - timeout via setTimeout firing proc.kill('SIGTERM')
- * - resolve on close, with success/error/exitCode mapped
- */
-const liveImpl: ClaudeSubprocessApi = {
-  spawn: (args, opts) =>
-    Effect.tryPromise({
-      try: async () =>
-        new Promise<ClaudeSpawnResult>((resolve) => {
-          const startedAt = Date.now()
-          const env = scrubClaudeEnv(process.env)
-          const proc = spawn("claude", [...args], {
-            env,
-            stdio: ["pipe", "pipe", "pipe"],
-            ...(opts.cwd !== undefined ? { cwd: opts.cwd } : {}),
-          })
-
-          let stdout = ""
-          let stderr = ""
-          let timedOut = false
-          let resolved = false
-          let sigkillTimer: NodeJS.Timeout | undefined
-
-          /**
-           * Detach all listeners so the proc handle is GC-eligible after we
-           * resolve. Without this, a zombie process (one that ignores SIGTERM
-           * AND SIGKILL — e.g. uninterruptible sleep on a network socket)
-           * would keep the listener closures (and our captured `stdout`
-           * buffers) alive for the lifetime of the parent process.
-           */
-          const detachListeners = (): void => {
-            try {
-              proc.stdout?.removeAllListeners()
-            } catch {
-              /* ignore */
-            }
-            try {
-              proc.stderr?.removeAllListeners()
-            } catch {
-              /* ignore */
-            }
-            try {
-              proc.removeAllListeners("close")
-            } catch {
-              /* ignore */
-            }
-            try {
-              proc.removeAllListeners("error")
-            } catch {
-              /* ignore */
-            }
-          }
-
-          const finish = (
-            result: ClaudeSpawnResult,
-            opts: { readonly clearKillTimer?: boolean } = {
-              clearKillTimer: true,
-            },
-          ): void => {
-            if (resolved) return
-            resolved = true
-            if (
-              opts.clearKillTimer !== false &&
-              sigkillTimer !== undefined
-            ) {
-              clearTimeout(sigkillTimer)
-            }
-            detachListeners()
-            resolve(result)
-          }
-
-          // Write stdin then close — implements the classifier.
-          if (proc.stdin) {
-            try {
-              if (opts.stdin.length > 0) proc.stdin.write(opts.stdin)
-              proc.stdin.end()
-            } catch {
-              // Best-effort — close handler still fires.
-            }
-          }
-
-          proc.stdout?.on("data", (data: Buffer) => {
-            stdout += data.toString()
-          })
-          proc.stderr?.on("data", (data: Buffer) => {
-            stderr += data.toString()
-          })
-
-          // implements the classifier: timeout fires SIGTERM AND resolves
-          // immediately rather than waiting for the killed process to exit.
-          // B5: schedule a SIGKILL fallback 1s after SIGTERM in case the
-          // child ignores SIGTERM (e.g. caught and swallowed). The fallback
-          // is fire-and-forget — we've already resolved with timedOut: true.
-          const timeoutId = setTimeout(() => {
-            timedOut = true
-            try {
-              proc.kill("SIGTERM")
-            } catch {
-              // ignore
-            }
-            sigkillTimer = setTimeout(() => {
-              try {
-                // B7 fix: `proc.killed` is true the moment ANY signal is
-                // delivered (incl. an ignored SIGTERM) — checking it would
-                // skip SIGKILL on the exact zombies we're trying to catch.
-                // The right "still running" check is exitCode AND signalCode
-                // both null: process hasn't exited and hasn't been
-                // signal-terminated. Sending SIGKILL to an already-exited
-                // PID could (rarely) hit a recycled PID, so skip when we
-                // can confirm the process is gone.
-                if (proc.exitCode === null && proc.signalCode === null) {
-                  proc.kill("SIGKILL")
-                }
-              } catch {
-                // ignore — process may already be gone
-              }
-            }, 1_000)
-            // Don't keep the parent process alive waiting for the SIGKILL
-            // timer if we're shutting down.
-            if (typeof sigkillTimer.unref === "function") sigkillTimer.unref()
-            finish(
-              {
-                stdout,
-                stderr,
-                exitCode: -1,
-                latencyMs: Date.now() - startedAt,
-                timedOut: true,
-              },
-              { clearKillTimer: false },
-            )
-          }, opts.timeoutMs)
-
-          // implements the classifier: on close, emit success or non-zero
-          // exit. Time-out path already resolved above.
-          proc.on("close", (code) => {
-            clearTimeout(timeoutId)
-            if (timedOut) return
-            finish({
-              stdout,
-              stderr,
-              exitCode: typeof code === "number" ? code : -1,
-              latencyMs: Date.now() - startedAt,
-              timedOut: false,
-            })
-          })
-
-          proc.on("error", (err) => {
-            clearTimeout(timeoutId)
-            if (timedOut) return
-            finish({
-              stdout,
-              stderr: stderr.length > 0 ? stderr : err.message,
-              exitCode: -1,
-              latencyMs: Date.now() - startedAt,
-              timedOut: false,
-            })
-          })
-        }),
-      catch: (cause) =>
-        new ShellError({
-          command: ["claude", ...args].join(" "),
-          exitCode: -1,
-          stderr: "",
-          message: `claude-subprocess: ${String(cause)}`,
-        }),
-    }),
-}
-
-export const ClaudeSubprocessLive = Layer.succeed(
+export const ClaudeSubprocessLive = Layer.effect(
   ClaudeSubprocess,
-  ClaudeSubprocess.of(liveImpl),
+  Effect.map(CommandRunner, (runner) =>
+    ClaudeSubprocess.of({
+      spawn: (args, opts) =>
+        runner.run("claude", args, {
+          ...(opts.cwd === undefined ? {} : { cwd: opts.cwd }),
+          ...(opts.env === undefined ? {} : { env: opts.env }),
+          stdin: opts.stdin,
+          timeoutMs: opts.timeoutMs,
+          scrubEnv: scrubClaudeEnv,
+        }).pipe(
+          Effect.map((result) => ({
+            stdout: result.stdout,
+            stderr: result.stderr,
+            exitCode: result.exitCode,
+            latencyMs: result.durationMs,
+            timedOut: result.timedOut,
+          })),
+          Effect.mapError((cause) =>
+            new ShellError({
+              command: ["claude", ...args].join(" "),
+              exitCode: cause.exitCode,
+              stderr: cause.stderr,
+              message: `claude-subprocess: ${cause.message}`,
+            }),
+          ),
+        ),
+    }),
+  ),
 )
 
 /**

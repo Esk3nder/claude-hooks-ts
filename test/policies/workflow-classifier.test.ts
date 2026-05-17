@@ -12,9 +12,11 @@ const cases: ReadonlyArray<{ readonly prompt: string; readonly expected: Workflo
   { prompt: "The build is broken", expected: "coding.fix" },
   { prompt: "Implement a new endpoint for user profiles", expected: "coding.feature" },
   { prompt: "Add a feature to export PDF", expected: "coding.feature" },
+  { prompt: "Create a single-page HTML dashboard for solar underwriting", expected: "coding.feature" },
   { prompt: "Refactor the auth module to remove duplication", expected: "coding.refactor" },
   { prompt: "Rename UserService to AccountService", expected: "coding.refactor" },
   { prompt: "Code review the new payment PR please", expected: "coding.review" },
+  { prompt: "grade yourself line by line against these expectations", expected: "coding.review" },
   { prompt: "Add unit tests for the cache layer", expected: "coding.test" },
   { prompt: "Improve test coverage", expected: "coding.test" },
   { prompt: "Optimize the slow database query for performance", expected: "coding.perf" },
@@ -78,6 +80,25 @@ describe("classifyPrompt", () => {
       expect(exercised.has(tag)).toBe(true)
     }
   })
+
+  test("solar dashboard benchmark-data task stays feature-shaped, not perf-shaped", () => {
+    const prompt = `Create a single-page HTML dashboard for underwriting a small solar-installation business.
+
+Pull real current benchmark data where useful, such as average residential solar install cost per watt,
+battery storage attach-rate or cost ranges, current federal tax credit, and recent residential
+electricity price trends. Cite the sources in the page footer.`
+    expect(classifyPrompt(prompt).workflow).toBe("coding.feature")
+  })
+
+  test("HVAC self-contained benchmark-data dashboard task stays feature-shaped", () => {
+    const prompt = `Create a self-contained single-page HTML dashboard for underwriting a regional HVAC services company.
+
+Pull real current benchmark data where useful, including HVAC replacement cost ranges, average technician
+wage or labor cost trends, residential electricity/natural gas price trends, current consumer financing
+rate ranges, and typical maintenance contract pricing. Cite the sources in the page footer with URLs.`
+    expect(classifyPrompt(prompt).workflow).toBe("coding.feature")
+    expect(requiresWebSources(prompt)).toBe(true)
+  })
 })
 
 /**
@@ -98,6 +119,8 @@ describe("requiresWebSources", () => {
     "current best practice for prompt caching",
     "any recent news about claude code",
     "find some online research on the topic",
+    "cite the sources in the page footer",
+    "Pull real current benchmark data where useful",
   ]
   for (const p of positive) {
     test(`positive: "${p}"`, () => {
@@ -122,6 +145,7 @@ describe("requiresWebSources", () => {
     "test this in the browser",
     "the secret sauce of this module",
     "release notes for v2.3",
+    "grade yourself line by line: did you pull real current benchmark data and cite sources?",
   ]
   for (const p of negative) {
     test(`negative: "${p}"`, () => {
@@ -182,5 +206,12 @@ describe("requiresWebSources", () => {
       }
     }
     expect(triggered).toBeNull()
+  })
+
+  test("meta-evaluation does not suppress a new source-backed task in the same prompt", () => {
+    const prompt =
+      "grade yourself briefly, then create an HTML dashboard and pull real current benchmark data with cited sources"
+    expect(classifyPrompt(prompt).workflow).toBe("coding.feature")
+    expect(requiresWebSources(prompt)).toBe(true)
   })
 })

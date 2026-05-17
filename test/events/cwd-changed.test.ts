@@ -55,7 +55,7 @@ describe("handleCwdChanged", () => {
     ).toContain("/new/.claude-hooks/");
   });
 
-  test("SAFE_DEFAULT when no project-local config and same git root", async () => {
+  test("NO_DECISION when no project-local config and same git root", async () => {
     const layer = Layer.mergeAll(
       FileSystemTest(),
       shellRoots("/repo", "/repo", "/repo/a", "/repo/b"),

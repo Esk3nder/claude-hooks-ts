@@ -95,7 +95,7 @@ const RULES: ReadonlyArray<Rule> = [
   {
     tag: "coding.perf",
     pattern:
-      /\b(perf(ormance)?|optimi[sz]e|optimi[sz]ation|latency|throughput|slow|profile|benchmark|memory leak|cpu)\b/i,
+      /\b(perf(ormance)?|optimi[sz]e|optimi[sz]ation|latency|throughput|slow|profile|memory leak|cpu)\b|\b(?:run|write|add|create|measure|profile)\s+(?:a\s+|the\s+)?benchmarks?\b|\bbenchmarks?\s+(?:the|this|for|against|performance|latency|throughput|query|function|module)\b/i,
   },
   // Tests
   {
@@ -106,7 +106,7 @@ const RULES: ReadonlyArray<Rule> = [
   // Review
   {
     tag: "coding.review",
-    pattern: /\b(review|code review|pr review|critique|audit code|look over)\b/i,
+    pattern: /\b(review|code review|pr review|critique|audit code|look over|grade yourself|score yourself|self[- ]grade)\b/i,
   },
   // Refactor
   {
@@ -124,7 +124,7 @@ const RULES: ReadonlyArray<Rule> = [
   {
     tag: "coding.feature",
     pattern:
-      /\b(implement|build|add (a |an |the )?(feature|endpoint|button|page|method|function|class|module|hook)|new feature|create (a |an |the )?(component|service|handler))\b/i,
+      /\b(implement|build|add (a |an |the )?(feature|endpoint|button|page|method|function|class|module|hook)|new feature|create (a |an |the )?(?:(?:self[- ]contained|single[- ]page|web|html|interactive|local|polished|practical|finance[- ]tool)\s+)*(component|service|handler|page|dashboard|app|tool|calculator|site|website|screen|view))\b/i,
   },
   // Ops: deploy
   // Tightened to require a true deploy verb context. Excludes documentation
@@ -193,13 +193,30 @@ const WEB_SOURCES_REQUIRED: ReadonlyArray<RegExp> = [
   /\bweb research\b/i,
   /\b(?:google|duckduckgo|bing)\s+(?:for|the)\s+\S+/i,
   /\bcite (?:authoritative|external|primary|web) sources?\b/i,
+  /\bcite (?:the )?sources?\b/i,
   /\bonline (?:research|sources?|references?)\b/i,
+  /\b(?:pull|use|include|gather|fetch)\s+(?:real\s+)?(?:current|recent|latest)\s+(?:benchmarks?|benchmark data|market|industry|pricing|price|cost|rate|tax|electricity|wage|data)\b/i,
   /\bwhat'?s the latest (?:news|on|in)\b/i,
   /\blatest news (?:on|about|in)\b/i,
   /\bcurrent best practices?\b/i,
   /\bstate of the art\b/i,
   /\brecent (?:news|update)s?\b/i,
 ]
+
+const META_EVALUATION_PROMPT =
+  /\b(grade yourself|score yourself|self[- ]grade|evaluate (?:yourself|the run)|rate (?:yourself|the run))\b/i
+const NEW_SOURCE_BACKED_TASK_IN_META_PROMPT =
+  /\b(?:create|build|implement|add|write|generate)\b[\s\S]{0,300}\b(?:pull|use|include|gather|fetch|search|cite)\b[\s\S]{0,200}\b(?:sources?|current|recent|latest|benchmarks?|data|market|pricing|cost|rate|tax|electricity|wage)\b/i
+const FOLLOW_ON_SOURCE_TASK_IN_META_PROMPT =
+  /\b(?:then|also|now|next)\b[\s\S]{0,120}\b(?:pull|use|include|gather|fetch|search|cite)\b[\s\S]{0,120}\b(?:sources?|current|recent|latest|benchmarks?|data|market|pricing|cost|rate|tax|electricity|wage)\b/i
+
+const hasSourceBackedTaskInMetaPrompt = (prompt: string): boolean =>
+  NEW_SOURCE_BACKED_TASK_IN_META_PROMPT.test(prompt) ||
+  FOLLOW_ON_SOURCE_TASK_IN_META_PROMPT.test(prompt)
+
+const isMetaEvaluationOnlyPrompt = (prompt: string): boolean =>
+  META_EVALUATION_PROMPT.test(prompt) &&
+  !hasSourceBackedTaskInMetaPrompt(prompt)
 
 /**
  * True when the prompt explicitly asks for web research. Used by the Stop
@@ -212,6 +229,10 @@ const WEB_SOURCES_REQUIRED: ReadonlyArray<RegExp> = [
 export const requiresWebSources = (rawPrompt: string): boolean => {
   const prompt = (rawPrompt ?? "").trim()
   if (prompt.length === 0) return false
+  if (META_EVALUATION_PROMPT.test(prompt) && hasSourceBackedTaskInMetaPrompt(prompt)) {
+    return true
+  }
+  if (isMetaEvaluationOnlyPrompt(prompt)) return false
   return WEB_SOURCES_REQUIRED.some((re) => re.test(prompt))
 }
 
@@ -220,7 +241,10 @@ export const classifyPrompt = (rawPrompt: string): ClassifierResult => {
   if (prompt.length === 0) {
     return { workflow: "unknown", playbook: PLAYBOOKS.unknown }
   }
+  const metaWrappedSourceTask =
+    META_EVALUATION_PROMPT.test(prompt) && hasSourceBackedTaskInMetaPrompt(prompt)
   for (const rule of RULES) {
+    if (metaWrappedSourceTask && rule.tag === "coding.review") continue
     if (rule.pattern.test(prompt)) {
       return { workflow: rule.tag, playbook: PLAYBOOKS[rule.tag] }
     }

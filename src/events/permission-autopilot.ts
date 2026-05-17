@@ -1,10 +1,11 @@
 import { Effect } from "effect"
 import type { HookPayload } from "../schema/payloads.ts"
 import type { HookDecision } from "../schema/decisions.ts"
-import { SAFE_DEFAULT } from "../schema/decisions.ts"
+import { NO_DECISION } from "../schema/decisions.ts"
 import { Approvals } from "../services/approvals.ts"
 import { Project } from "../services/project.ts"
 import { derivePatternKey } from "../policies/permission-patterns.ts"
+import { reportHookFailure } from "../services/hook-failure.ts"
 
 /**
  * PermissionRequest autopilot.
@@ -19,7 +20,7 @@ import { derivePatternKey } from "../policies/permission-patterns.ts"
  * - "allow"  emitted on a prior recorded approval for the pattern.
  * - "deny"   emitted on a prior recorded denial for the pattern (with reason
  *            in `message`).
- * - SAFE_DEFAULT (`{}`) emitted for unseen / pending patterns: this is what
+ * - NO_DECISION (`{}`) emitted for unseen / pending patterns: this is what
  *            causes Claude Code to show its built-in permission dialog
  *            (the implicit "ask" — there is no explicit "ask" behavior in
  *            the official spec).
@@ -28,7 +29,7 @@ export const handlePermissionRequest = (
   payload: HookPayload,
 ): Effect.Effect<HookDecision, never, Approvals | Project> =>
   Effect.gen(function* () {
-    if (payload._tag !== "PermissionRequest") return SAFE_DEFAULT
+    if (payload._tag !== "PermissionRequest") return NO_DECISION
     const approvals = yield* Approvals
     const project = yield* Project
     const cwd = payload.cwd ?? (yield* project.root())
@@ -36,7 +37,24 @@ export const handlePermissionRequest = (
 
     const lookup = yield* approvals
       .lookup(cwd, pattern)
-      .pipe(Effect.catchAll(() => Effect.succeed(null)))
+      .pipe(
+        Effect.catchAll((cause) =>
+          reportHookFailure({
+            kind: "state_read_failed",
+            event: "PermissionRequest",
+            sessionId: payload.session_id,
+            cause,
+            fallbackDecision: NO_DECISION,
+            hookSafe: true,
+            context: {
+              op: "approvals.lookup",
+              cwd,
+              tool_name: payload.tool_name,
+              pattern,
+            },
+          }).pipe(Effect.as(null)),
+        ),
+      )
 
     // A "pending" record is not a resolved decision; treat it as no decision.
     const resolved =
@@ -46,12 +64,30 @@ export const handlePermissionRequest = (
 
     if (resolved === null) {
       // No prior decision — record a "pending" stub so downstream tooling can
-      // resolve the same pattern key, and emit the safe default to defer to
+      // resolve the same pattern key, and emit no decision to defer to
       // Claude Code's normal permission dialog.
       yield* approvals
         .record({ cwd, pattern, status: "pending", recordedAt: Date.now() })
-        .pipe(Effect.catchAll(() => Effect.succeed(undefined as void)))
-      return SAFE_DEFAULT
+        .pipe(
+          Effect.catchAll((cause) =>
+            reportHookFailure({
+              kind: "state_write_failed",
+              event: "PermissionRequest",
+              sessionId: payload.session_id,
+              cause,
+              fallbackDecision: NO_DECISION,
+              hookSafe: true,
+              context: {
+                op: "approvals.record",
+                cwd,
+                tool_name: payload.tool_name,
+                pattern,
+                status: "pending",
+              },
+            }),
+          ),
+        )
+      return NO_DECISION
     }
 
     if (resolved.status === "approved") {

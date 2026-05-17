@@ -1,9 +1,12 @@
-import { Context, Effect, Layer, Ref } from "effect";
+import { Context, Effect, Layer, Ref, Schema } from "effect";
 import * as fs from "node:fs/promises";
 import * as fsSync from "node:fs";
 import * as path from "node:path";
+import { createInterface } from "node:readline";
 import { FsError } from "../schema/errors.ts";
-import { withFileLock } from "./file-lock.ts";
+import { ApprovalRecordSchema, eventStream } from "../schema/events.ts";
+import { collectStream, EventStore, EventStoreLive, summarizeEventStoreError } from "./event-store.ts";
+import { FileLock, FileLockPlatformLive } from "./file-lock.ts";
 
 export type ApprovalStatus = "approved" | "denied" | "pending";
 
@@ -21,8 +24,11 @@ export const GC_INTERVAL_MS = 24 * 60 * 60 * 1000; // 24 hours
  * True if more than `GC_INTERVAL_MS` (24h) has elapsed since the last gc run.
  * Pure helper — easy to unit test, no Schedule needed.
  */
-export const shouldGc = (now: number, lastGc: number): boolean =>
-  now - lastGc > GC_INTERVAL_MS;
+export const shouldGc = (
+  now: number,
+  lastGc: number,
+  intervalMs: number = GC_INTERVAL_MS,
+): boolean => now - lastGc > intervalMs;
 
 export interface ApprovalsApi {
   readonly lookup: (
@@ -56,48 +62,11 @@ const ledgerPath = (cwd: string): string =>
 const metaPath = (cwd: string): string =>
   path.join(cwd, ".claude-hooks", "state", "approvals-meta.json");
 
-const parseLine = (line: string): ApprovalRecord | null => {
-  try {
-    const v: unknown = JSON.parse(line);
-    if (typeof v !== "object" || v === null) return null;
-    const r = v as {
-      cwd?: unknown;
-      pattern?: unknown;
-      status?: unknown;
-      recordedAt?: unknown;
-    };
-    if (
-      typeof r.cwd !== "string" ||
-      typeof r.pattern !== "string" ||
-      typeof r.recordedAt !== "number" ||
-      (r.status !== "approved" &&
-        r.status !== "denied" &&
-        r.status !== "pending")
-    ) {
-      return null;
-    }
-    return {
-      cwd: r.cwd,
-      pattern: r.pattern,
-      status: r.status,
-      recordedAt: r.recordedAt,
-    };
-  } catch {
-    return null;
-  }
-};
-
-const readAllRecords = async (file: string): Promise<ApprovalRecord[]> => {
-  if (!fsSync.existsSync(file)) return [];
-  const raw = await fs.readFile(file, "utf8");
-  const out: ApprovalRecord[] = [];
-  for (const line of raw.split(/\r?\n/)) {
-    if (line.trim().length === 0) continue;
-    const rec = parseLine(line);
-    if (rec !== null) out.push(rec);
-  }
-  return out;
-};
+const approvalsStream = (cwd: string) =>
+  eventStream(`approvals:${cwd}`, ledgerPath(cwd), ApprovalRecordSchema, {
+    maxRecords: 1_000,
+    strictTail: true,
+  });
 
 const latestMatching = (
   records: ReadonlyArray<ApprovalRecord>,
@@ -119,106 +88,143 @@ const writeMeta = async (file: string, lastGc: number): Promise<void> => {
   await fs.writeFile(file, JSON.stringify({ last_gc: lastGc }) + "\n", "utf8");
 };
 
-export const ApprovalsLive: Layer.Layer<Approvals> = Layer.succeed(
+const eventStoreFsError = (op: string, file: string, cause: unknown): FsError => {
+  const summary = summarizeEventStoreError(cause);
+  return new FsError({
+    op,
+    path: file,
+    message: summary,
+    cause: summary,
+  });
+};
+
+const rewriteApprovalLedger = async (
+  file: string,
+  keep: (record: ApprovalRecord) => boolean,
+): Promise<void> => {
+  const tmp = `${file}.${process.pid}.${Date.now()}.gc.tmp`;
+  let total = 0;
+  let kept = 0;
+  let output: fs.FileHandle | null = null;
+  try {
+    const input = fsSync.createReadStream(file, { encoding: "utf8" });
+    output = await fs.open(tmp, "wx");
+    const lines = createInterface({ input, crlfDelay: Infinity });
+    try {
+      for await (const line of lines) {
+        if (line.trim().length === 0) continue;
+        total += 1;
+        const record = Schema.decodeUnknownSync(ApprovalRecordSchema)(JSON.parse(line));
+        if (!keep(record)) continue;
+        kept += 1;
+        await output.write(`${JSON.stringify(record)}\n`);
+      }
+    } finally {
+      await output.close();
+      output = null;
+    }
+    if (kept === total) {
+      await fs.unlink(tmp);
+      return;
+    }
+    await fs.rename(tmp, file);
+  } catch (cause) {
+    if (output !== null) {
+      await output.close().catch(() => undefined);
+    }
+    await fs.rm(tmp, { force: true }).catch(() => undefined);
+    throw cause;
+  }
+};
+
+const fsError = (op: string, file: string, cause: unknown): FsError =>
+  cause instanceof FsError
+    ? cause
+    : new FsError({
+        op,
+        path: file,
+        message: String(cause),
+        cause,
+      });
+
+export const ApprovalsLiveBase: Layer.Layer<Approvals, never, EventStore | FileLock> = Layer.effect(
   Approvals,
-  Approvals.of({
-    lookup: (cwd, pattern) =>
-      Effect.tryPromise({
-        try: async () => {
-          const file = ledgerPath(cwd);
-          const all = await readAllRecords(file);
-          // Resolved decisions take precedence over pending entries.
-          const resolved = latestMatching(
-            all,
-            cwd,
-            pattern,
-            (r) => r.status === "approved" || r.status === "denied",
-          );
-          if (resolved !== null) return resolved;
-          return latestMatching(all, cwd, pattern);
-        },
-        catch: (cause) =>
-          new FsError({
-            op: "approvals.lookup",
-            path: ledgerPath(cwd),
-            message: String(cause),
-            cause,
-          }),
-      }),
-    findPending: (cwd, pattern) =>
-      Effect.tryPromise({
-        try: async () => {
-          const file = ledgerPath(cwd);
-          const all = await readAllRecords(file);
-          return latestMatching(
-            all,
-            cwd,
-            pattern,
-            (r) => r.status === "pending",
-          );
-        },
-        catch: (cause) =>
-          new FsError({
-            op: "approvals.findPending",
-            path: ledgerPath(cwd),
-            message: String(cause),
-            cause,
-          }),
-      }),
-    record: (record) =>
-      Effect.tryPromise({
-        try: async () => {
-          const file = ledgerPath(record.cwd);
-          await fs.mkdir(path.dirname(file), { recursive: true });
-          await withFileLock(file, async () => {
-            await fs.appendFile(file, JSON.stringify(record) + "\n", "utf8");
-          });
-        },
-        catch: (cause) =>
-          new FsError({
-            op: "approvals.record",
-            path: ledgerPath(record.cwd),
-            message: String(cause),
-            cause,
-          }),
-      }),
-    gc: (cwd, now, maxAgeMs = DEFAULT_GC_MAX_AGE_MS) =>
-      Effect.tryPromise({
-        try: async () => {
-          const file = ledgerPath(cwd);
-          // No ledger → nothing to gc; just record the gc timestamp.
-          if (!fsSync.existsSync(file)) {
-            await writeMeta(metaPath(cwd), now);
-            return;
-          }
-          await withFileLock(file, async () => {
-            const all = await readAllRecords(file);
-            const cutoff = now - maxAgeMs;
-            const kept = all.filter(
-              (r) => r.cwd !== cwd || r.recordedAt >= cutoff,
+  Effect.gen(function* () {
+    const store = yield* EventStore
+    const locks = yield* FileLock
+    const readRecent = (cwd: string) => collectStream(store.tail(approvalsStream(cwd), 1_000))
+    return Approvals.of({
+      lookup: (cwd, pattern) =>
+        readRecent(cwd).pipe(
+          Effect.map((all) => {
+            // Resolved decisions take precedence over pending entries.
+            const resolved = latestMatching(
+              all,
+              cwd,
+              pattern,
+              (r) => r.status === "approved" || r.status === "denied",
             );
-            if (kept.length !== all.length) {
-              await fs.mkdir(path.dirname(file), { recursive: true });
-              const body = kept.map((r) => JSON.stringify(r)).join("\n");
-              await fs.writeFile(
-                file,
-                body.length === 0 ? "" : body + "\n",
-                "utf8",
-              );
-            }
-          });
-          await writeMeta(metaPath(cwd), now);
-        },
-        catch: (cause) =>
-          new FsError({
-            op: "approvals.gc",
-            path: ledgerPath(cwd),
-            message: String(cause),
-            cause,
+            if (resolved !== null) return resolved;
+            return latestMatching(all, cwd, pattern);
           }),
-      }),
+          Effect.mapError((cause) => eventStoreFsError("approvals.lookup", ledgerPath(cwd), cause)),
+        ),
+      findPending: (cwd, pattern) =>
+        readRecent(cwd).pipe(
+          Effect.map((all) =>
+            latestMatching(
+              all,
+              cwd,
+              pattern,
+              (r) => r.status === "pending",
+            )
+          ),
+          Effect.mapError((cause) => eventStoreFsError("approvals.findPending", ledgerPath(cwd), cause)),
+        ),
+      record: (record) =>
+        store.append(approvalsStream(record.cwd), record).pipe(
+          Effect.mapError((cause) => eventStoreFsError("approvals.record", ledgerPath(record.cwd), cause)),
+        ),
+      gc: (cwd, now, maxAgeMs = DEFAULT_GC_MAX_AGE_MS) =>
+        Effect.tryPromise({
+          try: async () => {
+            const file = ledgerPath(cwd);
+            // No ledger → nothing to gc; just record the gc timestamp.
+            if (!fsSync.existsSync(file)) {
+              await writeMeta(metaPath(cwd), now);
+              return;
+            }
+            await Effect.runPromise(
+              locks.withLock(
+                file,
+                Effect.tryPromise({
+                  try: async () => {
+                    if (!fsSync.existsSync(file)) return;
+                    const cutoff = now - maxAgeMs;
+                    await rewriteApprovalLedger(file, (r) => r.cwd !== cwd || r.recordedAt >= cutoff);
+                  },
+                  catch: (cause) => fsError("approvals.gc", file, cause),
+                }),
+              ).pipe(
+                Effect.mapError((cause) => fsError("approvals.gc", file, cause)),
+              ),
+            );
+            await writeMeta(metaPath(cwd), now);
+          },
+          catch: (cause) =>
+            new FsError({
+              op: "approvals.gc",
+              path: ledgerPath(cwd),
+              message: String(cause),
+              cause,
+            }),
+        }),
+    })
   }),
 );
+
+export const ApprovalsLive: Layer.Layer<Approvals> =
+  Layer.provide(ApprovalsLiveBase, Layer.mergeAll(EventStoreLive, FileLockPlatformLive))
 
 export const ApprovalsTest = (
   initial: ReadonlyArray<ApprovalRecord> = [],

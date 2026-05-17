@@ -256,45 +256,45 @@ describe("newlyCompletedISCs — pure planner", () => {
 })
 
 describe("isGitRepo / hasChanges — the classifier", () => {
-  test("isGitRepo true on initialized repo", () => {
+  test("isGitRepo true on initialized repo", async () => {
     const { root, cleanup } = stage()
     try {
       const repo = join(root, "git-repo")
       initGitRepo(repo)
-      expect(isGitRepo(repo)).toBe(true)
+      expect(await isGitRepo(repo)).toBe(true)
     } finally {
       cleanup()
     }
   })
 
-  test("isGitRepo false on plain dir", () => {
+  test("isGitRepo false on plain dir", async () => {
     const { root, cleanup } = stage()
     try {
       mkdirSync(join(root, "plain"))
-      expect(isGitRepo(join(root, "plain"))).toBe(false)
+      expect(await isGitRepo(join(root, "plain"))).toBe(false)
     } finally {
       cleanup()
     }
   })
 
-  test("hasChanges false on freshly-initialized empty repo", () => {
+  test("hasChanges false on freshly-initialized empty repo", async () => {
     const { root, cleanup } = stage()
     try {
       const repo = join(root, "empty-repo")
       initGitRepo(repo)
-      expect(hasChanges(repo)).toBe(false)
+      expect(await hasChanges(repo)).toBe(false)
     } finally {
       cleanup()
     }
   })
 
-  test("hasChanges true when an untracked file is present", () => {
+  test("hasChanges true when an untracked file is present", async () => {
     const { root, cleanup } = stage()
     try {
       const repo = join(root, "dirty-repo")
       initGitRepo(repo)
       writeFileSync(join(repo, "x.txt"), "hi", "utf-8")
-      expect(hasChanges(repo)).toBe(true)
+      expect(await hasChanges(repo)).toBe(true)
     } finally {
       cleanup()
     }
@@ -350,7 +350,7 @@ ship
 ${criteriaBlock}
 `
 
-  test("≥1 repo commits + 1 repo skipped (ISA outside) → ISC IS recorded", () => {
+  test("≥1 repo commits + 1 repo skipped (ISA outside) → ISC IS recorded", async () => {
     const { root, cleanup } = stage()
     try {
       const inside = join(root, "inside-repo")
@@ -363,7 +363,7 @@ ${criteriaBlock}
       const isa = join(inside, ARTIFACT_FILENAME)
       writeFileSync(isa, isaContents("- [x] ISC-1: x"), "utf-8")
 
-      const r = runCheckpoint(isa, root)
+      const r = await runCheckpoint(isa, root)
       expect(r.commits.length).toBe(1)
       expect(r.commits[0]?.repo).toBe(inside)
 
@@ -374,7 +374,7 @@ ${criteriaBlock}
     }
   })
 
-  test("0 repos commit (ISA outside ALL allowlisted repos) → ISC NOT recorded", () => {
+  test("0 repos commit (ISA outside ALL allowlisted repos) → ISC NOT recorded", async () => {
     const { root, cleanup } = stage()
     try {
       const repoA = join(root, "repo-a")
@@ -390,7 +390,7 @@ ${criteriaBlock}
       const isa = join(isaDir, ARTIFACT_FILENAME)
       writeFileSync(isa, isaContents("- [x] ISC-1: x"), "utf-8")
 
-      const r = runCheckpoint(isa, root)
+      const r = await runCheckpoint(isa, root)
       expect(r.commits.length).toBe(0)
 
       const state = loadState(join(isaDir, STATE_FILENAME))
@@ -401,7 +401,7 @@ ${criteriaBlock}
     }
   })
 
-  test("commitInRepo returns null on every repo → ISC NOT recorded", () => {
+  test("commitInRepo returns null on every repo → ISC NOT recorded", async () => {
     const { root, cleanup } = stage()
     try {
       // Project-root ISA in a fresh repo with no changes to commit (the
@@ -423,7 +423,7 @@ ${criteriaBlock}
 
       // ISA file unchanged since seed → hasChangesForFile returns false →
       // commitInRepo never runs → 0 commits → sidecar should NOT mark.
-      const r = runCheckpoint(isa, root)
+      const r = await runCheckpoint(isa, root)
       expect(r.commits.length).toBe(0)
       const state = loadState(join(repo, STATE_FILENAME))
       expect(state.committed_iscs).not.toContain("ISC-1")
@@ -434,14 +434,14 @@ ${criteriaBlock}
 })
 
 describe("commitInRepo end-to-end", () => {
-  test("creates a commit with sanitized subject; returns SHA", () => {
+  test("creates a commit with sanitized subject; returns SHA", async () => {
     const { root, cleanup } = stage()
     try {
       const repo = join(root, "live-repo")
       initGitRepo(repo)
       const isa = join(repo, ARTIFACT_FILENAME)
       writeFileSync(isa, "## Criteria\n- [x] ISC-7: x\n", "utf-8")
-      const sha = commitInRepo(
+      const sha = await commitInRepo(
         repo,
         "ISC-7",
         "20260509_x",
@@ -460,7 +460,7 @@ describe("commitInRepo end-to-end", () => {
     }
   })
 
-  test("returns null and logs when there's nothing to commit", () => {
+  test("returns null and logs when there's nothing to commit", async () => {
     const { root, cleanup } = stage()
     try {
       const repo = join(root, "clean-repo")
@@ -474,7 +474,7 @@ describe("commitInRepo end-to-end", () => {
         ["-C", repo, "commit", "-m", "seed", "--no-verify"],
         { stdio: "ignore" },
       )
-      expect(commitInRepo(repo, "ISC-1", "slug", "msg", isa)).toBeNull()
+      expect(await commitInRepo(repo, "ISC-1", "slug", "msg", isa)).toBeNull()
     } finally {
       cleanup()
     }
@@ -495,48 +495,48 @@ ship
 ${criteriaBlock}
 `
 
-  test("skipped: missing-file when ISA doesn't exist", () => {
-    const r = runCheckpoint("/tmp/non-existent-isa-xyz.md")
+  test("skipped: missing-file when ISA doesn't exist", async () => {
+    const r = await runCheckpoint("/tmp/non-existent-isa-xyz.md")
     expect(r.skipped).toBe("missing-file")
     expect(r.commits).toEqual([])
   })
 
-  test("skipped: no-frontmatter when ISA has no frontmatter", () => {
+  test("skipped: no-frontmatter when ISA has no frontmatter", async () => {
     const { root, cleanup } = stage()
     try {
       const isaDir = join(root, ".claude-hooks", "state", "work", "slug")
       mkdirSync(isaDir, { recursive: true })
       const isa = join(isaDir, ARTIFACT_FILENAME)
       writeFileSync(isa, "## Criteria\n- [x] ISC-1: x\n", "utf-8")
-      const r = runCheckpoint(isa, root)
+      const r = await runCheckpoint(isa, root)
       expect(r.skipped).toBe("no-frontmatter")
     } finally {
       cleanup()
     }
   })
 
-  test("skipped: no-criteria when ISA has no Criteria section", () => {
+  test("skipped: no-criteria when ISA has no Criteria section", async () => {
     const { root, cleanup } = stage()
     try {
       const isaDir = join(root, ".claude-hooks", "state", "work", "slug")
       mkdirSync(isaDir, { recursive: true })
       const isa = join(isaDir, ARTIFACT_FILENAME)
       writeFileSync(isa, `---\ntask: x\n---\n\n## Goal\nx\n`, "utf-8")
-      const r = runCheckpoint(isa, root)
+      const r = await runCheckpoint(isa, root)
       expect(r.skipped).toBe("no-criteria")
     } finally {
       cleanup()
     }
   })
 
-  test("skipped: no-allowlist when allowlist is empty (default install)", () => {
+  test("skipped: no-allowlist when allowlist is empty (default install)", async () => {
     const { root, cleanup } = stage()
     try {
       const isaDir = join(root, ".claude-hooks", "state", "work", "slug")
       mkdirSync(isaDir, { recursive: true })
       const isa = join(isaDir, ARTIFACT_FILENAME)
       writeFileSync(isa, isaContents("- [x] ISC-1: did x"), "utf-8")
-      const r = runCheckpoint(isa, root)
+      const r = await runCheckpoint(isa, root)
       expect(r.skipped).toBe("no-allowlist")
       expect(r.commits).toEqual([])
     } finally {
@@ -544,7 +544,7 @@ ${criteriaBlock}
     }
   })
 
-  test("happy path: creates one commit per repo for each newly-checked ISC", () => {
+  test("happy path: creates one commit per repo for each newly-checked ISC", async () => {
     const { root, cleanup } = stage()
     try {
       const repo = join(root, "repo-a")
@@ -556,7 +556,7 @@ ${criteriaBlock}
       const isa = join(repo, ARTIFACT_FILENAME)
       writeFileSync(isa, isaContents("- [x] ISC-1: did the thing"), "utf-8")
 
-      const r = runCheckpoint(isa, root)
+      const r = await runCheckpoint(isa, root)
       expect(r.skipped).toBeNull()
       expect(r.iscIds).toEqual(["ISC-1"])
       expect(r.commits.length).toBe(1)
@@ -574,7 +574,7 @@ ${criteriaBlock}
     }
   })
 
-  test("idempotent: second run with same state does nothing", () => {
+  test("idempotent: second run with same state does nothing", async () => {
     const { root, cleanup } = stage()
     try {
       const repo = join(root, "repo-b")
@@ -584,11 +584,11 @@ ${criteriaBlock}
       const isa = join(repo, ARTIFACT_FILENAME)
       writeFileSync(isa, isaContents("- [x] ISC-1: a"), "utf-8")
 
-      const first = runCheckpoint(isa, root)
+      const first = await runCheckpoint(isa, root)
       expect(first.commits.length).toBe(1)
 
       // No new changes → second run produces no commits.
-      const second = runCheckpoint(isa, root)
+      const second = await runCheckpoint(isa, root)
       expect(second.commits.length).toBe(0)
       expect(second.iscIds).toEqual([])
     } finally {
@@ -596,7 +596,7 @@ ${criteriaBlock}
     }
   })
 
-  test("missing repo in allowlist is logged and skipped, not fatal", () => {
+  test("missing repo in allowlist is logged and skipped, not fatal", async () => {
     const { root, cleanup } = stage()
     try {
       writeAllowlist(root, `/tmp/this-repo-does-not-exist-xyz-123\n`)
@@ -605,7 +605,7 @@ ${criteriaBlock}
       mkdirSync(isaDir, { recursive: true })
       const isa = join(isaDir, ARTIFACT_FILENAME)
       writeFileSync(isa, isaContents("- [x] ISC-1: a"), "utf-8")
-      const r = runCheckpoint(isa, root)
+      const r = await runCheckpoint(isa, root)
       expect(r.skipped).toBeNull()
       expect(r.commits.length).toBe(0)
     } finally {
@@ -616,7 +616,7 @@ ${criteriaBlock}
   // T1.1 — git add must be scoped to the ISA file, not -A. Otherwise an
   // ISC flip absorbs any pending unrelated dirty work into the auto-commit
   // (and, with --no-verify, bypasses pre-commit secret scans). See audit.
-  test("scoped add: unrelated dirty file is NOT in the auto-commit", () => {
+  test("scoped add: unrelated dirty file is NOT in the auto-commit", async () => {
     const { root, cleanup } = stage()
     try {
       const repo = join(root, "repo-scope")
@@ -641,7 +641,7 @@ ${criteriaBlock}
       const isa = join(repo, ARTIFACT_FILENAME)
       writeFileSync(isa, isaContents("- [x] ISC-1: x"), "utf-8")
 
-      const r = runCheckpoint(isa, root)
+      const r = await runCheckpoint(isa, root)
       expect(r.commits.length).toBe(1)
 
       // The auto-commit's diff must contain only the ISA — NOT tracked.txt
@@ -671,7 +671,7 @@ ${criteriaBlock}
     }
   })
 
-  test("ISA outside the allowlisted repo: skipped, no commit, no sidecar", () => {
+  test("ISA outside the allowlisted repo: skipped, no commit, no sidecar", async () => {
     const { root, cleanup } = stage()
     try {
       const repo = join(root, "repo-outside")
@@ -695,7 +695,7 @@ ${criteriaBlock}
       const isa = join(isaDir, ARTIFACT_FILENAME)
       writeFileSync(isa, isaContents("- [x] ISC-1: x"), "utf-8")
 
-      const r = runCheckpoint(isa, root)
+      const r = await runCheckpoint(isa, root)
       expect(r.commits.length).toBe(0)
 
       // Repo's pending changes were NOT swallowed.
@@ -712,7 +712,7 @@ ${criteriaBlock}
 
   // T1.2 — sidecar must only mark an ISC as committed when at least one repo
   // actually committed. Empty allowlist / all-repos-skipped is NOT a commit.
-  test("sidecar only records committed_iscs when ≥1 repo actually committed", () => {
+  test("sidecar only records committed_iscs when ≥1 repo actually committed", async () => {
     const { root, cleanup } = stage()
     try {
       writeAllowlist(root, `/tmp/this-repo-does-not-exist-xyz-456\n`)
@@ -722,7 +722,7 @@ ${criteriaBlock}
       const isa = join(isaDir, ARTIFACT_FILENAME)
       writeFileSync(isa, isaContents("- [x] ISC-1: x"), "utf-8")
 
-      const r = runCheckpoint(isa, root)
+      const r = await runCheckpoint(isa, root)
       expect(r.commits.length).toBe(0)
 
       const state = loadState(join(isaDir, STATE_FILENAME))
@@ -732,7 +732,7 @@ ${criteriaBlock}
     }
   })
 
-  test("sidecar records committed_iscs only for ISCs with ≥1 successful commit", () => {
+  test("sidecar records committed_iscs only for ISCs with ≥1 successful commit", async () => {
     const { root, cleanup } = stage()
     try {
       const repo = join(root, "repo-mixed")
@@ -743,7 +743,7 @@ ${criteriaBlock}
       // be impossible to mix; instead, validate by splitting checkpoint runs.
       const isa = join(repo, ARTIFACT_FILENAME)
       writeFileSync(isa, isaContents("- [x] ISC-1: x"), "utf-8")
-      const r = runCheckpoint(isa, root)
+      const r = await runCheckpoint(isa, root)
       expect(r.commits.length).toBe(1)
 
       const state = loadState(join(repo, STATE_FILENAME))

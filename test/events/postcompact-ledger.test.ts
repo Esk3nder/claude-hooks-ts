@@ -1,9 +1,12 @@
 import { describe, expect, test } from "bun:test";
-import { Effect, Layer, Schema } from "effect";
+import { Effect, Layer, Logger, Schema, Stream } from "effect";
+import * as fs from "node:fs";
+import * as os from "node:os";
 import * as path from "node:path";
 import { handlePostCompact } from "../../src/events/postcompact-ledger.ts";
+import { EventStoreError } from "../../src/schema/errors.ts";
 import { HookPayload } from "../../src/schema/payloads.ts";
-import { FileSystem, FileSystemTest } from "../../src/services/filesystem.ts";
+import { EventStore, EventStoreLive } from "../../src/services/event-store.ts";
 import { ProjectTest } from "../../src/services/project.ts";
 
 const decode = (raw: unknown) => Schema.decodeUnknownSync(HookPayload)(raw);
@@ -17,93 +20,63 @@ const postCompact = (sid: string, trigger?: string) =>
   });
 
 describe("handlePostCompact", () => {
-  test("appends ledger entry, returns SAFE_DEFAULT", async () => {
-    const fsLayer = FileSystemTest();
-    const layer = Layer.mergeAll(fsLayer, ProjectTest({ root: "/proj" }));
-    const program = Effect.gen(function* () {
-      const decision = yield* handlePostCompact(postCompact("sid-1", "auto"));
-      const fs = yield* FileSystem;
-      const ledger = path.join(
-        "/proj",
-        ".claude-hooks",
-        "state",
-        "postcompact-ledger.jsonl",
-      );
-      const content = yield* fs.readFile(ledger);
-      return { decision, content };
-    });
-    const r = await Effect.runPromise(program.pipe(Effect.provide(layer)));
-    expect(r.decision).toEqual({});
-    expect(r.content).toContain('"session_id":"sid-1"');
-    expect(r.content).toContain('"trigger":"auto"');
-    expect(r.content).toContain('"snapshot_path"');
-    expect(r.content.endsWith("\n")).toBe(true);
-  });
-
-  test("ledger write failure → still returns SAFE_DEFAULT and emits stderr", async () => {
-    const failingFs = Layer.succeed(FileSystem, {
-      readFile: () =>
-        Effect.fail({
-          _tag: "FsError" as const,
-          op: "readFile",
-          path: "x",
-          message: "boom",
-        }) as never,
-      writeFile: () =>
-        Effect.fail({
-          _tag: "FsError" as const,
-          op: "writeFile",
-          path: "x",
-          message: "boom-write",
-        }) as never,
-      exists: () =>
-        Effect.fail({
-          _tag: "FsError" as const,
-          op: "exists",
-          path: "x",
-          message: "boom",
-        }) as never,
-      stat: () =>
-        Effect.fail({
-          _tag: "FsError" as const,
-          op: "stat",
-          path: "x",
-          message: "boom",
-        }) as never,
-      // Pass-through lock for the mock — body still fails via writeFile.
-      withLock: <A, E>(
-        _targetPath: string,
-        body: Effect.Effect<A, E>,
-      ): Effect.Effect<A, E> => body,
-    } as unknown as FileSystem["Type"]);
-    const layer = Layer.mergeAll(failingFs, ProjectTest({ root: "/proj" }));
-
-    const captured: string[] = [];
-    const origWrite = process.stderr.write.bind(process.stderr);
-    (process.stderr.write as unknown) = (
-      chunk: string | Uint8Array,
-    ): boolean => {
-      const s2 =
-        typeof chunk === "string" ? chunk : new TextDecoder().decode(chunk);
-      captured.push(s2);
-      return true;
-    };
+  test("appends ledger entry with the actual latest snapshot path", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "chts-postcompact-"));
     try {
-      const d = await Effect.runPromise(
-        handlePostCompact(postCompact("sid-fail")).pipe(Effect.provide(layer)),
+      const snapshotDir = path.join(root, ".claude-hooks", "state", "compact-snapshots");
+      fs.mkdirSync(snapshotDir, { recursive: true });
+      const snapshotPath = path.join(snapshotDir, "sid-1-manual-none-2026-01-01T00_00_00.000Z.md");
+      fs.writeFileSync(snapshotPath, "## Active ISAs\n\n  (none)\n", "utf8");
+      const layer = Layer.mergeAll(EventStoreLive, ProjectTest({ root }));
+      const decision = await Effect.runPromise(
+        handlePostCompact(postCompact("sid-1", "auto")).pipe(Effect.provide(layer)),
       );
-      expect(d).toEqual({});
-      const joined = captured.join("");
-      expect(joined).toContain("postcompact-ledger:");
-      expect(joined).toContain("write failed:");
+      const content = fs.readFileSync(
+        path.join(root, ".claude-hooks", "state", "postcompact-ledger.jsonl"),
+        "utf8",
+      );
+      const out = decision as { hookSpecificOutput?: { additionalContext?: string } };
+      expect(out.hookSpecificOutput?.additionalContext).toContain("Rehydrated ISA context");
+      expect(content).toContain('"session_id":"sid-1"');
+      expect(content).toContain('"trigger":"auto"');
+      expect(JSON.parse(content.trim()).snapshot_path).toBe(snapshotPath);
+      expect(content.endsWith("\n")).toBe(true);
     } finally {
-      (process.stderr.write as unknown) = origWrite;
+      fs.rmSync(root, { recursive: true, force: true });
     }
   });
 
-  test("non-PostCompact payload → SAFE_DEFAULT", async () => {
+  test("ledger write failure → still returns NO_DECISION and logs warning", async () => {
+    const failingStore = Layer.succeed(
+      EventStore,
+      EventStore.of({
+        append: () =>
+          Effect.fail(new EventStoreError({ op: "append", stream: "x", path: "x", message: "boom-write" })),
+        tail: () => Stream.empty,
+        compact: () => Effect.void,
+      }),
+    );
+    const layer = Layer.mergeAll(failingStore, ProjectTest({ root: "/proj" }));
+
+    const captured: string[] = [];
+    const logger = Logger.make(({ message }) => {
+      captured.push(String(message));
+    });
+    const d = await Effect.runPromise(
+      handlePostCompact(postCompact("sid-fail")).pipe(
+        Effect.provide(layer),
+        Effect.provide(Logger.replace(Logger.defaultLogger, logger)),
+      ),
+    );
+    expect(d).toEqual({});
+    const joined = captured.join("");
+    expect(joined).toContain("postcompact-ledger:");
+    expect(joined).toContain("write failed:");
+  });
+
+  test("non-PostCompact payload → NO_DECISION", async () => {
     const layer = Layer.mergeAll(
-      FileSystemTest(),
+      EventStoreLive,
       ProjectTest({ root: "/proj" }),
     );
     const payload = decode({

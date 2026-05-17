@@ -15,19 +15,22 @@
  *     everything ISA-identity-related (expected ISA path resolution,
  *     project ISA at `<sessionRoot>/ISA.md`).
  *
- * Release condition (gate becomes inert):
+ * Release condition (gate becomes inert for non-ISA tools):
  *   - engagement_required is false, OR
  *   - the expected per-task ISA exists on disk, OR
  *   - a project ISA exists at `<sessionRoot>/ISA.md` (Stop-gate alignment).
  *
  * Acceptance:
- *   - Write / Update / NotebookEdit: ONLY the deterministic expected per-task
- *     ISA path. Creating a fresh project ISA via Write is intentionally
- *     not permitted — the directive promised a specific location.
- *   - Edit / MultiEdit: the expected per-task ISA path OR the project ISA
- *     at `<sessionRoot>/ISA.md` if it exists on disk.
+ *   - Write / Update / NotebookEdit: explicitly allow ONLY the deterministic
+ *     expected per-task ISA path. Creating a fresh project ISA via Write is
+ *     intentionally not permitted — the directive promised a specific
+ *     location.
+ *   - Edit / MultiEdit: explicitly allow the expected per-task ISA path OR
+ *     the project ISA at `<sessionRoot>/ISA.md` if it exists on disk.
  *   - Bash mkdir: the parent of the expected per-task ISA (absolute) OR
  *     the relative spelling of that parent when `currentCwd === sessionRoot`.
+ *   - Bash inspection: harmless cwd/repo/worker-state discovery before
+ *     writing the ISA (`pwd`, `rg ...`, `claude-hooks-workers list`).
  *
  * Other tools (Read / Glob / Grep / LS / TodoWrite / Task / Skill / etc.)
  * always pass through during engagement. Unknown tools (third-party MCP)
@@ -43,6 +46,10 @@ import { dirname } from "node:path"
 import type { PolicyDecision } from "./types.ts"
 import { safeResolvePath } from "../services/path-resolution.ts"
 import type { SessionStateRecord } from "../services/session-state.ts"
+import { resolveExpectedIsaAbsolute } from "../algorithm/isa/path-contract.ts"
+import {
+  normalizeExpectedIsaPath,
+} from "../algorithm/isa/tier-policy.ts"
 
 export interface EngagementGateInput {
   readonly currentCwd: string
@@ -77,18 +84,81 @@ const commandFromInput = (input: unknown): string | null => {
 }
 
 /**
- * Allowed Bash forms during engagement: only `mkdir` of an explicitly
- * accepted directory (or a no-arg / bare `mkdir`/`mkdir -p`). Anything
- * else — `sudo mkdir`, chained commands, mkdir of unrelated paths — is
- * denied.
+ * Allowed Bash forms during engagement: only read-only inspection commands
+ * (`pwd`, `rg ...`, `claude-hooks-workers list`) and `mkdir` of an explicitly
+ * accepted directory (or a no-arg / bare `mkdir` / `mkdir -p`). Anything else
+ * — `sudo mkdir`, chained commands, worker mutation commands, mkdir of
+ * unrelated paths — is denied.
  */
+const hasUnquotedShellControl = (cmd: string): boolean => {
+  let quote: "'" | "\"" | null = null
+  for (let i = 0; i < cmd.length; i += 1) {
+    const ch = cmd.charAt(i)
+    if (ch === "\n" || ch === "\r" || ch === "`" || ch === "$") return true
+    if (ch === "'" || ch === "\"") {
+      quote = quote === ch ? null : quote === null ? ch : quote
+      continue
+    }
+    if (quote === null && /[;&|<>]/.test(ch)) return true
+  }
+  return quote !== null
+}
+
+const shellWords = (cmd: string): ReadonlyArray<string> | null => {
+  const words: string[] = []
+  let current = ""
+  let quote: "'" | "\"" | null = null
+  for (let i = 0; i < cmd.length; i += 1) {
+    const ch = cmd.charAt(i)
+    if (ch === "'" || ch === "\"") {
+      quote = quote === ch ? null : quote === null ? ch : quote
+      continue
+    }
+    if (quote === null && /\s/.test(ch)) {
+      if (current.length > 0) {
+        words.push(current)
+        current = ""
+      }
+      continue
+    }
+    current += ch
+  }
+  if (quote !== null) return null
+  if (current.length > 0) words.push(current)
+  return words
+}
+
+const isSafeRipgrepInspection = (trimmed: string): boolean => {
+  const words = shellWords(trimmed)
+  if (words === null || words[0] !== "rg") return false
+  return !words.slice(1).some((word) =>
+    word === "--pre" ||
+    word.startsWith("--pre=") ||
+    word === "--pre-glob" ||
+    word.startsWith("--pre-glob=") ||
+    word === "--config" ||
+    word.startsWith("--config=")
+  )
+}
+
+const isAllowedReadOnlyInspectionBash = (cmd: string): boolean => {
+  const trimmed = cmd.trim()
+  if (hasUnquotedShellControl(trimmed)) return false
+  if (trimmed === "pwd") return true
+  if (isSafeRipgrepInspection(trimmed)) return true
+  return (
+    trimmed === "./bin/claude-hooks-workers list" ||
+    trimmed === "./bin/claude-hooks-workers list --json"
+  )
+}
+
 const isAllowedMkdir = (
   cmd: string,
   acceptedDirs: ReadonlyArray<string>,
 ): boolean => {
   const trimmed = cmd.trim()
   // Reject anything with shell control characters that could chain a write.
-  if (/[;&|`$<>]/.test(trimmed)) return false
+  if (hasUnquotedShellControl(trimmed)) return false
   if (trimmed === "mkdir" || trimmed === "mkdir -p") return true
   for (const dir of acceptedDirs) {
     const normalized = dir.replace(/\/$/, "")
@@ -120,25 +190,21 @@ const denyReason = (
       ? `  ${rel}\n  (absolute: ${displayIsaAbsolutePath})`
       : `  ${rel}`
   return (
-    `ALGORITHM engagement is required before implementation.\n` +
+    `ISA required before this tool can run.\n` +
     `\n` +
-    `This session classified as ALGORITHM tier ≥ 3. Before using ` +
-    `implementation tools (${toolName} on a non-ISA target was just ` +
-    `attempted), create the ISA at:\n` +
+    `This session is ALGORITHM tier ≥ 3; ${toolName} targeted a non-ISA ` +
+    `path before the ISA exists. Create or update:\n` +
     `\n` +
     `${absoluteLine}\n` +
     `\n` +
     `Allowed now:\n` +
-    `  - Read / LS / Glob / Grep for inspection\n` +
     `  - Write to the expected ISA path above\n` +
     `  - Edit / MultiEdit to that path OR an existing <repo>/ISA.md\n` +
+    `  - Read / LS / Glob / Grep, Bash \`pwd\`, ` +
+    `\`rg ...\`, or \`./bin/claude-hooks-workers list [--json]\` for inspection\n` +
     `  - Bash only for \`mkdir -p ${dir}\`\n` +
     `\n` +
-    `After the ISA exists, the gate releases automatically and you may ` +
-    `continue normally. Disk is the source of truth — the gate checks ` +
-    `the actual filesystem, not in-memory state. Set ` +
-    `CLAUDE_HOOKS_DISABLE_ISA_PRETOOL_GATE=1 in the hook environment to ` +
-    `bypass in emergencies.`
+    `After the ISA exists on disk, retry the blocked tool.`
   )
 }
 
@@ -168,20 +234,46 @@ export const evaluateEngagementGateShallow = (
   ctx: EngagementContext,
 ): PolicyDecision => {
   if (!ctx.engagement_required) return { kind: "passthrough" }
-  if (ctx.anyAcceptedIsaExists) return { kind: "passthrough" }
   if (ctx.acceptedWritePaths.length === 0) return { kind: "passthrough" }
+
+  const targetsAcceptedEditPath =
+    ctx.resolvedToolFilePath !== null &&
+    ctx.acceptedEditPaths.includes(ctx.resolvedToolFilePath)
+  const targetsAcceptedWritePath =
+    ctx.resolvedToolFilePath !== null &&
+    ctx.acceptedWritePaths.includes(ctx.resolvedToolFilePath)
+
+  if (
+    (ctx.toolName === "Edit" || ctx.toolName === "MultiEdit") &&
+    targetsAcceptedEditPath
+  ) {
+    return {
+      kind: "allow",
+      reason:
+        "Scoped ISA artifact edit allowed for this engaged ALGORITHM session.",
+    }
+  }
+
+  if (
+    (ctx.toolName === "Write" ||
+      ctx.toolName === "Update" ||
+      ctx.toolName === "NotebookEdit") &&
+    targetsAcceptedWritePath
+  ) {
+    return {
+      kind: "allow",
+      reason:
+        "Scoped ISA artifact write allowed for this engaged ALGORITHM session.",
+    }
+  }
+
+  if (ctx.anyAcceptedIsaExists) return { kind: "passthrough" }
 
   if (ALLOWED_TOOLS_DURING_ENGAGEMENT.has(ctx.toolName)) {
     return { kind: "passthrough" }
   }
 
   if (ctx.toolName === "Edit" || ctx.toolName === "MultiEdit") {
-    if (
-      ctx.resolvedToolFilePath !== null &&
-      ctx.acceptedEditPaths.includes(ctx.resolvedToolFilePath)
-    ) {
-      return { kind: "passthrough" }
-    }
     return {
       kind: "deny",
       reason: denyReason(
@@ -198,12 +290,6 @@ export const evaluateEngagementGateShallow = (
     ctx.toolName === "Update" ||
     ctx.toolName === "NotebookEdit"
   ) {
-    if (
-      ctx.resolvedToolFilePath !== null &&
-      ctx.acceptedWritePaths.includes(ctx.resolvedToolFilePath)
-    ) {
-      return { kind: "passthrough" }
-    }
     return {
       kind: "deny",
       reason: denyReason(
@@ -217,7 +303,10 @@ export const evaluateEngagementGateShallow = (
 
   if (ctx.toolName === "Bash") {
     const cmd = commandFromInput(ctx.toolInput)
-    if (cmd !== null && isAllowedMkdir(cmd, ctx.acceptedMkdirDirs)) {
+    if (
+      cmd !== null &&
+      (isAllowedReadOnlyInspectionBash(cmd) || isAllowedMkdir(cmd, ctx.acceptedMkdirDirs))
+    ) {
       return { kind: "passthrough" }
     }
     return {
@@ -250,9 +339,8 @@ export const evaluateEngagementGate = (
   // write path; fail open rather than blocking all tools.
   if (record.expected_isa_path === null) return { kind: "passthrough" }
 
-  const expectedAbsolute =
-    record.expected_isa_path_absolute ??
-    safeResolvePath(sessionRoot, record.expected_isa_path)
+  const expectedRelative = normalizeExpectedIsaPath(record.expected_isa_path)
+  const expectedAbsolute = resolveExpectedIsaAbsolute(sessionRoot, record)
   const expectedDir =
     expectedAbsolute !== null ? dirname(expectedAbsolute) : null
   const expectedIsaExists =
@@ -263,7 +351,7 @@ export const evaluateEngagementGate = (
     projectIsaAbsolute !== null && existsSync(projectIsaAbsolute)
 
   const acceptedWritePaths =
-    expectedAbsolute !== null ? [expectedAbsolute] : []
+    expectedAbsolute !== null ? [expectedAbsolute] : ["<invalid-isa-target>"]
   const acceptedEditPaths =
     projectIsaExists && projectIsaAbsolute !== null
       ? [...acceptedWritePaths, projectIsaAbsolute]
@@ -282,7 +370,8 @@ export const evaluateEngagementGate = (
   const sessionRootResolved =
     safeResolvePath(sessionRoot, ".") ?? sessionRoot
   const cwdIsSessionRoot = currentCwdResolved === sessionRootResolved
-  const expectedDirRelative = dirname(record.expected_isa_path)
+  const expectedDirRelative =
+    expectedRelative === null ? null : dirname(expectedRelative)
   const pushIfNew = (d: string): void => {
     if (d.length > 0 && !acceptedMkdirDirs.includes(d)) {
       acceptedMkdirDirs.push(d)
@@ -292,8 +381,9 @@ export const evaluateEngagementGate = (
     // The model can spell relative paths several common ways. Accept
     // the bare relative form AND a leading `./` form (`./foo/bar`),
     // since the engagement-gate's whitelist is exact-string.
-    pushIfNew(expectedDirRelative)
+    if (expectedDirRelative !== null) pushIfNew(expectedDirRelative)
     if (
+      expectedDirRelative !== null &&
       expectedDirRelative !== "." &&
       !expectedDirRelative.startsWith("./") &&
       !expectedDirRelative.startsWith("/")
@@ -316,7 +406,7 @@ export const evaluateEngagementGate = (
     acceptedWritePaths,
     acceptedEditPaths,
     acceptedMkdirDirs,
-    displayIsaPath: record.expected_isa_path,
+    displayIsaPath: expectedRelative ?? record.expected_isa_path,
     displayIsaAbsolutePath: expectedAbsolute,
     displayMkdirDir: expectedDir,
     resolvedToolFilePath,

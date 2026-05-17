@@ -11,12 +11,15 @@ import * as path from "node:path"
 import { handlePreToolUse } from "../../src/events/pretool-policy.ts"
 import { handleSubagentStart } from "../../src/events/subagent-scope-gate.ts"
 import { HookPayload } from "../../src/schema/payloads.ts"
+import { NormalizedHookEvent } from "../../src/schema/normalized.ts"
 import { SessionStateTest } from "../../src/services/session-state.ts"
+import { appendWorkerContract } from "../../src/policies/worker-contract.ts"
 
 const REPO_ROOT = path.resolve(__dirname, "..", "..")
 const DISPATCHER = path.join(REPO_ROOT, "src", "dispatcher.ts")
 
 const decode = (raw: unknown) => Schema.decodeUnknownSync(HookPayload)(raw)
+const decodeNormalized = (raw: unknown) => Schema.decodeUnknownSync(NormalizedHookEvent)(raw)
 
 const dispatch = async (
   event: string,
@@ -188,12 +191,13 @@ describe("Red-team scenarios (10/10)", () => {
   test("#8 SubagentStart explore → read-only scope context", async () => {
     const d = await Effect.runPromise(
       handleSubagentStart(
-        decode({
+        decodeNormalized({
           _tag: "SubagentStart",
           hook_event_name: "SubagentStart",
           session_id: "rt8",
           subagent_type: "Explore",
           task_id: "t1",
+          prompt: appendWorkerContract("Find evidence.", "Explore"),
         }),
       ).pipe(Effect.provide(SessionStateTest())),
     )
@@ -271,7 +275,7 @@ describe("Red-team scenarios (10/10)", () => {
     expect(ctx).toContain("MODE: ALGORITHM")
     expect(ctx).toContain("ENGAGE: ALGORITHM_ENGAGEMENT_REQUIRED=true")
     expect(ctx).toContain("ISA_PATH=.claude-hooks/work/rt11-loglens/ISA.md")
-    expect(ctx).toContain("MANDATORY FIRST ACTION")
+    expect(ctx).toContain("FIRST ACTION NOW")
     expect(ctx).toMatch(/Required sections for E[3-5]:/)
   })
 
@@ -302,7 +306,7 @@ describe("Red-team scenarios (10/10)", () => {
     }
     expect(out.hookSpecificOutput?.permissionDecision).toBe("deny")
     expect(out.hookSpecificOutput?.permissionDecisionReason ?? "").toContain(
-      "ALGORITHM engagement is required",
+      "ISA required before this tool can run",
     )
   })
 

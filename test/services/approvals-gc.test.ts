@@ -113,6 +113,37 @@ describe("Approvals.gc — Live (real filesystem)", () => {
     expect(after).toContain('"pattern":"new"')
     await fsP.rm(tmp, { recursive: true, force: true })
   })
+
+  test("preserves records outside EventStore tail while pruning stale entries", async () => {
+    const tmp = await fsP.mkdtemp(path.join(os.tmpdir(), "approvals-gc-"))
+    const stateDir = path.join(tmp, ".claude-hooks", "state")
+    await fsP.mkdir(stateDir, { recursive: true })
+    const ledger = path.join(stateDir, "approvals.jsonl")
+    const now = Date.now()
+    const fresh = Array.from({ length: 1005 }, (_, i) =>
+      mkRec(tmp, `fresh-${i}`, now - 60 * 1000),
+    )
+    const stale = mkRec(tmp, "stale-tail", now - 10 * DAY)
+    await fsP.writeFile(
+      ledger,
+      [...fresh, stale].map((r) => JSON.stringify(r)).join("\n") + "\n",
+      "utf8",
+    )
+
+    await Effect.runPromise(
+      Effect.gen(function* () {
+        const a = yield* Approvals
+        yield* a.gc(tmp, now)
+      }).pipe(Effect.provide(ApprovalsLive)),
+    )
+
+    const after = await fsP.readFile(ledger, "utf8")
+    const records = after.trim().split(/\r?\n/).map((line) => JSON.parse(line) as ApprovalRecord)
+    expect(records.length).toBe(1005)
+    expect(records.some((r) => r.pattern === "fresh-0")).toBe(true)
+    expect(records.some((r) => r.pattern === "stale-tail")).toBe(false)
+    await fsP.rm(tmp, { recursive: true, force: true })
+  })
 })
 
 describe("shouldGc helper", () => {

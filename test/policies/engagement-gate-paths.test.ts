@@ -49,7 +49,7 @@ const engagedRecord = (
   ...overrides,
 })
 
-describe("evaluateEngagementGate (deepened) — passthrough", () => {
+describe("evaluateEngagementGate (deepened) — passthrough/allow", () => {
   test("engagement not required → passthrough", () => {
     const v = evaluateEngagementGate({
       currentCwd: root,
@@ -61,7 +61,7 @@ describe("evaluateEngagementGate (deepened) — passthrough", () => {
     expect(v.kind).toBe("passthrough")
   })
 
-  test("Write to expected_isa_path_absolute → passthrough", () => {
+  test("Write to expected_isa_path_absolute → explicit allow", () => {
     const v = evaluateEngagementGate({
       currentCwd: root,
       sessionRoot: root,
@@ -69,10 +69,10 @@ describe("evaluateEngagementGate (deepened) — passthrough", () => {
       toolName: "Write",
       toolInput: { file_path: path.join(root, EXPECTED_REL) },
     })
-    expect(v.kind).toBe("passthrough")
+    expect(v.kind).toBe("allow")
   })
 
-  test("Edit to expected_isa_path_absolute → passthrough", () => {
+  test("Edit to expected_isa_path_absolute → explicit allow", () => {
     const v = evaluateEngagementGate({
       currentCwd: root,
       sessionRoot: root,
@@ -80,10 +80,10 @@ describe("evaluateEngagementGate (deepened) — passthrough", () => {
       toolName: "Edit",
       toolInput: { file_path: path.join(root, EXPECTED_REL) },
     })
-    expect(v.kind).toBe("passthrough")
+    expect(v.kind).toBe("allow")
   })
 
-  test("Edit to <sessionRoot>/ISA.md when project ISA exists → passthrough", () => {
+  test("Edit to <sessionRoot>/ISA.md when project ISA exists → explicit allow", () => {
     fs.writeFileSync(path.join(root, "ISA.md"), "# project isa\n")
     const v = evaluateEngagementGate({
       currentCwd: root,
@@ -92,7 +92,7 @@ describe("evaluateEngagementGate (deepened) — passthrough", () => {
       toolName: "Edit",
       toolInput: { file_path: path.join(root, "ISA.md") },
     })
-    expect(v.kind).toBe("passthrough")
+    expect(v.kind).toBe("allow")
   })
 
   test("Bash mkdir -p <expectedDir absolute> → passthrough", () => {
@@ -119,6 +119,41 @@ describe("evaluateEngagementGate (deepened) — passthrough", () => {
     expect(v.kind).toBe("passthrough")
   })
 
+  test("Bash pwd before ISA exists → passthrough", () => {
+    const v = evaluateEngagementGate({
+      currentCwd: root,
+      sessionRoot: root,
+      record: engagedRecord(),
+      toolName: "Bash",
+      toolInput: { command: "pwd" },
+    })
+    expect(v.kind).toBe("passthrough")
+  })
+
+  test("Bash rg before ISA exists → passthrough", () => {
+    const v = evaluateEngagementGate({
+      currentCwd: root,
+      sessionRoot: root,
+      record: engagedRecord(),
+      toolName: "Bash",
+      toolInput: {
+        command: "rg -n \"runGitApply|applyWorkerPatch\" src/services/worker-integration.ts",
+      },
+    })
+    expect(v.kind).toBe("passthrough")
+  })
+
+  test("Bash workers list --json before ISA exists → passthrough", () => {
+    const v = evaluateEngagementGate({
+      currentCwd: root,
+      sessionRoot: root,
+      record: engagedRecord(),
+      toolName: "Bash",
+      toolInput: { command: "./bin/claude-hooks-workers list --json" },
+    })
+    expect(v.kind).toBe("passthrough")
+  })
+
   test("Read during engagement → passthrough", () => {
     const v = evaluateEngagementGate({
       currentCwd: root,
@@ -130,7 +165,7 @@ describe("evaluateEngagementGate (deepened) — passthrough", () => {
     expect(v.kind).toBe("passthrough")
   })
 
-  test("symlinked sessionRoot: write through symlink-resolved expected path → passthrough", () => {
+  test("symlinked sessionRoot: write through symlink-resolved expected path → explicit allow", () => {
     // Real session root under root/real, symlinked at root/link. Engagement
     // record stores the symlinked absolute path; tool input arrives through
     // the real path. The gate must accept via realpath normalization.
@@ -148,7 +183,37 @@ describe("evaluateEngagementGate (deepened) — passthrough", () => {
       toolName: "Write",
       toolInput: { file_path: path.join(realRoot, EXPECTED_REL) },
     })
-    expect(v.kind).toBe("passthrough")
+    expect(v.kind).toBe("allow")
+  })
+
+  test("corrupt expected_isa_path_absolute does not allow arbitrary writes", () => {
+    const arbitraryTarget = path.join(root, ".env")
+    const v = evaluateEngagementGate({
+      currentCwd: root,
+      sessionRoot: root,
+      record: engagedRecord({
+        expected_isa_path_absolute: arbitraryTarget,
+      }),
+      toolName: "Write",
+      toolInput: { file_path: arbitraryTarget },
+    })
+    expect(v.kind).toBe("deny")
+  })
+
+  test("invalid relative expected_isa_path is fail-closed for implementation writes", () => {
+    const escapedRel = ".claude-hooks/work/../escape/ISA.md"
+    const escapedAbs = safeResolvePath(root, escapedRel)
+    const v = evaluateEngagementGate({
+      currentCwd: root,
+      sessionRoot: root,
+      record: engagedRecord({
+        expected_isa_path: escapedRel,
+        expected_isa_path_absolute: escapedAbs,
+      }),
+      toolName: "Write",
+      toolInput: { file_path: escapedAbs },
+    })
+    expect(v.kind).toBe("deny")
   })
 })
 

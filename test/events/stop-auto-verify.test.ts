@@ -232,8 +232,8 @@ describe("handleStop with verify-map auto-verifier", () => {
       const d = decision as { decision?: string; reason?: string }
       expect(d.decision).toBe("block")
       expect(d.reason ?? "").toMatch(/verification command has run/)
-      // Reminder block uses the existing one-shot loop guard.
-      expect(after.stop_blocked_once).toBe(true)
+      // Verification reminders keep blocking until a real check runs.
+      expect(after.stop_blocked_once).toBe(false)
     } finally {
       cleanup()
     }

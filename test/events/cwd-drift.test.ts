@@ -28,6 +28,7 @@ import {
   EMPTY_SESSION_STATE,
   type SessionStateRecord,
 } from "../../src/services/session-state.ts"
+import { CommandRunnerTest } from "../../src/services/command-runner.ts"
 
 const decode = (raw: unknown) => Schema.decodeUnknownSync(HookPayload)(raw)
 
@@ -130,6 +131,42 @@ const ENGAGED = (root: string): Partial<SessionStateRecord> => ({
   session_root: root,
 })
 
+const COMPLETE_ENGAGED_ISA = `---
+effort: advanced
+phase: complete
+classifier_mode: ALGORITHM
+classifier_tier: E3
+classifier_reason: cwd drift fixture
+---
+
+## Problem
+x
+
+## Vision
+x
+
+## Out of Scope
+x
+
+## Constraints
+x
+
+## Goal
+x
+
+## Criteria
+- [x] ISC-1: x
+
+## Test Strategy
+ISC-1 | unit | x | x | x
+
+## Features
+x | ISC-1 | none | yes
+
+## Verification
+- ISC-1: fixture passed
+`
+
 describe("PreToolUse engagement gate — cwd drift", () => {
   test("Write to frozen repo ISA allowed after cwd drift", async () => {
     const { root, drift, cleanup } = stage("write-allow")
@@ -222,12 +259,11 @@ describe("Stop ISA lookup — cwd drift", () => {
       fs.mkdirSync(isaDir, { recursive: true })
       fs.writeFileSync(
         path.join(isaDir, "ISA.md"),
-        "---\neffort: advanced\nphase: observe\n---\n\n## Goal\nx\n\n## Criteria\n- [ ] ISC-1\n",
+        COMPLETE_ENGAGED_ISA,
         "utf-8",
       )
       const out = await runStop(drift, ENGAGED(root))
-      // Engagement absence gate should NOT fire — the active ISA is
-      // visible via session_root.
+      // Stop should consult the ISA via session_root, not drifted cwd.
       expect(out.decision).not.toBe("block")
     } finally {
       cleanup()
@@ -287,12 +323,24 @@ describe("TaskCompleted ISA evidence — cwd drift", () => {
         "---\neffort: advanced\nphase: complete\n---\n\n## Goal\nx\n\n## Criteria\n- [x] ISC-1\n\n## Verification\n- ISC-1: done\n",
         "utf-8",
       )
+      // Plant an UNCHECKED ISA at session_root so the ISA gate has
+      // something to fire on if it correctly resolves to session_root.
+      // Without this, the new "opt-in via signal" policy would pass
+      // (no AC/evidence intent, no session_root ISA), and the test
+      // couldn't distinguish "drift ISA invisible" from "gate disabled".
+      const rootIsaDir = path.join(root, ".claude-hooks", "work", SID)
+      fs.mkdirSync(rootIsaDir, { recursive: true })
+      fs.writeFileSync(
+        path.join(rootIsaDir, "ISA.md"),
+        "---\neffort: advanced\nphase: observe\n---\n\n## Goal\nx\n\n## Criteria\n- [ ] ISC-1: still pending\n",
+        "utf-8",
+      )
       const out = await runTaskCompleted(drift, ENGAGED(root))
-      // The drift ISA is invisible (we look at session_root, which has no
-      // ISA), so checkIsaEvidence returns null. The downstream AC/evidence
-      // check then fires (no acceptance_criteria field on the payload).
+      // If the gate erroneously followed drift, it'd see the
+      // all-checked-with-verification ISA and NO_DECISION. Using
+      // session_root correctly, it sees the unchecked ISA and blocks.
       expect(out.decision).toBe("block")
-      expect(out.reason ?? "").toContain("acceptance_criteria")
+      expect(out.reason ?? "").toContain("unchecked")
     } finally {
       cleanup()
     }
@@ -428,6 +476,7 @@ describe("UserPromptSubmit — frozen root is write-once across prompts", () => 
           Effect.provide(inferenceLayer),
           Effect.provide(ClaudeSubprocessTest()),
           Effect.provide(ClassifierTelemetryTest().layer),
+          Effect.provide(CommandRunnerTest()),
         ),
       )
       expect(after.session_root).toBe(root)
@@ -480,6 +529,7 @@ describe("UserPromptSubmit — frozen root is write-once across prompts", () => 
           Effect.provide(inferenceLayer),
           Effect.provide(ClaudeSubprocessTest()),
           Effect.provide(ClassifierTelemetryTest().layer),
+          Effect.provide(CommandRunnerTest()),
         ),
       )
       expect(after.engagement_required).toBe(true)

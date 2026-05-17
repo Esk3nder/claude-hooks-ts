@@ -12,6 +12,8 @@
 
 import { Context, Effect, Layer } from "effect"
 import { ClaudeSubprocess } from "./claude-subprocess.ts"
+import { durationMillis, loadRuntimeConfig } from "./runtime-config.ts"
+import { reportHookFailure } from "./hook-failure.ts"
 
 export type Mode = "MINIMAL" | "NATIVE" | "ALGORITHM"
 /** Numeric tiers 1-5 internally — mirrors the InferenceResult.tier shape.
@@ -245,11 +247,22 @@ const buildStdin = (
   return `${refs}\n\n${framedPrompt}`
 }
 
+const classifierExitSummary = (exitCode: number, stderr: string): string => {
+  const stderrBytes = Buffer.byteLength(stderr, "utf8")
+  return stderrBytes > 0
+    ? `classifier exit ${exitCode}; stderr redacted (${stderrBytes} bytes)`
+    : `classifier exit ${exitCode}`
+}
+
 const liveImpl: InferenceApi = {
   classify: (prompt, opts) =>
     Effect.gen(function* () {
       const subproc = yield* ClaudeSubprocess
-      const timeoutMs = opts?.timeoutMs ?? DEFAULT_TIMEOUT_MS
+      const config = yield* loadRuntimeConfig
+      const configuredTimeoutMs = durationMillis(config.classifierTimeoutMs)
+      const timeoutMs =
+        opts?.timeoutMs ??
+        (configuredTimeoutMs > 0 ? configuredTimeoutMs : DEFAULT_TIMEOUT_MS)
       const hasImages =
         opts?.imagePaths !== undefined && opts.imagePaths.length > 0
       const framed = buildUserPrompt(prompt, opts?.context)
@@ -258,17 +271,32 @@ const liveImpl: InferenceApi = {
 
       const result = yield* subproc.spawn(args, { stdin, timeoutMs }).pipe(
         Effect.catchAll((err) =>
-          Effect.succeed({
-            stdout: "",
-            stderr: `spawn-error: ${String(err)}`,
-            exitCode: -1,
-            latencyMs: 0,
-            timedOut: false,
-          }),
+          reportHookFailure({
+            kind: "subprocess_failed",
+            event: "UserPromptSubmit",
+            cause: err,
+            hookSafe: true,
+            context: { subprocess: "claude", op: "classifier.spawn" },
+          }).pipe(
+            Effect.as({
+              stdout: "",
+              stderr: `spawn-error: ${String(err)}`,
+              exitCode: -1,
+              latencyMs: 0,
+              timedOut: false,
+            }),
+          ),
         ),
       )
 
       if (result.timedOut) {
+        yield* reportHookFailure({
+          kind: "subprocess_failed",
+          event: "UserPromptSubmit",
+          cause: `classifier timeout after ${timeoutMs}ms`,
+          hookSafe: true,
+          context: { subprocess: "claude", op: "classifier.spawn", timeout_ms: timeoutMs },
+        })
         return {
           ...FAIL_SAFE,
           reason: `classifier timeout after ${timeoutMs}ms`,
@@ -276,9 +304,17 @@ const liveImpl: InferenceApi = {
         }
       }
       if (result.exitCode !== 0) {
+        const reason = classifierExitSummary(result.exitCode, result.stderr)
+        yield* reportHookFailure({
+          kind: "subprocess_failed",
+          event: "UserPromptSubmit",
+          cause: reason,
+          hookSafe: true,
+          context: { subprocess: "claude", op: "classifier.spawn", exit_code: result.exitCode },
+        })
         return {
           ...FAIL_SAFE,
-          reason: `classifier exit ${result.exitCode}: ${result.stderr.slice(0, 120).trim()}`,
+          reason,
           latencyMs: result.latencyMs,
         }
       }

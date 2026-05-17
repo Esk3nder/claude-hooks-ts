@@ -41,14 +41,14 @@ describe("handleUserPromptExpansion", () => {
     )
   })
 
-  test("benign expansion → SAFE_DEFAULT", async () => {
+  test("benign expansion → NO_DECISION", async () => {
     const d = await Effect.runPromise(
       handleUserPromptExpansion(exp("/help", "show me the help text")),
     )
     expect(d).toEqual({})
   })
 
-  test("non-UserPromptExpansion payload → SAFE_DEFAULT", async () => {
+  test("non-UserPromptExpansion payload → NO_DECISION", async () => {
     const payload = decode({
       _tag: "Stop",
       session_id: "s",

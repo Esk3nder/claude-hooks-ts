@@ -12,4 +12,5 @@ dist/
 # they survive in source control as evidence trails. Do NOT add work/
 # or archive/ to this list.
 .claude-hooks/state/
+.omx/
 *.bak.*

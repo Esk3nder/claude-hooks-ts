@@ -128,7 +128,7 @@ describe("handlePreCompact (red-team #9)", () => {
     expect(r.content).toContain(customInstructions)
   })
 
-  test("non-PreCompact payload → SAFE_DEFAULT", async () => {
+  test("non-PreCompact payload → NO_DECISION", async () => {
     const layer = Layer.mergeAll(
       FileSystemTest(),
       SessionStateTest(),

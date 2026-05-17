@@ -1,7 +1,7 @@
 import { Effect } from "effect"
 import type { HookPayload } from "../schema/payloads.ts"
 import type { HookDecision } from "../schema/decisions.ts"
-import { SAFE_DEFAULT } from "../schema/decisions.ts"
+import { NO_DECISION } from "../schema/decisions.ts"
 import {
   classifyPrompt,
   requiresWebSources,
@@ -15,6 +15,7 @@ import {
 import { getRecentContext } from "../algorithm/transcript-context.ts"
 import type { Inference } from "../services/inference.ts"
 import type { ClaudeSubprocess } from "../services/claude-subprocess.ts"
+import type { CommandRunner } from "../services/command-runner.ts"
 import {
   ClassifierTelemetry,
   buildRecord,
@@ -22,9 +23,23 @@ import {
 import {
   planEngagement,
   renderEngagementDirective,
+  resolveActiveIsa,
 } from "../algorithm/isa/lifecycle.ts"
+import { resolveExpectedIsaAbsolute } from "../algorithm/isa/path-contract.ts"
 import { detectSessionRoot } from "../services/project-root.ts"
 import { safeResolvePath } from "../services/path-resolution.ts"
+import { reportHookFailure } from "../services/hook-failure.ts"
+
+const UNKNOWN_MULTI_FILE_CUES =
+  /\b(multi[- ]file|across files|whole repo|entire repo|codebase-wide|several files|many files|map relationships|trace|investigat(?:e|ion)|audit)\b/i
+
+const shouldPreferAgentDelegation = (
+  workflow: string,
+  prompt: string,
+): boolean =>
+  workflow === "research.repo" ||
+  workflow === "research.synthesis" ||
+  (workflow === "unknown" && UNKNOWN_MULTI_FILE_CUES.test(prompt))
 
 /**
  * UserPromptSubmit handler — TWO classifiers, layered (B4) — with the full
@@ -35,7 +50,7 @@ import { safeResolvePath } from "../services/path-resolution.ts"
  *
  * 1. System-text short-circuit. If the prompt is a
  * `<system-reminder>`, `<task-notification>`, or other system-injected
- * string, emit NO additionalContext, no telemetry — just SAFE_DEFAULT.
+ * string, emit NO additionalContext, no telemetry — just NO_DECISION.
  * this package does this with `process.exit(0)`; we return.
  *
  * 2. Regex `workflow-classifier` (cheap, sync). Owns `last_workflow` in
@@ -69,14 +84,14 @@ export const handleUserPromptSubmit = (
 ): Effect.Effect<
   HookDecision,
   never,
-  SessionState | Inference | ClaudeSubprocess | ClassifierTelemetry
+  SessionState | Inference | ClaudeSubprocess | ClassifierTelemetry | CommandRunner
 > =>
   Effect.gen(function* () {
-    if (payload._tag !== "UserPromptSubmit") return SAFE_DEFAULT
+    if (payload._tag !== "UserPromptSubmit") return NO_DECISION
 
     // Step 1 — system-text short-circuit.
     if (isSystemTextPrompt(payload.prompt)) {
-      return SAFE_DEFAULT
+      return NO_DECISION
     }
 
     // Step 2 — regex workflow tagger. Two outputs:
@@ -88,18 +103,42 @@ export const handleUserPromptSubmit = (
     const requiresWebSrc = requiresWebSources(payload.prompt)
     const state = yield* SessionState
     const sessionId = payload.session_id
-    yield* state
-      .update(sessionId, {
-        last_workflow: workflow,
-        requires_web_sources: requiresWebSrc,
-      })
+    const existing = yield* state
+      .get(sessionId)
       .pipe(
-        Effect.catchAll((cause) => {
-          process.stderr.write(
-            `[UserPromptSubmit] session-state op=workflow-update failed: sid=${sessionId} cause=${String(cause).slice(0, 160)}\n`,
-          )
-          return Effect.succeed(undefined)
-        }),
+        Effect.catchAll((cause) =>
+          reportHookFailure({
+            kind: "state_read_failed",
+            event: "UserPromptSubmit",
+            sessionId,
+            cause,
+            hookSafe: true,
+            context: { op: "existing-read", cwd: payload.cwd },
+          }).pipe(Effect.as(null)),
+        ),
+      )
+    const existingSourceObligationActive =
+      existing?.requires_web_sources === true && existing.source_urls.length === 0
+    const nextRequiresWebSources =
+      requiresWebSrc || existingSourceObligationActive
+    const workflowPatch = {
+      last_workflow: workflow,
+      requires_web_sources: nextRequiresWebSources,
+      ...(requiresWebSrc ? { source_urls: [] } : {}),
+    }
+    yield* state
+      .update(sessionId, workflowPatch)
+      .pipe(
+        Effect.catchAll((cause) =>
+          reportHookFailure({
+            kind: "state_write_failed",
+            event: "UserPromptSubmit",
+            sessionId,
+            cause,
+            hookSafe: true,
+            context: { op: "workflow-update", cwd: payload.cwd },
+          }),
+        ),
       )
 
     // Step 3 — transcript context. Effectful because it
@@ -109,12 +148,11 @@ export const handleUserPromptSubmit = (
     // Step 4 — mode classifier with context.
     const classification = yield* classify(payload.prompt, { context })
     const modeLine = renderClassificationLine(classification)
-    const workflowLine = `Detected workflow: ${workflow}. ${playbook}`
+    const delegationNudge = shouldPreferAgentDelegation(workflow, payload.prompt)
+      ? " Prefer Agent delegation for this turn."
+      : ""
+    const workflowLine = `Detected workflow: ${workflow}. ${playbook}${delegationNudge}`
     const plan = planEngagement(classification, sessionId)
-    const engageLine = plan === null ? null : renderEngagementDirective(plan)
-    const additionalContext = engageLine
-      ? `${workflowLine}\n${modeLine}\n${engageLine}`
-      : `${workflowLine}\n${modeLine}`
 
     // Step 4b — engagement bookkeeping. Stop / PostToolUse gates read
     // these fields; without them they cannot tell "no ISA" (legitimate
@@ -129,44 +167,77 @@ export const handleUserPromptSubmit = (
     // `expected_isa_path` stays for display and back-compat; downstream
     // gates prefer `expected_isa_path_absolute`.
     const engagementRequired = plan !== null
-    const existing = yield* state
-      .get(sessionId)
-      .pipe(
-        Effect.catchAll((cause) => {
-          process.stderr.write(
-            `[UserPromptSubmit] session-state op=existing-read failed: sid=${sessionId} cause=${String(cause).slice(0, 160)}\n`,
-          )
-          return Effect.succeed(null)
-        }),
-      )
     const initialCwd =
       typeof payload.cwd === "string" && payload.cwd.length > 0
         ? payload.cwd
         : process.cwd()
+    const existingEngagementActive = existing?.engagement_required === true
     const sessionRoot = engagementRequired
-      ? (existing?.session_root ?? detectSessionRoot(initialCwd))
+      ? (existing?.session_root ?? (yield* detectSessionRoot(initialCwd)))
+      : existingEngagementActive
+        ? (existing?.session_root ?? null)
       : null
+    const existingExpectedAbsolute =
+      existingEngagementActive && sessionRoot !== null && existing !== null
+        ? resolveExpectedIsaAbsolute(sessionRoot, existing)
+        : null
     const expectedIsaPathAbsolute =
       engagementRequired && sessionRoot !== null && plan !== null
-        ? (existing?.expected_isa_path_absolute ??
-          safeResolvePath(sessionRoot, plan.isaPath))
+        ? (existingExpectedAbsolute ?? safeResolvePath(sessionRoot, plan.isaPath))
+        : existingEngagementActive
+          ? existingExpectedAbsolute
         : null
+    const activeIsaPath =
+      engagementRequired && sessionRoot !== null && plan !== null
+        ? resolveActiveIsa({
+            sessionRoot,
+            record: {
+              engagement_required: true,
+              expected_isa_path: plan.isaPath,
+              expected_isa_path_absolute: expectedIsaPathAbsolute,
+              last_mode: classification.mode,
+              last_tier: classification.tier,
+            },
+          })
+        : null
+    const engageLine =
+      plan === null ? null : renderEngagementDirective(plan, { activeIsaPath })
+    const additionalContext = engageLine
+      ? `${workflowLine}\n${modeLine}\n${engageLine}`
+      : `${workflowLine}\n${modeLine}`
+    const nextEngagementRequired = engagementRequired || existingEngagementActive
     yield* state
       .update(sessionId, {
-        last_mode: classification.mode,
-        last_tier: classification.tier,
-        engagement_required: engagementRequired,
-        expected_isa_path: engagementRequired ? plan.isaPath : null,
+        last_mode: engagementRequired
+          ? classification.mode
+          : existingEngagementActive
+            ? (existing?.last_mode ?? classification.mode)
+            : classification.mode,
+        last_tier: engagementRequired
+          ? classification.tier
+          : existingEngagementActive
+            ? (existing?.last_tier ?? classification.tier)
+            : classification.tier,
+        engagement_required: nextEngagementRequired,
+        expected_isa_path: engagementRequired
+          ? plan.isaPath
+          : existingEngagementActive
+            ? (existing?.expected_isa_path ?? null)
+            : null,
         session_root: sessionRoot,
         expected_isa_path_absolute: expectedIsaPathAbsolute,
       })
       .pipe(
-        Effect.catchAll((cause) => {
-          process.stderr.write(
-            `[UserPromptSubmit] session-state op=engagement-update failed: sid=${sessionId} cause=${String(cause).slice(0, 160)}\n`,
-          )
-          return Effect.succeed(undefined)
-        }),
+        Effect.catchAll((cause) =>
+          reportHookFailure({
+            kind: "state_write_failed",
+            event: "UserPromptSubmit",
+            sessionId,
+            cause,
+            hookSafe: true,
+            context: { op: "engagement-update", cwd: payload.cwd },
+          }),
+        ),
       )
 
     // Step 5 — telemetry (best-effort, never blocks).

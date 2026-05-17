@@ -1,25 +1,20 @@
 import { Effect } from "effect"
 import type { HookPayload } from "../schema/payloads.ts"
 import type { HookDecision } from "../schema/decisions.ts"
-import { SAFE_DEFAULT } from "../schema/decisions.ts"
+import { NO_DECISION } from "../schema/decisions.ts"
 import { SessionState, type VerificationStatus } from "../services/session-state.ts"
+import { reportHookFailure } from "../services/hook-failure.ts"
+import {
+  isSourceCollectionTool,
+  isSuccessfulToolResponse,
+  isUsableSourceToolResponse,
+  isVerificationCommand,
+  urlsFromToolInput,
+  urlsFromToolResponse,
+} from "../policies/tool-evidence.ts"
 
 const EDIT_TOOLS = new Set(["Edit", "Write", "MultiEdit", "Update"])
 const READ_TOOLS = new Set(["Read"])
-const VERIFY_TOKENS = [
-  "test",
-  "tsc",
-  "typecheck",
-  "lint",
-  "eslint",
-  "ruff",
-  "pytest",
-  "cargo test",
-  "go test",
-  "bun test",
-  "vitest",
-  "jest",
-]
 
 const MAX_INJECT = 500
 
@@ -38,51 +33,6 @@ const commandFromInput = (input: unknown): string | null => {
   return typeof c === "string" ? c : null
 }
 
-
-const URL_RE = /https?:\/\/[^\s"'<>)]+/g
-
-const urlsFromInput = (input: unknown): ReadonlyArray<string> => {
-  if (typeof input !== "object" || input === null) return []
-  const obj = input as { url?: unknown; query?: unknown }
-  const out: string[] = []
-  if (typeof obj.url === "string") out.push(obj.url)
-  if (typeof obj.query === "string") {
-    const m = obj.query.match(URL_RE)
-    if (m) for (const u of m) out.push(u)
-  }
-  return out
-}
-
-const urlsFromResponse = (response: unknown): ReadonlyArray<string> => {
-  if (response === undefined || response === null) return []
-  let text = ""
-  if (typeof response === "string") text = response
-  else {
-    try { text = JSON.stringify(response) } catch { return [] }
-  }
-  const m = text.match(URL_RE)
-  return m ? Array.from(new Set(m)) : []
-}
-
-const successFromTool = (entry: {
-  readonly tool_response?: unknown
-}): boolean => {
-  const r = entry.tool_response
-  if (r === undefined || r === null) return true
-  if (typeof r !== "object") return true
-  const obj = r as { success?: unknown; error?: unknown; exitCode?: unknown; exit_code?: unknown }
-  if (obj.success === false) return false
-  if (obj.error !== undefined && obj.error !== null) return false
-  if (typeof obj.exitCode === "number" && obj.exitCode !== 0) return false
-  if (typeof obj.exit_code === "number" && obj.exit_code !== 0) return false
-  return true
-}
-
-const isVerifyCommand = (cmd: string): boolean => {
-  const lower = cmd.toLowerCase()
-  return VERIFY_TOKENS.some((tok) => lower.includes(tok))
-}
-
 interface BatchSummary {
   readonly readsAdded: number
   readonly editsAdded: number
@@ -97,7 +47,7 @@ export const handlePostToolBatch = (
   payload: HookPayload,
 ): Effect.Effect<HookDecision, never, SessionState> =>
   Effect.gen(function* () {
-    if (payload._tag !== "PostToolBatch") return SAFE_DEFAULT
+    if (payload._tag !== "PostToolBatch") return NO_DECISION
     const state = yield* SessionState
     const sessionId = payload.session_id
 
@@ -112,27 +62,35 @@ export const handlePostToolBatch = (
     let sawVerifyFail = false
 
     for (const entry of payload.tools) {
-      const success = successFromTool(entry)
+      const success = isSuccessfulToolResponse(entry.tool_response)
       if (READ_TOOLS.has(entry.tool_name)) {
         const fp = filePathFromInput(entry.tool_input)
         if (fp !== null) filesRead.push(fp)
       } else if (EDIT_TOOLS.has(entry.tool_name)) {
         const fp = filePathFromInput(entry.tool_input)
-        if (fp !== null) filesChanged.push(fp)
+        if (fp !== null && success) filesChanged.push(fp)
       } else if (entry.tool_name === "Bash") {
         const cmd = commandFromInput(entry.tool_input)
         if (cmd !== null) {
+          const hasResponse =
+            entry.tool_response !== undefined && entry.tool_response !== null
           commandsRun.push(cmd)
           if (!success) commandsFailed.push(cmd)
-          if (isVerifyCommand(cmd)) {
+          if (isVerificationCommand(cmd)) {
             sawVerify = true
             testsRun.push(cmd)
-            if (!success) sawVerifyFail = true
+            if (!success || !hasResponse) {
+              sawVerifyFail = true
+              if (success) commandsFailed.push(cmd)
+            }
           }
         }
-      } else if (entry.tool_name === "WebFetch" || entry.tool_name === "WebSearch") {
-        for (const u of urlsFromInput(entry.tool_input)) urlsCollected.push(u)
-        for (const u of urlsFromResponse(entry.tool_response)) urlsCollected.push(u)
+      } else if (
+        isSourceCollectionTool(entry.tool_name) &&
+        isUsableSourceToolResponse(entry.tool_response)
+      ) {
+        for (const u of urlsFromToolInput(entry.tool_input)) urlsCollected.push(u)
+        for (const u of urlsFromToolResponse(entry.tool_response)) urlsCollected.push(u)
       }
     }
 
@@ -159,15 +117,24 @@ export const handlePostToolBatch = (
         .appendBatch(sessionId, batchEntries)
         .pipe(
           Effect.timeout("500 millis"),
-          Effect.orElseSucceed(() => undefined),
+          Effect.catchAll((cause) =>
+            reportHookFailure({
+              kind: "state_write_failed",
+              event: "PostToolBatch",
+              sessionId,
+              cause,
+              hookSafe: true,
+              context: { op: "session-state.appendBatch" },
+            }),
+          ),
         )
     }
 
     let nextAction: string | null = null
-    if (filesChanged.length > 0 && verification !== "passed") {
-      nextAction = "Run the smallest relevant test/typecheck for the changed files."
-    } else if (verification === "failed") {
+    if (verification === "failed") {
       nextAction = "Read the failure output and fix the failing assertion."
+    } else if (filesChanged.length > 0 && verification !== "passed") {
+      nextAction = "Run the smallest relevant test/typecheck for the changed files."
     } else if (commandsFailed.length > 0) {
       nextAction = "Investigate the failed command before continuing."
     } else if (filesRead.length > 0 && filesChanged.length === 0) {
@@ -180,7 +147,18 @@ export const handlePostToolBatch = (
           verification_status: verification,
           next_required_action: nextAction,
         })
-        .pipe(Effect.catchAll(() => Effect.succeed(undefined)))
+        .pipe(
+          Effect.catchAll((cause) =>
+            reportHookFailure({
+              kind: "state_write_failed",
+              event: "PostToolBatch",
+              sessionId,
+              cause,
+              hookSafe: true,
+              context: { op: "session-state.update" },
+            }),
+          ),
+        )
     }
 
     const summary: BatchSummary = {

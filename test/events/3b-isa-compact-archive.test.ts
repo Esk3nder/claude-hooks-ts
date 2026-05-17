@@ -26,6 +26,7 @@ import { handlePreCompact } from "../../src/events/precompact-snapshot.ts"
 import { handlePostCompact } from "../../src/events/postcompact-ledger.ts"
 import { handleSessionEnd } from "../../src/events/session-ledger.ts"
 import { HookPayload } from "../../src/schema/payloads.ts"
+import { EventStoreLive } from "../../src/services/event-store.ts"
 import { FileSystemLive } from "../../src/services/filesystem.ts"
 import { SessionStateLive } from "../../src/services/session-state.ts"
 import { Project, type ProjectApi } from "../../src/services/project.ts"
@@ -205,7 +206,7 @@ describe("PostCompact rehydrates ISA section as additionalContext", () => {
       })
       const decision = await Effect.runPromise(
         handlePostCompact(post).pipe(
-          Effect.provide(FileSystemLive),
+          Effect.provide(EventStoreLive),
           Effect.provide(projectAt(root)),
         ),
       )
@@ -226,7 +227,7 @@ describe("PostCompact rehydrates ISA section as additionalContext", () => {
     }
   })
 
-  test("returns SAFE_DEFAULT when no snapshot exists for the session", async () => {
+  test("returns NO_DECISION when no snapshot exists for the session", async () => {
     const { root, cleanup } = stage()
     try {
       const post = decode({
@@ -238,7 +239,7 @@ describe("PostCompact rehydrates ISA section as additionalContext", () => {
       })
       const decision = await Effect.runPromise(
         handlePostCompact(post).pipe(
-          Effect.provide(FileSystemLive),
+          Effect.provide(EventStoreLive),
           Effect.provide(projectAt(root)),
         ),
       )
@@ -248,7 +249,7 @@ describe("PostCompact rehydrates ISA section as additionalContext", () => {
     }
   })
 
-  test("snapshot without `## Active ISAs` section → SAFE_DEFAULT (back-compat with older snapshots)", async () => {
+  test("snapshot without `## Active ISAs` section → NO_DECISION (back-compat with older snapshots)", async () => {
     const { root, cleanup } = stage()
     try {
       // Create a snapshot manually that lacks the new section
@@ -267,7 +268,7 @@ describe("PostCompact rehydrates ISA section as additionalContext", () => {
       })
       const decision = await Effect.runPromise(
         handlePostCompact(post).pipe(
-          Effect.provide(FileSystemLive),
+          Effect.provide(EventStoreLive),
           Effect.provide(projectAt(root)),
         ),
       )

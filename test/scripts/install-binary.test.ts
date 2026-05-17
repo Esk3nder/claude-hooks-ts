@@ -41,10 +41,22 @@ afterEach(() => {
 })
 
 describe("install: compiled-binary path", () => {
-  test("default --apply lazy-builds and points settings at the compiled binary", () => {
+  test("default dry-run does not lazy-build the compiled binary", async () => {
     if (fs.existsSync(BIN)) fs.rmSync(BIN, { force: true })
     const out = new StringSink()
-    const code = runInstall(
+    const code = await runInstall(
+      ["--dry-run", "--target", target, "--install-root", REPO_ROOT],
+      sinkAsStream(out),
+    )
+    expect(code).toBe(0)
+    expect(stripAnsi(out.buf)).not.toContain("compiling claude-hook")
+    expect(fs.existsSync(BIN)).toBe(false)
+  })
+
+  test("default --apply lazy-builds and points settings at the compiled binary", async () => {
+    if (fs.existsSync(BIN)) fs.rmSync(BIN, { force: true })
+    const out = new StringSink()
+    const code = await runInstall(
       ["--apply", "--target", target, "--install-root", REPO_ROOT],
       sinkAsStream(out),
     )
@@ -62,9 +74,9 @@ describe("install: compiled-binary path", () => {
     expect(cmd).not.toContain("bin/claude-hook")
   })
 
-  test("--no-binary forces the bash shim (escape hatch)", () => {
+  test("--no-binary forces the bash shim (escape hatch)", async () => {
     const out = new StringSink()
-    const code = runInstall(
+    const code = await runInstall(
       [
         "--apply",
         "--no-binary",

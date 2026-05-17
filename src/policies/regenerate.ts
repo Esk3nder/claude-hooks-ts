@@ -32,6 +32,7 @@
 import { existsSync, readFileSync } from "node:fs"
 import { join } from "node:path"
 import { normalizePathPattern } from "./path-utils.ts"
+import { logWarningSync } from "../services/diagnostics.ts"
 
 const REGENERATE_SUBPATH = [".claude-hooks", "regenerate.yaml"] as const
 
@@ -231,7 +232,7 @@ export const loadRegenerateRules = (
   }
   const parsed = parseRegenerateYaml(raw)
   if (parsed._tag === "fail") {
-    process.stderr.write(`[regenerate] parse failed: ${parsed.message}\n`)
+    logWarningSync(`[regenerate] parse failed: ${parsed.message}`)
     return []
   }
   return parsed.rules

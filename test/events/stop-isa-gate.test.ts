@@ -158,6 +158,48 @@ isc-1 | bash | smoke | n/a | bash
 feat-a | ISC-1 | none | yes
 `
 
+const E3_ENGAGED_COMPLETE_OK = `---
+task: x
+slug: test-stop
+effort: advanced
+phase: complete
+progress: 1/1
+mode: interactive
+classifier_mode: ALGORITHM
+classifier_tier: E3
+classifier_reason: test e3
+started: 2026-05-09T00:00:00Z
+updated: 2026-05-09T00:00:00Z
+---
+
+## Problem
+broken
+
+## Vision
+fixed
+
+## Out of Scope
+not refactoring
+
+## Constraints
+backward-compat
+
+## Goal
+ship
+
+## Criteria
+- [x] ISC-1: did
+
+## Test Strategy
+isc-1 | bash | smoke | n/a | bash
+
+## Features
+feat-a | ISC-1 | none | yes
+
+## Verification
+- ISC-1: passed smoke
+`
+
 const PHASE_BUILD_INCOMPLETE = `---
 task: x
 slug: 20260509_x
@@ -174,6 +216,48 @@ ship
 
 ## Criteria
 - [ ] ISC-1: not done
+`
+
+const E3_OBSERVE_PENDING = `---
+task: solar dashboard
+slug: test-stop
+effort: advanced
+phase: observe
+progress: 0/1
+mode: interactive
+classifier_mode: ALGORITHM
+classifier_tier: E3
+classifier_reason: test e3
+started: 2026-05-09T00:00:00Z
+updated: 2026-05-09T00:00:00Z
+---
+
+## Problem
+needs a finance dashboard
+
+## Vision
+source-backed local tool
+
+## Out of Scope
+server
+
+## Constraints
+self-contained html
+
+## Goal
+ship
+
+## Criteria
+- [ ] ISC-1: source-backed dashboard verified
+
+## Test Strategy
+ISC-1 | browser | smoke | n/a | open html
+
+## Features
+dashboard | ISC-1 | none | yes
+
+## Verification
+- pending
 `
 
 describe("Stop ISA gate — completeness check on phase: complete", () => {
@@ -242,6 +326,8 @@ describe("Stop ISA gate — completeness check on phase: complete", () => {
       expect(out.reason ?? "").toMatch(
         /Vision|Out of Scope|Test Strategy|Features|Constraints|Problem/,
       )
+      expect(out.reason ?? "").toContain("one bulk write/edit")
+      expect(out.reason ?? "").toContain("Do not issue one tool call per heading")
     } finally {
       cleanup()
     }
@@ -570,12 +656,13 @@ ship
     }
   })
 
-  test("loop-protection: a session that already blocked once gets through", async () => {
+  test("stop_blocked_once does not suppress an invalid complete ISA", async () => {
     const { root, cleanup } = stage()
     try {
       writeProjectIsa(root, E1_COMPLETE_UNCHECKED)
       const out = await runStop(root, { stop_blocked_once: true })
-      expect(out).toEqual({})
+      expect(out.decision).toBe("block")
+      expect(out.reason ?? "").toContain("ISA")
     } finally {
       cleanup()
     }
@@ -596,7 +683,7 @@ ship
     }
   })
 
-  test("ISA gate runs BEFORE files-changed verification gate", async () => {
+  test("ISA gate bundles files-changed verification reminder on first block", async () => {
     const { root, cleanup } = stage()
     try {
       writeProjectIsa(root, E1_COMPLETE_UNCHECKED)
@@ -606,7 +693,7 @@ ship
       })
       expect(out.decision).toBe("block")
       expect(out.reason ?? "").toContain("ISA")
-      expect(out.reason ?? "").not.toContain("verification command")
+      expect(out.reason ?? "").toContain("verification command")
     } finally {
       cleanup()
     }
@@ -720,19 +807,107 @@ describe("Stop engagement absence-is-failure gate", () => {
     }
   })
 
-  test("engagement_required + project ISA exists → gate does NOT fire (presence satisfies)", async () => {
+  test("engagement_required + no ISA + read-only smoke commands only → does NOT block", async () => {
     const { root, cleanup } = stage()
     try {
-      const minimalIsa = `---\neffort: advanced\nphase: observe\n---\n\n## Goal\nx\n\n## Criteria\n- [ ] ISC-1: tbd\n`
-      writeProjectIsa(root, minimalIsa)
+      const out = await runStop(root, {
+        engagement_required: true,
+        last_mode: "ALGORITHM",
+        last_tier: 3,
+        expected_isa_path: ".claude-hooks/work/test-stop/ISA.md",
+        commands_run: [
+          "pwd",
+          "rg -n \"runGitApply|applyWorkerPatch\" src/services/worker-integration.ts",
+          "./bin/claude-hooks-workers list --json",
+        ],
+        subagent_starts: ["explore-agent"],
+        subagent_stops: ["explore-agent"],
+      })
+      expect(out).toEqual({})
+    } finally {
+      cleanup()
+    }
+  })
+
+  test("engagement_required + no ISA + read-only smoke command with chaining → blocks", async () => {
+    const { root, cleanup } = stage()
+    try {
+      const out = await runStop(root, {
+        engagement_required: true,
+        last_mode: "ALGORITHM",
+        last_tier: 3,
+        expected_isa_path: ".claude-hooks/work/test-stop/ISA.md",
+        commands_run: ["rg foo src && rm -rf /"],
+      })
+      expect(out.decision).toBe("block")
+      expect(out.reason ?? "").toContain("ALGORITHM E3")
+    } finally {
+      cleanup()
+    }
+  })
+
+  test("engagement_required + no ISA + rg preprocessor command → blocks", async () => {
+    const { root, cleanup } = stage()
+    try {
+      const out = await runStop(root, {
+        engagement_required: true,
+        last_mode: "ALGORITHM",
+        last_tier: 3,
+        expected_isa_path: ".claude-hooks/work/test-stop/ISA.md",
+        commands_run: ["rg --pre 'python3 -c \"print(1)\"' needle src"],
+      })
+      expect(out.decision).toBe("block")
+      expect(out.reason ?? "").toContain("ALGORITHM E3")
+    } finally {
+      cleanup()
+    }
+  })
+
+  test("engagement_required + no ISA + write-worker contract start → blocks", async () => {
+    const { root, cleanup } = stage()
+    try {
+      const out = await runStop(root, {
+        engagement_required: true,
+        last_mode: "ALGORITHM",
+        last_tier: 3,
+        expected_isa_path: ".claude-hooks/work/test-stop/ISA.md",
+        commands_run: ["pwd"],
+        subagent_starts: ["worker-agent", "worker-agent:worker-contract"],
+      })
+      expect(out.decision).toBe("block")
+      expect(out.reason ?? "").toContain("ALGORITHM E3")
+    } finally {
+      cleanup()
+    }
+  })
+
+  test("engagement_required + no ISA + file changes → blocks even with inspection commands", async () => {
+    const { root, cleanup } = stage()
+    try {
+      const out = await runStop(root, {
+        engagement_required: true,
+        last_mode: "ALGORITHM",
+        last_tier: 3,
+        expected_isa_path: ".claude-hooks/work/test-stop/ISA.md",
+        commands_run: ["pwd"],
+        files_changed: [join(root, "src", "changed.ts")],
+      })
+      expect(out.decision).toBe("block")
+    } finally {
+      cleanup()
+    }
+  })
+
+  test("engagement_required + complete project ISA exists → gate does NOT fire", async () => {
+    const { root, cleanup } = stage()
+    try {
+      writeProjectIsa(root, E3_ENGAGED_COMPLETE_OK)
       const out = await runStop(root, {
         engagement_required: true,
         last_mode: "ALGORITHM",
         last_tier: 3,
         expected_isa_path: ".claude-hooks/work/test-stop/ISA.md",
       })
-      // Phase is `observe`, not `complete`, so the completeness gate noops too.
-      // The engagement gate must accept the project ISA as satisfaction.
       expect(out).toEqual({})
     } finally {
       cleanup()
@@ -744,16 +919,15 @@ describe("Stop engagement absence-is-failure gate", () => {
   // regardless of slug. That meant a stale foreign-slug ISA could satisfy
   // the engagement gate. Now the gate only accepts the session's own
   // expected ISA (or a project ISA).
-  test("engagement_required + task ISA exists AT THE EXPECTED PATH → gate does NOT fire", async () => {
+  test("engagement_required + complete task ISA at expected path → gate does NOT fire", async () => {
     const { root, cleanup } = stage()
     try {
-      const minimalIsa = `---\neffort: advanced\nphase: observe\n---\n\n## Goal\nx\n\n## Criteria\n- [ ] ISC-1: tbd\n`
       // Write the ISA at the slug the session expects (canonical path), not a foreign slug.
-      writeCanonicalTaskIsa(root, "test-stop", minimalIsa)
+      writeCanonicalTaskIsa(root, "test-stop", E3_ENGAGED_COMPLETE_OK)
       const out = await runStop(root, {
         engagement_required: true,
         last_mode: "ALGORITHM",
-        last_tier: 4,
+        last_tier: 3,
         expected_isa_path: ".claude-hooks/work/test-stop/ISA.md",
         expected_isa_path_absolute: join(
           root,
@@ -828,11 +1002,16 @@ describe("Stop engagement absence-is-failure gate", () => {
   // P2a — Stop absence reason names the absolute ISA path so the model
   // can write unambiguously even when the shell cwd has drifted since
   // engagement.
-  test("absence reason includes the absolute expected-ISA path when state has one", async () => {
+  test("absence reason includes the normalized absolute expected-ISA path", async () => {
     const { root, cleanup } = stage()
     try {
-      const absolutePath =
-        "/some/absolute/path/.claude-hooks/work/test-stop/ISA.md"
+      const absolutePath = join(
+        root,
+        ".claude-hooks",
+        "work",
+        "test-stop",
+        "ISA.md",
+      )
       const out = await runStop(root, {
         engagement_required: true,
         last_mode: "ALGORITHM",
@@ -845,6 +1024,75 @@ describe("Stop engagement absence-is-failure gate", () => {
         ".claude-hooks/work/test-stop/ISA.md",
       )
       expect(out.reason ?? "").toContain(absolutePath)
+    } finally {
+      cleanup()
+    }
+  })
+
+  test("absence reason does not echo corrupt expected_isa_path_absolute", async () => {
+    const { root, cleanup } = stage()
+    try {
+      const corruptAbsolute =
+        "/tmp/outside/.claude-hooks/work/test-stop/ISA.md"
+      const normalizedAbsolute = join(
+        root,
+        ".claude-hooks",
+        "work",
+        "test-stop",
+        "ISA.md",
+      )
+      const out = await runStop(root, {
+        engagement_required: true,
+        last_mode: "ALGORITHM",
+        last_tier: 3,
+        expected_isa_path: ".claude-hooks/work/test-stop/ISA.md",
+        expected_isa_path_absolute: corruptAbsolute,
+      })
+      expect(out.decision).toBe("block")
+      expect(out.reason ?? "").toContain(normalizedAbsolute)
+      expect(out.reason ?? "").not.toContain(corruptAbsolute)
+    } finally {
+      cleanup()
+    }
+  })
+
+  test("engagement_required + own ISA still phase: observe → blocks before final", async () => {
+    const { root, cleanup } = stage()
+    try {
+      writeCanonicalTaskIsa(root, "test-stop", E3_OBSERVE_PENDING)
+      const out = await runStop(root, {
+        engagement_required: true,
+        last_mode: "ALGORITHM",
+        last_tier: 3,
+        expected_isa_path: ".claude-hooks/work/test-stop/ISA.md",
+      })
+      expect(out.decision).toBe("block")
+      expect(out.reason ?? "").toContain("phase: observe")
+      expect(out.reason ?? "").toContain("phase: complete")
+      expect(out.reason ?? "").toContain("Verification")
+    } finally {
+      cleanup()
+    }
+  })
+
+  test("source-backed engaged feature with pending ISA reports all first-stop blockers together", async () => {
+    const { root, cleanup } = stage()
+    try {
+      writeCanonicalTaskIsa(root, "test-stop", E3_OBSERVE_PENDING)
+      const out = await runStop(root, {
+        engagement_required: true,
+        last_mode: "ALGORITHM",
+        last_tier: 3,
+        expected_isa_path: ".claude-hooks/work/test-stop/ISA.md",
+        last_workflow: "coding.feature",
+        requires_web_sources: true,
+        files_changed: ["solar-underwriting.html"],
+        verification_status: "none",
+      })
+      expect(out.decision).toBe("block")
+      expect(out.reason ?? "").toContain("phase: observe")
+      expect(out.reason ?? "").toMatch(/source ledger/i)
+      expect(out.reason ?? "").toContain("verification command")
     } finally {
       cleanup()
     }

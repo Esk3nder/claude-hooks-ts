@@ -1,7 +1,7 @@
 import { Effect, Schema } from "effect"
 import type { HookPayload } from "../schema/payloads.ts"
 import type { HookDecision } from "../schema/decisions.ts"
-import { SAFE_DEFAULT } from "../schema/decisions.ts"
+import { NO_DECISION } from "../schema/decisions.ts"
 import {
   BashInput,
   EditInput,
@@ -19,9 +19,11 @@ import { evaluateGeneratedFile } from "../policies/generated-files.ts"
 import { evaluateLockfile } from "../policies/lockfile-paths.ts"
 import { shouldRewrite, rewriteTestCommand } from "../policies/test-output-rewrite.ts"
 import { evaluateEngagementGate } from "../policies/engagement-gate.ts"
+import { evaluateWorkerTaskPrompt } from "../policies/worker-contract.ts"
+import { evaluateWorkerToolPermission } from "../policies/worker-permissions.ts"
 import { SessionState } from "../services/session-state.ts"
-
-const ENGAGEMENT_BYPASS_ENV = "CLAUDE_HOOKS_DISABLE_ISA_PRETOOL_GATE"
+import { loadRuntimeConfig } from "../services/runtime-config.ts"
+import { reportHookFailure } from "../services/hook-failure.ts"
 
 const decision = (
   permissionDecision: "allow" | "deny" | "ask",
@@ -53,58 +55,83 @@ const collectPathPolicies = (
   return out
 }
 
-const evaluateBash = (input: unknown): PolicyDecision => {
+interface ToolEvaluation {
+  readonly decision: PolicyDecision
+  readonly decodeFailure?: string
+}
+
+const toolEvaluation = (
+  decision: PolicyDecision,
+  decodeFailure?: string,
+): ToolEvaluation => ({
+  decision,
+  ...(decodeFailure === undefined ? {} : { decodeFailure }),
+})
+
+const evaluateBash = (input: unknown): ToolEvaluation => {
   const decoded = Schema.decodeUnknownEither(BashInput)(input)
   if (decoded._tag === "Left") {
-    process.stderr.write("pretool-policy: bash input schema mismatch\n")
-    return {
-      kind: "ask",
-      reason: "Bash input did not match expected schema; confirming for safety.",
-    }
+    return toolEvaluation(
+      {
+        kind: "ask",
+        reason: "Bash input did not match expected schema; confirming for safety.",
+      },
+      "bash input schema mismatch",
+    )
   }
-  return evaluateDestructiveCommand(decoded.right.command)
+  return toolEvaluation(evaluateDestructiveCommand(decoded.right.command))
 }
 
-const evaluateRead = (input: unknown): PolicyDecision => {
+const evaluateRead = (input: unknown): ToolEvaluation => {
   const decoded = Schema.decodeUnknownEither(ReadInput)(input)
   if (decoded._tag === "Left") {
-    process.stderr.write("pretool-policy: read input schema mismatch\n")
-    return {
-      kind: "ask",
-      reason:
-        "Read input did not match expected schema; confirming for safety so secret-path checks aren't silently bypassed.",
-    }
+    return toolEvaluation(
+      {
+        kind: "ask",
+        reason:
+          "Read input did not match expected schema; confirming for safety so secret-path checks aren't silently bypassed.",
+      },
+      "read input schema mismatch",
+    )
   }
-  return reducePolicies(collectPathPolicies(decoded.right.file_path, "read"))
+  return toolEvaluation(
+    reducePolicies(collectPathPolicies(decoded.right.file_path, "read")),
+  )
 }
 
-const evaluateEditOrWrite = (input: unknown): PolicyDecision => {
+const evaluateEditOrWrite = (input: unknown): ToolEvaluation => {
   const tryEdit = Schema.decodeUnknownEither(EditInput)(input)
   if (tryEdit._tag === "Right") {
-    return reducePolicies(collectPathPolicies(tryEdit.right.file_path, "write"))
+    return toolEvaluation(
+      reducePolicies(collectPathPolicies(tryEdit.right.file_path, "write")),
+    )
   }
   const tryWrite = Schema.decodeUnknownEither(WriteInput)(input)
   if (tryWrite._tag === "Right") {
-    return reducePolicies(collectPathPolicies(tryWrite.right.file_path, "write"))
+    return toolEvaluation(
+      reducePolicies(collectPathPolicies(tryWrite.right.file_path, "write")),
+    )
   }
   const tryMulti = Schema.decodeUnknownEither(MultiEditInput)(input)
   if (tryMulti._tag === "Right") {
-    return reducePolicies(collectPathPolicies(tryMulti.right.file_path, "write"))
+    return toolEvaluation(
+      reducePolicies(collectPathPolicies(tryMulti.right.file_path, "write")),
+    )
   }
-  process.stderr.write(
-    "pretool-policy: edit/write input matched no known schema\n",
+  return toolEvaluation(
+    {
+      kind: "ask",
+      reason:
+        "Edit/Write input did not match any known schema; confirming for safety so write-path checks aren't silently bypassed.",
+    },
+    "edit/write input matched no known schema",
   )
-  return {
-    kind: "ask",
-    reason:
-      "Edit/Write input did not match any known schema; confirming for safety so write-path checks aren't silently bypassed.",
-  }
 }
 
-const evaluateForTool = (
+const evaluateForToolWithFailure = (
   toolName: string,
   toolInput: unknown,
-): PolicyDecision => {
+): ToolEvaluation => {
   switch (toolName) {
     case "Bash":
       return evaluateBash(toolInput)
@@ -115,9 +142,14 @@ const evaluateForTool = (
     case "MultiEdit":
       return evaluateEditOrWrite(toolInput)
     default:
-      return { kind: "passthrough" }
+      return toolEvaluation({ kind: "passthrough" })
   }
 }
+
+const evaluateForTool = (
+  toolName: string,
+  toolInput: unknown,
+): PolicyDecision => evaluateForToolWithFailure(toolName, toolInput).decision
 
 /** Convert internal PolicyDecision → wire-format HookDecision. */
 export const toHookDecision = (d: PolicyDecision): HookDecision => {
@@ -129,7 +161,7 @@ export const toHookDecision = (d: PolicyDecision): HookDecision => {
     case "allow":
       return decision("allow", d.reason ?? "policy allow")
     case "passthrough":
-      return SAFE_DEFAULT
+      return NO_DECISION
   }
 }
 
@@ -150,7 +182,7 @@ export const handlePreToolUse = (
 ): Effect.Effect<HookDecision, never, SessionState> => {
   const toolName = payload._tag === "PreToolUse" ? payload.tool_name : "<n/a>"
   return Effect.gen(function* () {
-    if (payload._tag !== "PreToolUse") return SAFE_DEFAULT
+    if (payload._tag !== "PreToolUse") return NO_DECISION
 
     // Engagement gate (runs FIRST among PreToolUse policies). When the
     // session was classified ALGORITHM tier ≥ 3 and the expected ISA file
@@ -158,22 +190,27 @@ export const handlePreToolUse = (
     // model cannot silently proceed without scaffolding the artifact the
     // prompt-router directive demanded.
     //
-    // Escape hatch: setting CLAUDE_HOOKS_DISABLE_ISA_PRETOOL_GATE=1 in the
-    // hook environment bypasses this gate entirely. Operational safety —
-    // if path parsing or state hydration goes wrong, you need a way out
-    // without editing source under a blocked tool regime.
-    if (process.env[ENGAGEMENT_BYPASS_ENV] !== "1") {
+    // Escape hatch: RuntimeConfig.isaPretoolGateDisabled bypasses this gate
+    // entirely. Operational safety — if path parsing or state hydration goes
+    // wrong, you need a way out without editing source under a blocked tool
+    // regime.
+    const config = yield* loadRuntimeConfig
+    if (!config.isaPretoolGateDisabled) {
       const state = yield* SessionState
       const sid = payload.session_id
       const record = yield* state
         .get(sid)
         .pipe(
-          Effect.catchAll((cause) => {
-            process.stderr.write(
-              `[PreToolUse] session-state op=get failed: sid=${sid} cause=${String(cause).slice(0, 160)}\n`,
-            )
-            return Effect.succeed(null)
-          }),
+          Effect.catchAll((cause) =>
+            reportHookFailure({
+              kind: "state_read_failed",
+              event: "PreToolUse",
+              sessionId: sid,
+              cause,
+              hookSafe: true,
+              context: { op: "session-state.get", tool_name: payload.tool_name, cwd: payload.cwd },
+            }).pipe(Effect.as(null)),
+          ),
         )
       if (record !== null) {
         // Distinguish two roots:
@@ -195,16 +232,59 @@ export const handlePreToolUse = (
           toolName: payload.tool_name,
           toolInput: payload.tool_input,
         })
-        if (engagementVerdict.kind === "deny") {
+        if (engagementVerdict.kind !== "passthrough") {
           return toHookDecision(engagementVerdict)
         }
       }
     }
 
-    const result = evaluateForTool(payload.tool_name, payload.tool_input)
+    const workerToolDecision = yield* evaluateWorkerToolPermission(payload)
+    if (workerToolDecision.kind !== "passthrough") {
+      return toHookDecision(workerToolDecision)
+    }
+
+    const toolEvaluationResult = evaluateForToolWithFailure(
+      payload.tool_name,
+      payload.tool_input,
+    )
+    const result = toolEvaluationResult.decision
     const base = toHookDecision(result)
+    if (toolEvaluationResult.decodeFailure !== undefined) {
+      yield* reportHookFailure({
+        kind: "payload_decode_failed",
+        event: "PreToolUse",
+        sessionId: payload.session_id,
+        cause: toolEvaluationResult.decodeFailure,
+        fallbackDecision: base,
+        hookSafe: true,
+        context: {
+          stage: "tool_input",
+          tool_name: payload.tool_name,
+          cwd: payload.cwd,
+        },
+      })
+    }
     // Only attach updatedInput when not denied/asked.
     if (result.kind === "deny" || result.kind === "ask") return base
+
+    const workerPrompt = evaluateWorkerTaskPrompt(
+      payload.tool_name,
+      payload.tool_input,
+    )
+    if (workerPrompt.kind === "ask") {
+      return decision("ask", workerPrompt.reason)
+    }
+    if (workerPrompt.kind === "rewrite") {
+      return {
+        hookSpecificOutput: {
+          hookEventName: "PreToolUse" as const,
+          permissionDecision: "allow" as const,
+          permissionDecisionReason: workerPrompt.reason,
+          updatedInput: workerPrompt.updatedInput,
+        },
+      }
+    }
+
     const rewrite = tryRewriteBashInput(payload.tool_name, payload.tool_input)
     if (rewrite === null) return base
     const inputObj =

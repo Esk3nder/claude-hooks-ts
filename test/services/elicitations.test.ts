@@ -1,10 +1,23 @@
 import { describe, expect, test, beforeEach, afterEach } from "bun:test"
-import { Effect } from "effect"
+import { Effect, Layer, Stream } from "effect"
 import * as fs from "node:fs/promises"
 import * as fsSync from "node:fs"
 import * as os from "node:os"
 import * as path from "node:path"
-import { Elicitations, ElicitationsLive, ElicitationsTest, elicitationSignature, type ElicitationRecord } from "../../src/services/elicitations.ts"
+import { EventStoreError } from "../../src/schema/errors.ts"
+import { Elicitations, ElicitationsLive, ElicitationsLiveBase, ElicitationsTest, elicitationSignature, type ElicitationRecord } from "../../src/services/elicitations.ts"
+import { EventStore } from "../../src/services/event-store.ts"
+import { FileLockPlatformLive } from "../../src/services/file-lock.ts"
+
+const failingEventStore = (failure: EventStoreError): Layer.Layer<EventStore> =>
+  Layer.succeed(
+    EventStore,
+    EventStore.of({
+      append: () => Effect.fail(failure),
+      tail: () => Stream.fail(failure),
+      compact: () => Effect.fail(failure),
+    }),
+  )
 
 describe("Elicitations (test layer)", () => {
   test("lookup empty -> null", async () => {
@@ -15,7 +28,7 @@ describe("Elicitations (test layer)", () => {
     expect(r).toBeNull()
   })
 
-  test("record + lookup roundtrip", async () => {
+  test("record + lookup redacts replay content", async () => {
     const sig = elicitationSignature({ prompt: "ok?" })
     const r = await Effect.runPromise(Effect.gen(function* () {
       const e = yield* Elicitations
@@ -23,7 +36,8 @@ describe("Elicitations (test layer)", () => {
       return yield* e.lookup("/repo", "mcp.foo", "ask", sig)
     }).pipe(Effect.provide(ElicitationsTest())))
     expect(r?.action).toBe("accept")
-    expect((r?.content as { yes: boolean }).yes).toBe(true)
+    expect((r?.content as { redacted?: boolean }).redacted).toBe(true)
+    expect(JSON.stringify(r?.content)).not.toContain("yes")
   })
 
   test("pending request roundtrip", async () => {
@@ -34,6 +48,83 @@ describe("Elicitations (test layer)", () => {
       return yield* e.findLatestPending("s1", "/repo", "mcp.foo", "ask")
     }).pipe(Effect.provide(ElicitationsTest())))
     expect(r?.requestSignature).toBe(sig)
+  })
+
+  test("event-store failures are summarized without serializing raw causes", async () => {
+    const failure = new EventStoreError({
+      op: "tail",
+      stream: "elicitations:/repo",
+      path: "/repo/.claude-hooks/state/elicitations.jsonl",
+      message: "event schema decode failed",
+      cause: { content: "TOP_SECRET_ELICITATION_CAUSE" },
+    })
+
+    const result = await Effect.runPromise(
+      Effect.gen(function* () {
+        const e = yield* Elicitations
+        return yield* Effect.either(e.lookup("/repo", "mcp.foo", "ask", "sig"))
+      }).pipe(
+        Effect.provide(
+          Layer.provide(
+            ElicitationsLiveBase,
+            Layer.merge(failingEventStore(failure), FileLockPlatformLive),
+          ),
+        ),
+      ),
+    )
+
+    expect(result._tag).toBe("Left")
+    if (result._tag === "Left") {
+      expect(result.left.message).toBe("tail failed for elicitations:/repo: event schema decode failed")
+      expect(JSON.stringify(result.left)).not.toContain("TOP_SECRET_ELICITATION_CAUSE")
+      expect(JSON.stringify(result.left)).not.toContain("content")
+    }
+  })
+})
+
+describe("ElicitationsLive replay content", () => {
+  test("redacts object replay content before persistence", async () => {
+    const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "elicitations-live-"))
+    try {
+      const sig = elicitationSignature({ prompt: "ok?" })
+      const result = await Effect.runPromise(Effect.gen(function* () {
+        const e = yield* Elicitations
+        yield* e.record(cwd, "mcp.foo", "ask", sig, "accept", {
+          answer: "yes",
+          prompt: "do not persist this nested prompt",
+        })
+        return yield* e.lookup(cwd, "mcp.foo", "ask", sig)
+      }).pipe(Effect.provide(ElicitationsLive)))
+
+      expect((result?.content as { redacted?: boolean }).redacted).toBe(true)
+
+      const persisted = await fs.readFile(ledger(cwd), "utf8")
+      expect(persisted).toContain("redacted")
+      expect(persisted).not.toContain("yes")
+      expect(persisted).not.toContain("do not persist this nested prompt")
+    } finally {
+      await fs.rm(cwd, { recursive: true, force: true })
+    }
+  })
+
+  test("redacts raw string replay content before persistence", async () => {
+    const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "elicitations-live-"))
+    try {
+      const sig = elicitationSignature({ prompt: "ok?" })
+      const result = await Effect.runPromise(Effect.gen(function* () {
+        const e = yield* Elicitations
+        yield* e.record(cwd, "mcp.foo", "ask", sig, "accept", "TOP_SECRET_ELICITATION")
+        return yield* e.lookup(cwd, "mcp.foo", "ask", sig)
+      }).pipe(Effect.provide(ElicitationsLive)))
+
+      expect((result?.content as { redacted?: boolean }).redacted).toBe(true)
+
+      const persisted = await fs.readFile(ledger(cwd), "utf8")
+      expect(persisted).toContain("redacted")
+      expect(persisted).not.toContain("TOP_SECRET_ELICITATION")
+    } finally {
+      await fs.rm(cwd, { recursive: true, force: true })
+    }
   })
 })
 
@@ -88,5 +179,64 @@ describe("Elicitations.gc (Live impl)", () => {
     expect(matchA.length).toBe(1)
     expect(matchA[0]!.signature).toBe("sig-fresh-a")
     expect(matchB.length).toBe(2)
+  })
+
+  test("preserves records outside EventStore tail while pruning stale entries", async () => {
+    const now = 10_000_000_000
+    const oneDay = 24 * 60 * 60 * 1000
+    const fresh = Array.from({ length: 1005 }, (_, i): ElicitationRecord => ({
+      ts: now - 60 * 1000,
+      server: "mcp.foo",
+      tool: "ask",
+      signature: `sig-fresh-${i}`,
+      action: "accept",
+      cwd: projectA,
+    }))
+    const stale: ElicitationRecord = {
+      ts: now - 8 * oneDay,
+      server: "mcp.foo",
+      tool: "ask",
+      signature: "sig-stale-tail",
+      action: "decline",
+      cwd: projectA,
+    }
+    await seed(projectA, [...fresh, stale])
+
+    await Effect.runPromise(Effect.gen(function* () {
+      const api = yield* Elicitations
+      yield* api.gc(projectA, now)
+    }).pipe(Effect.provide(ElicitationsLive)))
+
+    const remaining = await readAll(projectA)
+    expect(remaining.length).toBe(1005)
+    expect(remaining.some((r) => r.signature === "sig-fresh-0")).toBe(true)
+    expect(remaining.some((r) => r.signature === "sig-stale-tail")).toBe(false)
+  })
+
+  test("gc sanitizes retained legacy content even when no records expire", async () => {
+    const now = 10_000_000_000
+    const record: ElicitationRecord = {
+      ts: now - 60 * 1000,
+      server: "mcp.foo",
+      tool: "ask",
+      signature: "sig-legacy-content",
+      action: "accept",
+      content: {
+        answer: "yes",
+        prompt: "legacy raw prompt must not survive",
+      },
+      cwd: projectA,
+    }
+    await seed(projectA, [record])
+
+    await Effect.runPromise(Effect.gen(function* () {
+      const api = yield* Elicitations
+      yield* api.gc(projectA, now)
+    }).pipe(Effect.provide(ElicitationsLive)))
+
+    const raw = await fs.readFile(ledger(projectA), "utf8")
+    expect(raw).toContain("redacted")
+    expect(raw).not.toContain("yes")
+    expect(raw).not.toContain("legacy raw prompt must not survive")
   })
 })

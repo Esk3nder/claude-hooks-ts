@@ -1,8 +1,10 @@
 import { describe, expect, test } from "bun:test"
 import { Effect, Layer, Schema } from "effect"
 import { handlePermissionRequest } from "../../src/events/permission-autopilot.ts"
+import { FsError } from "../../src/schema/errors.ts"
 import { HookPayload } from "../../src/schema/payloads.ts"
-import { ApprovalsTest } from "../../src/services/approvals.ts"
+import { Approvals, ApprovalsTest } from "../../src/services/approvals.ts"
+import { HookFailureTest } from "../../src/services/hook-failure.ts"
 import { ProjectTest } from "../../src/services/project.ts"
 import { derivePatternKey } from "../../src/policies/permission-patterns.ts"
 
@@ -83,7 +85,7 @@ describe("VAL-M4-002 permission-autopilot (M11 spec-conformant output)", () => {
     expect(d).toEqual({})
   })
 
-  test("unseen pattern → SAFE_DEFAULT no-op (lets Claude Code show its dialog)", async () => {
+  test("unseen pattern → NO_DECISION no-op (lets Claude Code show its dialog)", async () => {
     const layer = Layer.mergeAll(ProjectTest({ root: "/repo" }), ApprovalsTest())
     const d = await Effect.runPromise(
       handlePermissionRequest(
@@ -91,5 +93,37 @@ describe("VAL-M4-002 permission-autopilot (M11 spec-conformant output)", () => {
       ).pipe(Effect.provide(layer)),
     )
     expect(d).toEqual({})
+  })
+
+  test("approval storage failures are reported while preserving hook-safe fallback", async () => {
+    const hookFailure = HookFailureTest()
+    const failure = new FsError({
+      op: "approvals.test",
+      path: "/repo/.claude-hooks/state/approvals.jsonl",
+      message: "simulated failure",
+    })
+    const failingApprovals = Layer.succeed(
+      Approvals,
+      Approvals.of({
+        lookup: () => Effect.fail(failure),
+        findPending: () => Effect.fail(failure),
+        record: () => Effect.fail(failure),
+        gc: () => Effect.fail(failure),
+      }),
+    )
+    const layer = Layer.mergeAll(ProjectTest({ root: "/repo" }), failingApprovals, hookFailure.layer)
+
+    const d = await Effect.runPromise(
+      handlePermissionRequest(
+        requestPayload("Bash", { command: "echo hi" }),
+      ).pipe(Effect.provide(layer)),
+    )
+
+    expect(d).toEqual({})
+    expect(hookFailure.records().map((record) => record.kind)).toEqual([
+      "state_read_failed",
+      "state_write_failed",
+    ])
+    expect(hookFailure.records().every((record) => record.hookSafe)).toBe(true)
   })
 })

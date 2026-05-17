@@ -3,7 +3,7 @@
 //
 // Verdict legend (annotated alongside each test, not enforced):
 //   OK                 — payload decodes; handler returns a well-formed
-//                        HookDecision (SAFE_DEFAULT, block, or richer
+//                        HookDecision (NO_DECISION, block, or richer
 //                        hookSpecificOutput shape).
 //   POLICY_EXTENSION   — handler may block by intentional package policy
 //                        (e.g. task-integrity AC/evidence gate).
@@ -61,7 +61,7 @@ import { runHook } from "./helpers.ts"
 
 const decode = (raw: unknown) => Schema.decodeUnknownSync(HookPayload)(raw)
 
-// HookDecision is a union: SAFE_DEFAULT `{}`, block `{decision,reason}`,
+// HookDecision is a union: NO_DECISION `{}`, block `{decision,reason}`,
 // PreToolUseDecision/PermissionRequestDecision/ContextInjection
 // `{hookSpecificOutput:...}`, WorktreeCreateDecision (a raw string), etc.
 const isWellFormedDecision = (d: unknown): boolean =>
@@ -168,12 +168,15 @@ describe("Mintlify handler smoke — documented payloads run cleanly", () => {
     const d = await Effect.runPromise(handleTaskCreated(decode(p.taskCreated()) as never))
     expect(isWellFormedDecision(d)).toBe(true)
   })
-  test("TaskCompleted [POLICY_EXTENSION] — documented-only payload BLOCKS", async () => {
+  test("TaskCompleted [POLICY_EXTENSION] — documented-only payload (no AC/evidence/ISA) APPROVES as lightweight bookkeeping", async () => {
+    // Claude Code's TaskUpdate drops user-provided metadata, so the
+    // documented-only shape carries no AC/evidence signal. The native
+    // gate is opt-in via either AC/evidence intent or active ISA;
+    // without both, this is bookkeeping and passes.
     const d = await Effect.runPromise(
       handleTaskCompleted(decode(p.taskCompletedDocumentedOnly()) as never),
     )
-    expect("decision" in d).toBe(true)
-    if ("decision" in d) expect(d.decision).toBe("block")
+    expect(d).toEqual({})
   })
   test("TaskCompleted [POLICY_EXTENSION post-patch] — metadata.AC+evidence APPROVES", async () => {
     const d = await Effect.runPromise(

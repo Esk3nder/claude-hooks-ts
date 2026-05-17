@@ -4,7 +4,7 @@
  * - transcript_path → context flows into Inference (L10)
  * - Telemetry record is appended (L11)
  * - cleanPrompt runs before subprocess (L12)
- * - System-text returns SAFE_DEFAULT, NO classification, NO telemetry (L14)
+ * - System-text returns NO_DECISION, NO classification, NO telemetry (L14)
  * - Workflow line + mode line are emitted in order (B4)
  */
 import { describe, expect, test } from "bun:test"
@@ -26,6 +26,7 @@ import {
   type ClassifyOptions,
 } from "../../src/services/inference.ts"
 import { ClassifierTelemetryTest } from "../../src/services/classifier-telemetry.ts"
+import { CommandRunnerTest } from "../../src/services/command-runner.ts"
 
 const decode = (raw: unknown) => Schema.decodeUnknownSync(HookPayload)(raw)
 
@@ -78,6 +79,7 @@ const runE2E = async (input: {
       Effect.provide(subprocLayer),
       Effect.provide(SessionStateTest()),
       Effect.provide(tel.layer),
+      Effect.provide(CommandRunnerTest()),
     ),
   )
   const out = decision as {
@@ -150,7 +152,7 @@ describe("UserPromptSubmit E2E — all this package features", () => {
     }
   })
 
-  test("system-text prompt: SAFE_DEFAULT, NO classification, NO telemetry", async () => {
+  test("system-text prompt: NO_DECISION, NO classification, NO telemetry", async () => {
     const result = await runE2E({
       prompt: "<system-reminder>this is injected</system-reminder>",
       subprocResponse: `{"mode":"ALGORITHM","tier":3,"mode_reason":"should not be reached"}`,

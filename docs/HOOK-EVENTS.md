@@ -64,6 +64,9 @@ For brevity, every payload also carries the common fields `session_id`,
   }
   ```
 - Output: `PreToolUseDecision` — `{hookSpecificOutput:{permissionDecision:"allow"|"deny"|"ask", permissionDecisionReason, updatedInput?}}`.
+  `Task` / `Agent` launches are minimally rewritten with a bounded worker
+  scope and output contract unless the prompt already carries the
+  `claude-hooks` worker marker.
 
 ## PostToolUse
 
@@ -231,7 +234,9 @@ For brevity, every payload also carries the common fields `session_id`,
     task_id?: string
   }
   ```
-- Output: `ContextInjection` with role-specific scope rule.
+- Output: `ContextInjection` with role-specific scope rule and output contract
+  only when the start payload prompt carries the `claude-hooks` worker marker.
+  Bare subagents pass through unchanged.
 
 ## SubagentStop
 
@@ -251,7 +256,12 @@ For brevity, every payload also carries the common fields `session_id`,
     result?: string
   }
   ```
-- Output: `StopDecision` block when an investigative role returns no evidence.
+- Output: no-op for bare subagents. For contracted workers, `StopDecision`
+  blocks malformed `WorkerResult` JSON and blocks investigative roles that
+  return no evidence. Evidence must include a concrete anchor such as
+  `file:line` or a command, plus confidence or next-action/risk language.
+  Contracted workers that stop without output are marked `cancelled` instead of
+  being re-prompted for structured JSON.
 
 ## TaskCreated
 
@@ -259,7 +269,7 @@ For brevity, every payload also carries the common fields `session_id`,
 - Matcher: no
 - Fires for: a TodoWrite-style task being created.
 - Input: `{ hook_event_name: "TaskCreated", task_id: string, description?: string }`
-- Output: side-effect (acceptance-criteria tracking); default no-op.
+- Output: advisory only; default no-op.
 
 ## TaskCompleted
 
@@ -278,6 +288,8 @@ For brevity, every payload also carries the common fields `session_id`,
 
 - Status: ✅ implemented (`src/events/teammate-idle.ts`)
 - Fires for: a sub-agent has been idle for a configured threshold.
+- Output: `StopDecision` block when session state shows changed files without
+  passed verification; otherwise default no-op.
 
 ## Notification
 

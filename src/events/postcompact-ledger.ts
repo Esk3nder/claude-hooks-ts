@@ -1,19 +1,28 @@
 import { Effect } from "effect";
-import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
+import {
+  closeSync,
+  existsSync,
+  openSync,
+  readSync,
+  readdirSync,
+  statSync,
+} from "node:fs";
 import * as path from "node:path";
 import type { HookPayload } from "../schema/payloads.ts";
 import type { HookDecision } from "../schema/decisions.ts";
-import { SAFE_DEFAULT } from "../schema/decisions.ts";
-import { FileSystem } from "../services/filesystem.ts";
+import { NO_DECISION } from "../schema/decisions.ts";
+import { eventStream, PostCompactRecordSchema } from "../schema/events.ts";
+import { EventStore, summarizeEventStoreError } from "../services/event-store.ts";
 import { Project } from "../services/project.ts";
+import { logWarning } from "../services/diagnostics.ts";
 
 const sanitize = (s: string): string => s.replace(/[^a-zA-Z0-9._-]/g, "_");
 
 /**
  * Locate the most recent pre-compact snapshot for a session_id by mtime.
- * The PreCompact handler writes `${safeId}-${safeTs}.md`; we list the
- * compact-snapshots dir, filter to the matching prefix, and pick the
- * newest. Returns null when no snapshot exists for this session.
+ * The PreCompact handler includes trigger/instruction tags in the filename
+ * after the sanitized session prefix; match by prefix and pick the newest.
+ * Returns null when no snapshot exists for this session.
  */
 const findLatestSnapshot = (
   root: string,
@@ -62,8 +71,30 @@ const extractActiveIsasSection = (snapshotMd: string): string => {
 };
 
 const MAX_REHYDRATE_INJECT = 1024;
+const MAX_SNAPSHOT_READ_BYTES = 128 * 1024;
 const truncate = (s: string, max: number): string =>
   s.length <= max ? s : s.slice(0, Math.max(0, max - 3)) + "...";
+
+const readSnapshotPrefix = (file: string): string | null => {
+  let fd: number | null = null;
+  try {
+    const size = Math.max(0, Math.min(statSync(file).size, MAX_SNAPSHOT_READ_BYTES));
+    const buffer = Buffer.alloc(size);
+    fd = openSync(file, "r");
+    const bytesRead = readSync(fd, buffer, 0, size, 0);
+    return buffer.subarray(0, bytesRead).toString("utf8");
+  } catch {
+    return null;
+  } finally {
+    if (fd !== null) {
+      try {
+        closeSync(fd);
+      } catch {
+        // best-effort
+      }
+    }
+  }
+};
 
 interface PostCompactLedgerEntry {
   readonly session_id: string;
@@ -75,40 +106,30 @@ interface PostCompactLedgerEntry {
 /**
  * PostCompact handler — appends an audit entry to a JSONL ledger so we can
  * reconstruct what happened around each compaction event. Best-effort:
- * always returns SAFE_DEFAULT and never propagates write failures.
+ * always returns NO_DECISION and never propagates write failures.
  *
- * Cross-process safety: the read-modify-write block is wrapped in
- * `FileSystem.withLock(ledgerPath, ...)` so concurrent appends from sibling
- * dispatcher processes don't interleave partial JSON lines.
+ * Cross-process safety: EventStore owns locking, line caps, and append
+ * serialization so sibling dispatcher processes don't interleave partial
+ * JSON lines.
  */
 export const handlePostCompact = (
   payload: HookPayload,
-): Effect.Effect<HookDecision, never, FileSystem | Project> =>
+): Effect.Effect<HookDecision, never, EventStore | Project> =>
   Effect.gen(function* () {
-    if (payload._tag !== "PostCompact") return SAFE_DEFAULT;
-    const fs = yield* FileSystem;
+    if (payload._tag !== "PostCompact") return NO_DECISION;
+    const eventStore = yield* EventStore;
     const project = yield* Project;
 
     const root = yield* project.root();
     const ts = Date.now();
     const tsIso = new Date(ts).toISOString();
-    const safeId = sanitize(payload.session_id);
-    const safeTs = sanitize(tsIso);
-
-    // Mirrors precompact-snapshot's naming so audits can correlate.
-    const snapshotPath = path.join(
-      root,
-      ".claude-hooks",
-      "state",
-      "compact-snapshots",
-      `${safeId}-${safeTs}.md`,
-    );
+    const latestSnap = findLatestSnapshot(root, payload.session_id);
 
     const entry: PostCompactLedgerEntry = {
       session_id: payload.session_id,
       trigger: payload.trigger ?? "unknown",
       compacted_at: tsIso,
-      snapshot_path: snapshotPath,
+      snapshot_path: latestSnap,
     };
 
     const ledgerPath = path.join(
@@ -118,26 +139,10 @@ export const handlePostCompact = (
       "postcompact-ledger.jsonl",
     );
 
-    const append = Effect.gen(function* () {
-      const existsE = yield* Effect.either(fs.exists(ledgerPath));
-      const prior =
-        existsE._tag === "Right" && existsE.right
-          ? yield* fs
-              .readFile(ledgerPath)
-              .pipe(Effect.catchAll(() => Effect.succeed("")))
-          : "";
-      const next =
-        (prior.length === 0 || prior.endsWith("\n") ? prior : prior + "\n") +
-        JSON.stringify(entry) +
-        "\n";
-      yield* fs.writeFile(ledgerPath, next);
-    });
-
-    yield* fs.withLock(ledgerPath, append).pipe(
+    yield* eventStore.append(eventStream("postcompact", ledgerPath, PostCompactRecordSchema, { maxRecords: 1_000 }), entry).pipe(
       Effect.catchAll((cause: unknown) => {
-        const msg = String(cause).slice(0, 120);
-        process.stderr.write(`postcompact-ledger: write failed: ${msg}\n`);
-        return Effect.succeed(undefined);
+        const msg = summarizeEventStoreError(cause);
+        return logWarning(`postcompact-ledger: write failed: ${msg}`);
       }),
     );
 
@@ -146,16 +151,11 @@ export const handlePostCompact = (
     // post-compact model would lose track of which ISA(s) it was working
     // against. We emit just the `## Active ISAs` section as additionalContext
     // so the model can re-read those files itself if needed.
-    const latestSnap = findLatestSnapshot(root, payload.session_id);
-    if (latestSnap === null) return SAFE_DEFAULT;
-    let snapshotMd: string;
-    try {
-      snapshotMd = readFileSync(latestSnap, "utf-8");
-    } catch {
-      return SAFE_DEFAULT;
-    }
+    if (latestSnap === null) return NO_DECISION;
+    const snapshotMd = readSnapshotPrefix(latestSnap);
+    if (snapshotMd === null) return NO_DECISION;
     const isaSection = extractActiveIsasSection(snapshotMd);
-    if (isaSection.length === 0) return SAFE_DEFAULT;
+    if (isaSection.length === 0) return NO_DECISION;
     const additionalContext = truncate(
       `Rehydrated ISA context (post-compact, from ${latestSnap}):\n${isaSection}`,
       MAX_REHYDRATE_INJECT,

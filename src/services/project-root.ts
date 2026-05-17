@@ -12,13 +12,14 @@
  *   2. `cwd` as given.
  *   3. `process.cwd()`.
  *
- * Sync by design: hook handlers are short-lived and called frequently,
- * adding an async boundary here would complicate every caller for no
- * measurable win. A 500ms timeout caps git misbehavior.
+ * A 500ms timeout caps git misbehavior. Command execution goes through the
+ * shared CommandRunner so env handling, timeout, and cleanup policy stay in
+ * one place.
  */
-import { spawnSync } from "node:child_process"
+import { Effect } from "effect"
 import { existsSync, realpathSync } from "node:fs"
 import { resolve } from "node:path"
+import { CommandRunner } from "./command-runner.ts"
 
 const normalizeExistingOrResolved = (p: string): string => {
   const abs = resolve(p)
@@ -30,24 +31,25 @@ const normalizeExistingOrResolved = (p: string): string => {
   }
 }
 
-export const detectSessionRoot = (cwd: string = process.cwd()): string => {
+export const detectSessionRoot = (cwd: string = process.cwd()): Effect.Effect<string, never, CommandRunner> =>
+  Effect.gen(function* () {
   const base =
     typeof cwd === "string" && cwd.length > 0
       ? normalizeExistingOrResolved(cwd)
       : normalizeExistingOrResolved(process.cwd())
 
-  try {
-    const out = spawnSync("git", ["rev-parse", "--show-toplevel"], {
-      cwd: base,
-      encoding: "utf8",
-      timeout: 500,
-    })
-    const root = typeof out.stdout === "string" ? out.stdout.trim() : ""
-    if (out.status === 0 && root.length > 0) {
+    const runner = yield* CommandRunner
+    const result = yield* runner
+      .run("git", ["rev-parse", "--show-toplevel"], {
+        cwd: base,
+        timeoutMs: 500,
+        stdoutMaxBytes: 4_096,
+        stderrMaxBytes: 4_096,
+      })
+      .pipe(Effect.catchAll(() => Effect.succeed(null)))
+    const root = result !== null && result.exitCode === 0 && !result.timedOut ? result.stdout.trim() : ""
+    if (root.length > 0) {
       return normalizeExistingOrResolved(root)
     }
-  } catch {
-    // non-git dir, missing git binary, invalid cwd, timeout — fall through
-  }
-  return base
-}
+    return base
+  })

@@ -1,21 +1,30 @@
 import { Effect } from "effect"
 import type { HookPayload } from "../schema/payloads.ts"
 import type { HookDecision } from "../schema/decisions.ts"
-import { SAFE_DEFAULT } from "../schema/decisions.ts"
+import { NO_DECISION } from "../schema/decisions.ts"
 import { Project } from "../services/project.ts"
 import { Shell } from "../services/shell.ts"
-import { SessionState } from "../services/session-state.ts"
+import { SessionState, type VerificationStatus } from "../services/session-state.ts"
 import { makeShellCommand } from "../schema/branded.ts"
 import { isIsaFilePath } from "../algorithm/isa/locate.ts"
 import { runCheckpoint } from "../algorithm/isa/checkpoint.ts"
 import { handlePostToolUseIsaEffects } from "../algorithm/isa/lifecycle.ts"
 import { Redact } from "../services/redact.ts"
+import { logWarning } from "../services/diagnostics.ts"
 import {
   buildFinding,
   coerceForScan,
   renderWarning,
   sliceForScan,
 } from "../policies/content-scan.ts"
+import {
+  isSourceCollectionTool,
+  isSuccessfulToolResponse,
+  isUsableSourceToolResponse,
+  isVerificationCommand,
+  urlsFromToolInput,
+  urlsFromToolResponse,
+} from "../policies/tool-evidence.ts"
 
 const EDIT_TOOLS = new Set(["Edit", "Write", "MultiEdit", "Update"])
 
@@ -67,6 +76,12 @@ const filePathFromInput = (input: unknown): string | null => {
   return typeof fp === "string" ? fp : null
 }
 
+const commandFromInput = (input: unknown): string | null => {
+  if (typeof input !== "object" || input === null) return null
+  const c = (input as { command?: unknown }).command
+  return typeof c === "string" ? c : null
+}
+
 const formatterFor = (filePath: string): FormatterSpec | null => {
   const lower = filePath.toLowerCase()
   for (const entry of FORMATTERS) {
@@ -77,13 +92,95 @@ const formatterFor = (filePath: string): FormatterSpec | null => {
 
 const finishWithWarning = (warningContext: string | null): HookDecision =>
   warningContext === null
-    ? SAFE_DEFAULT
+    ? NO_DECISION
     : {
         hookSpecificOutput: {
           hookEventName: "PostToolUse",
           additionalContext: warningContext,
         },
       }
+
+const recordSingleToolUseEvidence = (
+  state: SessionState["Type"],
+  payload: HookPayload,
+  file: string | null,
+  isEdit: boolean,
+): Effect.Effect<void> =>
+  Effect.gen(function* () {
+    if (payload._tag !== "PostToolUse") return
+    const response = (payload as { readonly tool_response?: unknown }).tool_response
+    const success = isSuccessfulToolResponse(response)
+    const entries: Array<{
+      readonly key:
+        | "files_changed"
+        | "commands_run"
+        | "commands_failed"
+        | "tests_run"
+        | "source_urls"
+      readonly value: string
+    }> = []
+    let verification: VerificationStatus = "none"
+    let nextRequiredAction: string | null = null
+
+    if (isEdit && file !== null && success) {
+      entries.push({ key: "files_changed", value: file })
+      nextRequiredAction = "Run the smallest relevant test/typecheck for the changed files."
+    } else if (payload.tool_name === "Bash") {
+      const cmd = commandFromInput(payload.tool_input)
+      if (cmd !== null) {
+        const hasResponse = response !== undefined && response !== null
+        entries.push({ key: "commands_run", value: cmd })
+        if (!success) entries.push({ key: "commands_failed", value: cmd })
+        if (isVerificationCommand(cmd)) {
+          entries.push({ key: "tests_run", value: cmd })
+          verification = success && hasResponse ? "passed" : "failed"
+          if (!success || !hasResponse) {
+            if (success) entries.push({ key: "commands_failed", value: cmd })
+            nextRequiredAction = "Read the failure output and fix the failing assertion."
+          }
+        } else if (!success) {
+          nextRequiredAction = "Investigate the failed command before continuing."
+        }
+      }
+    } else if (
+      isSourceCollectionTool(payload.tool_name) &&
+      isUsableSourceToolResponse(response)
+    ) {
+      for (const url of urlsFromToolInput(payload.tool_input)) {
+        entries.push({ key: "source_urls", value: url })
+      }
+      for (const url of urlsFromToolResponse(response)) {
+        entries.push({ key: "source_urls", value: url })
+      }
+    }
+
+    if (entries.length > 0) {
+      yield* state
+        .appendBatch(payload.session_id, entries)
+        .pipe(
+          Effect.catchAll((cause) =>
+            logWarning(
+              `[PostToolUse] session-state op=append-evidence failed: sid=${payload.session_id} cause=${String(cause).slice(0, 160)}`,
+            ),
+          ),
+        )
+    }
+
+    if (verification !== "none" || nextRequiredAction !== null) {
+      yield* state
+        .update(payload.session_id, {
+          verification_status: verification,
+          next_required_action: nextRequiredAction,
+        })
+        .pipe(
+          Effect.catchAll((cause) =>
+            logWarning(
+              `[PostToolUse] session-state op=verification-evidence failed: sid=${payload.session_id} cause=${String(cause).slice(0, 160)}`,
+            ),
+          ),
+        )
+    }
+  })
 
 /**
  * Two-branch handler:
@@ -109,7 +206,7 @@ export const handlePostToolUse = (
   Project | Shell | Redact | SessionState
 > =>
   Effect.gen(function* () {
-    if (payload._tag !== "PostToolUse") return SAFE_DEFAULT
+    if (payload._tag !== "PostToolUse") return NO_DECISION
 
     const file = filePathFromInput(payload.tool_input)
     const isEdit = EDIT_TOOLS.has(payload.tool_name)
@@ -122,12 +219,13 @@ export const handlePostToolUse = (
       .get(sid)
       .pipe(
         Effect.catchAll((cause) => {
-          process.stderr.write(
-            `[PostToolUse] session-state op=get failed: sid=${sid} cause=${String(cause).slice(0, 160)}\n`,
-          )
-          return Effect.succeed(null)
+          return logWarning(
+            `[PostToolUse] session-state op=get failed: sid=${sid} cause=${String(cause).slice(0, 160)}`,
+          ).pipe(Effect.as(null))
         }),
       )
+
+    yield* recordSingleToolUseEvidence(state, payload, file, isEdit)
 
     // Engaged-marker: when an ISA file is written, stamp `isa_engaged_at`
     // for telemetry. Do NOT clear `engagement_required` — the flag is
@@ -141,10 +239,9 @@ export const handlePostToolUse = (
         })
         .pipe(
           Effect.catchAll((cause) => {
-            process.stderr.write(
-              `[PostToolUse] session-state op=isa-engaged-marker failed: sid=${sid} cause=${String(cause).slice(0, 160)}\n`,
+            return logWarning(
+              `[PostToolUse] session-state op=isa-engaged-marker failed: sid=${sid} cause=${String(cause).slice(0, 160)}`,
             )
-            return Effect.succeed(undefined)
           }),
         )
     }
@@ -175,7 +272,7 @@ export const handlePostToolUse = (
       if (scanFinding.secretDetected) {
         const warning = renderWarning(scanFinding)
         warningContext = warning
-        process.stderr.write(`${warning}\n`)
+        yield* logWarning(warning)
         // Continue with branches — scan is report-only.
       }
     }
@@ -193,15 +290,15 @@ export const handlePostToolUse = (
 
     // Branch (a): Edit/Write on an ISA file → checkpoint, no probes, no formatter.
     if (isIsaEdit && file !== null) {
-      yield* Effect.sync(() => {
-        try {
-          runCheckpoint(file, isaRoot)
-        } catch (err) {
-          process.stderr.write(
-            `[checkpoint] uncaught: ${String(err)}\n`,
-          )
-        }
-      })
+      yield* Effect.tryPromise({
+        try: async () => {
+          await runCheckpoint(file, isaRoot)
+        },
+        catch: (err) => new Error(String(err)),
+      }).pipe(
+        Effect.tapError((err) => logWarning(`[checkpoint] uncaught: ${String(err)}`)),
+        Effect.catchAll(() => Effect.succeed(undefined)),
+      )
       return finishWithWarning(warningContext)
     }
 
@@ -236,10 +333,9 @@ export const handlePostToolUse = (
       .pipe(
         Effect.catchAll((cause: unknown) => {
           const msg = String(cause).slice(0, 120)
-          process.stderr.write(
-            `post-edit-quality: ${fmt.probe.cmd} failed silently: ${msg}\n`,
-          )
-          return Effect.succeed({ stdout: "", stderr: "", exitCode: -1 })
+          return logWarning(
+            `post-edit-quality: ${fmt.probe.cmd} failed; continuing: ${msg}`,
+          ).pipe(Effect.as({ stdout: "", stderr: "", exitCode: -1 }))
         }),
       )
     if (probe.exitCode !== 0) return finishWithWarning(warningContext)
@@ -252,10 +348,9 @@ export const handlePostToolUse = (
       .pipe(
         Effect.catchAll((cause: unknown) => {
           const msg = String(cause).slice(0, 120)
-          process.stderr.write(
-            `post-edit-quality: ${fmt.run.cmd} failed silently: ${msg}\n`,
-          )
-          return Effect.succeed({ stdout: "", stderr: "", exitCode: -1 })
+          return logWarning(
+            `post-edit-quality: ${fmt.run.cmd} failed; continuing: ${msg}`,
+          ).pipe(Effect.as({ stdout: "", stderr: "", exitCode: -1 }))
         }),
       )
     return finishWithWarning(warningContext)

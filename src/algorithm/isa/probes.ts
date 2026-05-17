@@ -30,6 +30,7 @@ import { existsSync } from "node:fs"
 import { join } from "node:path"
 import { Effect } from "effect"
 import type { CriterionEntry } from "./criteria.ts"
+import { logWarning, logWarningSync } from "../../services/diagnostics.ts"
 
 /**
  * The shape user-defined probes export. A probe takes the criterion it
@@ -100,7 +101,7 @@ export const probesPathFor = (root: string = process.cwd()): string =>
  * - the import throws
  * - the module's `probes` export is missing or non-object
  *
- * Fails closed — no probes is the safe default. Errors logged to stderr.
+ * Fails closed — no probes is the safe default. Errors are warning-logged.
  *
  * Bun caches imports by URL; appending a cache-buster timestamp would let
  * the user iterate without restart, but that contradicts the
@@ -119,9 +120,7 @@ export const loadProbes = async (
       mod.probes === null ||
       Array.isArray(mod.probes)
     ) {
-      process.stderr.write(
-        `[probes] ${file} did not export an object literal named 'probes'\n`,
-      )
+      logWarningSync(`[probes] ${file} did not export an object literal named 'probes'`)
       return Object.freeze({})
     }
     // Defensive copy + freeze. Accept bare functions (the common shape)
@@ -135,7 +134,7 @@ export const loadProbes = async (
     }
     return Object.freeze(out)
   } catch (err) {
-    process.stderr.write(`[probes] failed to load ${file}: ${String(err)}\n`)
+    logWarningSync(`[probes] failed to load ${file}: ${String(err)}`)
     return Object.freeze({})
   }
 }
@@ -159,13 +158,11 @@ export const runProbe = (
       const result = await Promise.resolve(probe(criterion))
       return result === true
     },
-    catch: (cause) => {
-      process.stderr.write(
-        `[probes] probe for ${criterion.id} threw: ${String(cause).slice(0, 200)}\n`,
-      )
-      return new Error(String(cause))
-    },
+    catch: (cause) => new Error(String(cause)),
   }).pipe(
+    Effect.tapError((cause) =>
+      logWarning(`[probes] probe for ${criterion.id} threw: ${String(cause).slice(0, 200)}`),
+    ),
     Effect.timeout(`${timeoutMs} millis`),
     Effect.catchAll((cause) => {
       // Timeout OR upstream error → treat as non-passing.
@@ -173,10 +170,9 @@ export const runProbe = (
         cause instanceof Error && cause.name === "TimeoutException"
           ? "timed out"
           : "errored"
-      process.stderr.write(
-        `[probes] probe for ${criterion.id} ${reason} after ${timeoutMs}ms\n`,
-      )
-      return Effect.succeed(false)
+      return logWarning(
+        `[probes] probe for ${criterion.id} ${reason} after ${timeoutMs}ms`,
+      ).pipe(Effect.as(false))
     }),
   )
 

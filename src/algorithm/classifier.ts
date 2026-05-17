@@ -37,6 +37,7 @@ import {
   type Tier,
 } from "../services/inference.ts"
 import type { ClaudeSubprocess } from "../services/claude-subprocess.ts"
+import { durationMillis, loadRuntimeConfig } from "../services/runtime-config.ts"
 
 // ════════════════════════════════════════════════════════════════
 // FROM this hooks/PromptProcessing.hook.ts
@@ -131,7 +132,7 @@ const isPositivePraise = (prompt: string): boolean => {
  * Exported (renamed `isSystemTextPrompt`) so the prompt-router can check it
  * BEFORE calling classify(). This is handled with `process.exit(0)`
  * — emits NO additionalContext at all. The router mirrors
- * that by returning SAFE_DEFAULT and NOT invoking classify or telemetry on
+ * that by returning NO_DECISION and NOT invoking classify or telemetry on
  * system-text input.
  */
 export const isSystemTextPrompt = (prompt: string): boolean =>
@@ -189,20 +190,14 @@ export const tryFastPath = (rawPrompt: string): Classification | null => {
 }
 
 /**
- * Env-var opt-out: when `CLAUDE_HOOKS_DISABLE_CLASSIFIER=1`, the subprocess
+ * Runtime-config opt-out: when classifierDisabled is true, the subprocess
  * call is skipped and we return a deterministic fail-safe (ALGORITHM tier 3,
  * source: fail-safe). Useful for: CI runners without a `claude` CLI, perf
  * tests that measure dispatcher overhead independently, redteam scenarios
- * where the Algorithm path is not under test, and the doctor's
- * `--no-classifier` opt-out.
+ * where the Algorithm path is not under test, and the doctor's opt-out.
  *
  * Fast-path gates are still consulted first.
  */
-const isClassifierDisabled = (): boolean => {
-  const v = process.env["CLAUDE_HOOKS_DISABLE_CLASSIFIER"]
-  return v === "1" || v === "true"
-}
-
 export interface ClassifyOptions {
   /** Recent conversation context (getRecentContext output). When present,
    * prepended to the user prompt as `CONTEXT:\n${context}\n\nCURRENT MESSAGE:...`
@@ -213,7 +208,7 @@ export interface ClassifyOptions {
 
 /**
  * Full classify pipeline. Returns the fast-path answer when one exists;
- * otherwise asks the Inference service (unless disabled by env). Never fails.
+ * otherwise asks the Inference service (unless disabled by runtime config). Never fails.
  */
 export const classify = (
   prompt: string,
@@ -221,21 +216,23 @@ export const classify = (
 ): Effect.Effect<Classification, never, Inference | ClaudeSubprocess> => {
   const fast = tryFastPath(prompt)
   if (fast !== null) return Effect.succeed(fast)
-  if (isClassifierDisabled()) {
-    return Effect.succeed({
-      mode: "ALGORITHM",
-      tier: 3,
-      reason: "classifier disabled via CLAUDE_HOOKS_DISABLE_CLASSIFIER",
-      source: "fail-safe",
-      latencyMs: 0,
+  return Effect.gen(function* () {
+    const config = yield* loadRuntimeConfig
+    if (config.classifierDisabled) {
+      return {
+        mode: "ALGORITHM" as const,
+        tier: 3 as const,
+        reason: "classifier disabled by runtime config",
+        source: "fail-safe" as const,
+        latencyMs: 0,
+      }
+    }
+    const svc = yield* Inference
+    return yield* svc.classify(prompt, {
+      ...(opts?.context !== undefined ? { context: opts.context } : {}),
+      timeoutMs: durationMillis(config.classifierTimeoutMs),
     })
-  }
-  return Effect.flatMap(Inference, (svc) =>
-    svc.classify(
-      prompt,
-      opts?.context !== undefined ? { context: opts.context } : undefined,
-    ),
-  )
+  })
 }
 
 /**

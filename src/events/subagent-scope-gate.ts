@@ -1,94 +1,300 @@
 import { Effect } from "effect";
-import { createHash } from "node:crypto";
-import type { HookPayload } from "../schema/payloads.ts";
+import type { NormalizedHookEvent } from "../schema/normalized.ts";
 import type { HookDecision } from "../schema/decisions.ts";
-import { SAFE_DEFAULT } from "../schema/decisions.ts";
+import { NO_DECISION } from "../schema/decisions.ts";
 import {
   SessionState,
   EMPTY_SESSION_STATE,
 } from "../services/session-state.ts";
 import { lookupRole, hasEvidence } from "../policies/subagent-roles.ts";
+import { stableHookPayloadHash } from "../schema/normalized.ts";
+import { reportHookFailure } from "../services/hook-failure.ts";
+import { loadRuntimeConfig } from "../services/runtime-config.ts";
+import {
+  WorkerRuns,
+  hashWorkerPrompt,
+  scopedWorkerRunId,
+  type WorkerRunCompletionMetadata,
+} from "../services/worker-runs.ts";
+import { parseWorkerResultText } from "../services/worker-supervisor.ts";
+import type { WorkerResult } from "../schema/worker-run.ts";
+import { WORKER_CONTRACT_MARKER } from "../policies/worker-contract.ts";
 
-/**
- * Stable invocation key for a subagent run.
- *
- * Per the official Claude Code spec the canonical correlation token is
- * `agent_id`. When present, we use it verbatim. Otherwise we fall back to a
- * stable content hash of the payload (deterministic across start/stop pairs
- * with identical payloads, distinct for parallel starts that differ).
- *
- * For backward-compat we also honour `task_id` (older Claude Code builds and
- * existing tests). Resolution order: agent_id > task_id > payload-hash.
- */
-const sha1Short = (input: string): string =>
-  createHash("sha1").update(input).digest("hex").slice(0, 16);
+export const invocationKey = (payload: {
+  readonly session_id: string;
+  readonly agent_type: string;
+  readonly agent_id: string;
+}): string => `${payload.session_id}:${payload.agent_type}:${payload.agent_id}`;
 
-const payloadHash = (payload: Record<string, unknown>): string => {
-  const keys = Object.keys(payload)
-    .filter((k) => k !== "session_id")
-    .sort();
-  const canonical = keys.map((k) => [k, payload[k]] as const);
-  return sha1Short(JSON.stringify(canonical));
-};
-
-/**
- * Read agent_type from a payload, preferring the canonical `agent_type` field
- * but falling back to the legacy `subagent_type` for older payloads.
- */
-const readAgentType = (payload: Record<string, unknown>): string => {
-  if (typeof payload["agent_type"] === "string") {
-    return payload["agent_type"];
+export const inferWorkerScope = (prompt: string | undefined): string => {
+  if (prompt === undefined) return "";
+  const match =
+    /(?:^|\n)\s*(?:assigned[- ]scope|worker[- ]scope|scope|files?|paths?)\s*:\s*([^\n]+)/i.exec(
+      prompt,
+    );
+  const scope = match?.[1]?.trim();
+  if (scope === undefined || scope.length === 0) return "";
+  if (/\b(?:you are|return|do not|delegated prompt|worker contract)\b/i.test(scope)) {
+    return "";
   }
-  if (typeof payload["subagent_type"] === "string") {
-    return payload["subagent_type"];
+  if (
+    !/(?:[/*]|\b(?:src|test|tests|docs|scripts|lib|app|packages)\b|[A-Za-z0-9_.-]+\.[A-Za-z0-9]{1,8}\b)/.test(
+      scope,
+    )
+  ) {
+    return "";
   }
-  return "unknown";
+  return scope;
 };
 
-export const invocationKey = (
-  payload: { readonly _tag: string; readonly session_id: string } & Record<
-    string,
-    unknown
-  >,
-): string => {
-  const agentType = readAgentType(payload);
-  const agentId =
-    typeof payload["agent_id"] === "string" ? payload["agent_id"] : null;
-  const taskId =
-    typeof payload["task_id"] === "string" ? payload["task_id"] : null;
-  // Canonical identity: agent_id > task_id > payload-hash.
-  const ident = agentId ?? taskId ?? `h${payloadHash(payload)}`;
-  return `${payload.session_id}:${agentType}:${ident}`;
-};
+const nativeSubagentModeForRun = (_agentType: string): "read-only" => "read-only";
+
+const workerContractKey = (key: string): string => `${key}:worker-contract`;
+
+const hasWorkerContractMarker = (prompt: string | undefined): boolean =>
+  typeof prompt === "string" && prompt.includes(WORKER_CONTRACT_MARKER);
+
+const workerIdForSubagent = (payload: {
+  readonly session_id: string;
+  readonly agent_id: string;
+}): string => scopedWorkerRunId(payload.session_id, payload.agent_id);
+
+const fallbackWorkerResult = (output: string): WorkerResult => ({
+  summary: output.trim().slice(0, 500) || "worker completed with unstructured output",
+  files_relevant: [],
+  changes_made: [],
+  commands_run: [],
+  verification: [],
+  risks: ["worker output did not decode as structured WorkerResult"],
+  blockers: [],
+  confidence: "low",
+});
+
+const reportSessionStateAppendFailure = (
+  payload: Extract<NormalizedHookEvent, { readonly _tag: "SubagentStart" | "SubagentStop" }>,
+  cause: unknown,
+  op: string,
+): Effect.Effect<void> =>
+  reportHookFailure({
+    kind: "state_write_failed",
+    event: payload._tag,
+    sessionId: payload.session_id,
+    cause,
+    hookSafe: true,
+    context: {
+      op,
+      agent_id: payload.agent_id,
+      agent_type: payload.agent_type,
+    },
+  });
+
+const recordWorkerStart = (
+  payload: Extract<NormalizedHookEvent, { readonly _tag: "SubagentStart" }>,
+): Effect.Effect<void> =>
+  Effect.gen(function* () {
+    if (!hasWorkerContractMarker(payload.prompt)) return;
+    const runs = yield* Effect.serviceOption(WorkerRuns);
+    if (runs._tag === "None") return;
+    const promptHash =
+      payload.prompt === undefined
+        ? stableHookPayloadHash(payload as unknown as Record<string, unknown>)
+        : hashWorkerPrompt(payload.prompt);
+    const workerId = workerIdForSubagent(payload);
+    const existing = yield* runs.value.get(workerId);
+    if (existing === null) {
+      yield* runs.value.createQueued({
+        worker_id: workerId,
+        session_id: payload.session_id,
+        agent_id: payload.agent_id,
+        agent_type: payload.agent_type,
+        mode: nativeSubagentModeForRun(payload.agent_type),
+        prompt_hash: promptHash,
+        scope: inferWorkerScope(payload.prompt),
+      });
+      yield* runs.value.markRunning(workerId);
+      return;
+    }
+    if (existing.status !== "running") {
+      yield* runs.value.markRunning(workerId);
+    }
+  }).pipe(
+    Effect.catchAll((cause) =>
+      reportHookFailure({
+        kind: "worker_enqueue_failed",
+        event: "SubagentStart",
+        sessionId: payload.session_id,
+        cause,
+        hookSafe: true,
+        context: {
+          op: "worker-runs.start",
+          agent_id: payload.agent_id,
+          agent_type: payload.agent_type,
+        },
+      }),
+    ),
+  );
+
+interface WorkerStopRecord {
+  readonly active: boolean;
+  readonly cancelled: boolean;
+  readonly blockReason: string | null;
+}
+
+const recordWorkerStop = (
+  payload: Extract<NormalizedHookEvent, { readonly _tag: "SubagentStop" }>,
+): Effect.Effect<WorkerStopRecord> =>
+  Effect.gen(function* () {
+    const runs = yield* Effect.serviceOption(WorkerRuns);
+    if (runs._tag === "None") return { active: false, cancelled: false, blockReason: null };
+    const run = yield* runs.value.findByAgent(payload.session_id, payload.agent_id);
+    if (run === null) return { active: false, cancelled: false, blockReason: null };
+    const workerId = run.worker_id;
+    if (payload.output === undefined || payload.output.trim().length === 0) {
+      const reason = "worker stopped without output; treating as cancelled";
+      yield* runs.value.cancel(workerId, reason);
+      return { active: true, cancelled: true, blockReason: null };
+    }
+    const config = yield* loadRuntimeConfig;
+    const mode = run?.mode ?? nativeSubagentModeForRun(payload.agent_type);
+    const parsed = yield* parseWorkerResultText(workerId, payload.output).pipe(
+      Effect.either,
+    );
+    if (parsed._tag === "Left") {
+      const reason = "worker output did not decode as WorkerResult";
+      if (config.workerRequireStructuredResult) {
+        yield* runs.value.markBlocked(workerId, reason);
+        return { active: true, cancelled: false, blockReason: reason };
+      }
+      if (mode === "write-allowed") {
+        const writeReason = "write worker output did not decode as WorkerResult; structured output is required to verify changes";
+        yield* runs.value.markBlocked(workerId, writeReason);
+        return { active: true, cancelled: false, blockReason: writeReason };
+      }
+      yield* runs.value.complete(workerId, fallbackWorkerResult(payload.output));
+      return { active: true, cancelled: false, blockReason: null };
+    }
+    if (mode === "read-only" && parsed.right.changes_made.length > 0) {
+      const reason = "read-only worker reported changes_made; inspect-only workers must not change files";
+      yield* runs.value.markBlocked(
+        workerId,
+        reason,
+      );
+      return { active: true, cancelled: false, blockReason: reason };
+    }
+    let completionMetadata: WorkerRunCompletionMetadata = {};
+    if (mode === "write-allowed") {
+      const hasCapturedOrReportedChanges =
+        parsed.right.changes_made.length > 0 ||
+        run?.patch_path !== undefined ||
+        (run?.patch_changed_files?.length ?? 0) > 0;
+      if (!hasCapturedOrReportedChanges) {
+        const state = yield* Effect.serviceOption(SessionState);
+        if (state._tag === "Some") {
+          const sessionState = yield* state.value.get(payload.session_id).pipe(Effect.either);
+          if (sessionState._tag === "Left") {
+            const reason = "write worker completed without a captured patch and session changes could not be verified";
+            yield* runs.value.markBlocked(workerId, reason);
+            return { active: true, cancelled: false, blockReason: reason };
+          }
+          if (sessionState.right.files_changed.length > 0) {
+            const reason =
+              "write worker reported no changes_made while the session has changed files; structured output must account for worker changes";
+            yield* runs.value.markBlocked(workerId, reason);
+            return { active: true, cancelled: false, blockReason: reason };
+          }
+        }
+      }
+      if (parsed.right.blockers.length > 0) {
+        const reason = `write worker reported blockers: ${parsed.right.blockers.slice(0, 3).join("; ")}`;
+        yield* runs.value.markBlocked(workerId, reason);
+        return { active: true, cancelled: false, blockReason: reason };
+      }
+      if (hasCapturedOrReportedChanges) {
+        const failedVerification = parsed.right.verification.find((check) => check.status !== "passed");
+        if (parsed.right.verification.length === 0 || failedVerification !== undefined) {
+          const reason =
+            failedVerification === undefined
+              ? "write worker changed files without verification evidence"
+              : `write worker verification not passed: ${failedVerification.check}=${failedVerification.status}`;
+          yield* runs.value.markBlocked(workerId, reason);
+          return { active: true, cancelled: false, blockReason: reason };
+        }
+        if (run?.patch_path === undefined) {
+          const reason = "write worker reported changes without a captured isolated patch";
+          yield* runs.value.markBlocked(workerId, reason);
+          return { active: true, cancelled: false, blockReason: reason };
+        }
+        completionMetadata = {
+          ...(run.isolation === undefined ? {} : { isolation: run.isolation }),
+          ...(run.workspace_path === undefined ? {} : { workspace_path: run.workspace_path }),
+          patch_path: run.patch_path,
+          ...(run.patch_changed_files === undefined ? {} : { patch_changed_files: run.patch_changed_files }),
+        };
+      }
+    }
+    yield* runs.value.complete(workerId, parsed.right, undefined, completionMetadata);
+    return { active: true, cancelled: false, blockReason: null };
+  }).pipe(
+    Effect.catchAll((cause) =>
+      reportHookFailure({
+        kind: "worker_enqueue_failed",
+        event: "SubagentStop",
+        sessionId: payload.session_id,
+        cause,
+        hookSafe: true,
+        context: {
+          op: "worker-runs.stop",
+          agent_id: payload.agent_id,
+          agent_type: payload.agent_type,
+        },
+      }).pipe(
+        Effect.as({
+          active: true,
+          cancelled: false,
+          blockReason: "worker stop state update failed; retry after the worker ledger is readable",
+        }),
+      ),
+    ),
+  );
 
 export const handleSubagentStart = (
-  payload: HookPayload,
+  payload: NormalizedHookEvent,
 ): Effect.Effect<HookDecision, never, SessionState> =>
   Effect.gen(function* () {
-    if (payload._tag !== "SubagentStart") return SAFE_DEFAULT;
+    if (payload._tag !== "SubagentStart") return NO_DECISION;
     const state = yield* SessionState;
     const prev = yield* state
       .get(payload.session_id)
       .pipe(Effect.catchAll(() => Effect.succeed(EMPTY_SESSION_STATE)));
-    const key = invocationKey(
-      payload as unknown as Record<string, unknown> & {
-        _tag: string;
-        session_id: string;
-      },
-    );
+    const key = invocationKey(payload);
 
     if (!prev.subagent_starts.includes(key)) {
       yield* state
         .append(payload.session_id, "subagent_starts", key)
-        .pipe(Effect.catchAll(() => Effect.succeed(undefined as void)));
+        .pipe(
+          Effect.catchAll((cause) =>
+            reportSessionStateAppendFailure(payload, cause, "session-state.append.subagent_starts"),
+          ),
+        );
     }
+    const hasContract = hasWorkerContractMarker(payload.prompt);
+    if (hasContract && !prev.subagent_starts.includes(workerContractKey(key))) {
+      yield* state
+        .append(payload.session_id, "subagent_starts", workerContractKey(key))
+        .pipe(
+          Effect.catchAll((cause) =>
+            reportSessionStateAppendFailure(payload, cause, "session-state.append.subagent_starts_contract"),
+          ),
+        );
+    }
+    yield* recordWorkerStart(payload);
 
-    const agentType = readAgentType(
-      payload as unknown as Record<string, unknown>,
-    );
+    if (!hasContract) return NO_DECISION;
+
+    const agentType = payload.agent_type;
     const role = lookupRole(agentType);
     const subagentLabel = agentType === "unknown" ? "subagent" : agentType;
-    const additionalContext = `Subagent ${subagentLabel} (${role.mode}): ${role.scopeRule}`;
+    const additionalContext = `Subagent ${subagentLabel} (${role.mode}): ${role.scopeRule} ${role.outputContract}`;
     const decision: HookDecision = {
       hookSpecificOutput: {
         hookEventName: "SubagentStart",
@@ -99,47 +305,58 @@ export const handleSubagentStart = (
   });
 
 export const handleSubagentStop = (
-  payload: HookPayload,
+  payload: NormalizedHookEvent,
 ): Effect.Effect<HookDecision, never, SessionState> =>
   Effect.gen(function* () {
-    if (payload._tag !== "SubagentStop") return SAFE_DEFAULT;
+    if (payload._tag !== "SubagentStop") return NO_DECISION;
     const state = yield* SessionState;
     const prev = yield* state
       .get(payload.session_id)
       .pipe(Effect.catchAll(() => Effect.succeed(EMPTY_SESSION_STATE)));
-    const key = invocationKey(
-      payload as unknown as Record<string, unknown> & {
-        _tag: string;
-        session_id: string;
-      },
-    );
-
-    const alreadyBlocked = prev.subagent_stops.includes(`${key}:blocked`);
+    const key = invocationKey(payload);
 
     if (!prev.subagent_stops.includes(key)) {
       yield* state
         .append(payload.session_id, "subagent_stops", key)
-        .pipe(Effect.catchAll(() => Effect.succeed(undefined as void)));
+        .pipe(
+          Effect.catchAll((cause) =>
+            reportSessionStateAppendFailure(payload, cause, "session-state.append.subagent_stops"),
+          ),
+        );
     }
+    const workerStop = yield* recordWorkerStop(payload);
+    if (workerStop.blockReason !== null) {
+      return {
+        decision: "block",
+        reason: workerStop.blockReason,
+      };
+    }
+    if (workerStop.cancelled) return NO_DECISION;
 
-    const agentType = readAgentType(
-      payload as unknown as Record<string, unknown>,
-    );
+    const workerContractActive =
+      workerStop.active || prev.subagent_starts.includes(workerContractKey(key));
+    if (!workerContractActive) return NO_DECISION;
+
+    const agentType = payload.agent_type;
     const role = lookupRole(agentType);
-    if (!role.investigative) return SAFE_DEFAULT;
-    if (alreadyBlocked) return SAFE_DEFAULT;
-    // Canonical field is `output`; older payloads may carry `result`.
-    const evidenceText = payload.output ?? payload.result;
-    if (hasEvidence(evidenceText)) return SAFE_DEFAULT;
+    if (!role.investigative) return NO_DECISION;
+    const evidenceText = payload.output;
+    const evidenceOptions = role.judgmentOnly ? { judgmentOnly: true } : {};
+    if (hasEvidence(evidenceText, evidenceOptions)) return NO_DECISION;
 
-    yield* state
-      .append(payload.session_id, "subagent_stops", `${key}:blocked`)
-      .pipe(Effect.catchAll(() => Effect.succeed(undefined as void)));
+    if (!prev.subagent_stops.includes(`${key}:blocked`)) {
+      yield* state
+        .append(payload.session_id, "subagent_stops", `${key}:blocked`)
+        .pipe(
+          Effect.catchAll((cause) =>
+            reportSessionStateAppendFailure(payload, cause, "session-state.append.subagent_stops_blocked"),
+          ),
+        );
+    }
 
     const decision: HookDecision = {
       decision: "block",
-      reason:
-        "Subagent output lacks evidence. Continue and return findings with file paths, commands run, and confidence.",
+      reason: `Subagent output lacks evidence. ${role.outputContract}`,
     };
     return decision;
   });

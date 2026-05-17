@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test"
-import { Effect, Layer, Schema } from "effect"
+import { Effect, Layer, Logger, Schema } from "effect"
 import * as fs from "node:fs"
 import * as os from "node:os"
 import * as path from "node:path"
@@ -8,7 +8,11 @@ import { HookPayload } from "../../src/schema/payloads.ts"
 import { ProjectTest } from "../../src/services/project.ts"
 import { Shell, ShellTest } from "../../src/services/shell.ts"
 import { RedactTest } from "../../src/services/redact.ts"
-import { SessionStateTest } from "../../src/services/session-state.ts"
+import {
+  EMPTY_SESSION_STATE,
+  SessionState,
+  SessionStateTest,
+} from "../../src/services/session-state.ts"
 import { ShellError } from "../../src/schema/errors.ts"
 
 const decode = (raw: unknown) => Schema.decodeUnknownSync(HookPayload)(raw)
@@ -138,52 +142,306 @@ describe("handlePostToolUse (post-edit-quality)", () => {
     )
     expect(d).toEqual({})
   })
+
+  test("records single PostToolUse edits as files_changed and resets verification", async () => {
+    const layer = Layer.mergeAll(
+      ProjectTest(),
+      RedactTest(),
+      SessionStateTest(
+        new Map([
+          [
+            "s",
+            {
+              ...EMPTY_SESSION_STATE,
+              verification_status: "passed" as const,
+              tests_run: ["bun test"],
+            },
+          ],
+        ]),
+      ),
+      ShellTest(() => ({ stdout: "", stderr: "", exitCode: 1 })),
+    )
+    const program = Effect.gen(function* () {
+      yield* handlePostToolUse(editPayload("/repo/dashboard.html", "Write"))
+      const state = yield* SessionState
+      return yield* state.get("s")
+    })
+    const record = await Effect.runPromise(program.pipe(Effect.provide(layer)))
+    expect(record.files_changed).toContain("/repo/dashboard.html")
+    expect(record.verification_status).toBe("none")
+    expect(record.next_required_action ?? "").toMatch(/test|typecheck/)
+  })
+
+  test("records single PostToolUse verification commands", async () => {
+    const layer = Layer.mergeAll(
+      ProjectTest(),
+      RedactTest(),
+      SessionStateTest(),
+      ShellTest(() => ({ stdout: "", stderr: "", exitCode: 1 })),
+    )
+    const payload = decode({
+      _tag: "PostToolUse",
+      session_id: "s",
+      hook_event_name: "PostToolUse",
+      tool_name: "Bash",
+      tool_input: { command: "node --check extracted-script.js" },
+      tool_response: { exitCode: 0 },
+    })
+    const program = Effect.gen(function* () {
+      yield* handlePostToolUse(payload)
+      const state = yield* SessionState
+      return yield* state.get("s")
+    })
+    const record = await Effect.runPromise(program.pipe(Effect.provide(layer)))
+    expect(record.commands_run).toContain("node --check extracted-script.js")
+    expect(record.tests_run).toContain("node --check extracted-script.js")
+    expect(record.verification_status).toBe("passed")
+  })
+
+  test("missing PostToolUse verification response does not pass", async () => {
+    const layer = Layer.mergeAll(
+      ProjectTest(),
+      RedactTest(),
+      SessionStateTest(),
+      ShellTest(() => ({ stdout: "", stderr: "", exitCode: 1 })),
+    )
+    const payload = decode({
+      _tag: "PostToolUse",
+      session_id: "s",
+      hook_event_name: "PostToolUse",
+      tool_name: "Bash",
+      tool_input: { command: "node --check extracted-script.js" },
+      tool_response: undefined,
+    })
+    const program = Effect.gen(function* () {
+      yield* handlePostToolUse(payload)
+      const state = yield* SessionState
+      return yield* state.get("s")
+    })
+    const record = await Effect.runPromise(program.pipe(Effect.provide(layer)))
+    expect(record.commands_failed).toContain("node --check extracted-script.js")
+    expect(record.tests_run).toContain("node --check extracted-script.js")
+    expect(record.verification_status).toBe("failed")
+  })
+
+  test("does not treat incidental words like latest as verification", async () => {
+    const layer = Layer.mergeAll(
+      ProjectTest(),
+      RedactTest(),
+      SessionStateTest(),
+      ShellTest(() => ({ stdout: "", stderr: "", exitCode: 1 })),
+    )
+    const payload = decode({
+      _tag: "PostToolUse",
+      session_id: "s",
+      hook_event_name: "PostToolUse",
+      tool_name: "Bash",
+      tool_input: { command: "rg latest src" },
+      tool_response: { exitCode: 0 },
+    })
+    const program = Effect.gen(function* () {
+      yield* handlePostToolUse(payload)
+      const state = yield* SessionState
+      return yield* state.get("s")
+    })
+    const record = await Effect.runPromise(program.pipe(Effect.provide(layer)))
+    expect(record.commands_run).toContain("rg latest src")
+    expect(record.tests_run).not.toContain("rg latest src")
+    expect(record.verification_status).toBe("none")
+  })
+
+  test("does not treat echoed verification words as a verification command", async () => {
+    const layer = Layer.mergeAll(
+      ProjectTest(),
+      RedactTest(),
+      SessionStateTest(),
+      ShellTest(() => ({ stdout: "", stderr: "", exitCode: 1 })),
+    )
+    const payload = decode({
+      _tag: "PostToolUse",
+      session_id: "s",
+      hook_event_name: "PostToolUse",
+      tool_name: "Bash",
+      tool_input: { command: "echo bun test" },
+      tool_response: { exitCode: 0 },
+    })
+    const program = Effect.gen(function* () {
+      yield* handlePostToolUse(payload)
+      const state = yield* SessionState
+      return yield* state.get("s")
+    })
+    const record = await Effect.runPromise(program.pipe(Effect.provide(layer)))
+    expect(record.commands_run).toContain("echo bun test")
+    expect(record.tests_run).not.toContain("echo bun test")
+    expect(record.verification_status).toBe("none")
+  })
+
+  test("does not record failed edit tools as changed files", async () => {
+    const layer = Layer.mergeAll(
+      ProjectTest(),
+      RedactTest(),
+      SessionStateTest(),
+      ShellTest(() => ({ stdout: "", stderr: "", exitCode: 1 })),
+    )
+    const payload = decode({
+      _tag: "PostToolUse",
+      session_id: "s",
+      hook_event_name: "PostToolUse",
+      tool_name: "Write",
+      tool_input: { file_path: "/repo/dashboard.html" },
+      tool_response: { success: false, error: "permission denied" },
+    })
+    const program = Effect.gen(function* () {
+      yield* handlePostToolUse(payload)
+      const state = yield* SessionState
+      return yield* state.get("s")
+    })
+    const record = await Effect.runPromise(program.pipe(Effect.provide(layer)))
+    expect(record.files_changed).not.toContain("/repo/dashboard.html")
+    expect(record.verification_status).toBe("none")
+    expect(record.next_required_action).toBeNull()
+  })
+
+  test("records single PostToolUse source URLs from web tools", async () => {
+    const layer = Layer.mergeAll(
+      ProjectTest(),
+      RedactTest(),
+      SessionStateTest(),
+      ShellTest(() => ({ stdout: "", stderr: "", exitCode: 1 })),
+    )
+    const payload = decode({
+      _tag: "PostToolUse",
+      session_id: "s",
+      hook_event_name: "PostToolUse",
+      tool_name: "WebSearch",
+      tool_input: { query: "commercial roofing benchmarks" },
+      tool_response: {
+        results: [
+          { url: "https://example.com/roofing-benchmark" },
+          { url: "https://example.com/roofing-benchmark" },
+        ],
+      },
+    })
+    const program = Effect.gen(function* () {
+      yield* handlePostToolUse(payload)
+      const state = yield* SessionState
+      return yield* state.get("s")
+    })
+    const record = await Effect.runPromise(program.pipe(Effect.provide(layer)))
+    expect(record.source_urls).toEqual(["https://example.com/roofing-benchmark"])
+  })
+
+  test("records source URLs from source tool UI aliases", async () => {
+    const layer = Layer.mergeAll(
+      ProjectTest(),
+      RedactTest(),
+      SessionStateTest(),
+      ShellTest(() => ({ stdout: "", stderr: "", exitCode: 1 })),
+    )
+    const payload = decode({
+      _tag: "PostToolUse",
+      session_id: "s",
+      hook_event_name: "PostToolUse",
+      tool_name: "Web Search",
+      tool_input: { query: "benchmarks" },
+      tool_response: "Result: https://example.com/current-benchmark",
+    })
+    const program = Effect.gen(function* () {
+      yield* handlePostToolUse(payload)
+      const state = yield* SessionState
+      return yield* state.get("s")
+    })
+    const record = await Effect.runPromise(program.pipe(Effect.provide(layer)))
+    expect(record.source_urls).toEqual(["https://example.com/current-benchmark"])
+  })
+
+  test("does not treat URLs in search queries as fetched source evidence", async () => {
+    const layer = Layer.mergeAll(
+      ProjectTest(),
+      RedactTest(),
+      SessionStateTest(),
+      ShellTest(() => ({ stdout: "", stderr: "", exitCode: 1 })),
+    )
+    const payload = decode({
+      _tag: "PostToolUse",
+      session_id: "s",
+      hook_event_name: "PostToolUse",
+      tool_name: "WebSearch",
+      tool_input: { query: "Read https://example.com/current-benchmark" },
+      tool_response: "Did 1 search in 6s",
+    })
+    const program = Effect.gen(function* () {
+      yield* handlePostToolUse(payload)
+      const state = yield* SessionState
+      return yield* state.get("s")
+    })
+    const record = await Effect.runPromise(program.pipe(Effect.provide(layer)))
+    expect(record.source_urls).toEqual([])
+  })
+
+  test("does not record dead fetch URLs as usable source evidence", async () => {
+    const layer = Layer.mergeAll(
+      ProjectTest(),
+      RedactTest(),
+      SessionStateTest(),
+      ShellTest(() => ({ stdout: "", stderr: "", exitCode: 1 })),
+    )
+    const payload = decode({
+      _tag: "PostToolUse",
+      session_id: "s",
+      hook_event_name: "PostToolUse",
+      tool_name: "WebFetch",
+      tool_input: { url: "https://example.com/dead", prompt: "extract" },
+      tool_response: "Received 0 bytes (404 Not Found)",
+    })
+    const program = Effect.gen(function* () {
+      yield* handlePostToolUse(payload)
+      const state = yield* SessionState
+      return yield* state.get("s")
+    })
+    const record = await Effect.runPromise(program.pipe(Effect.provide(layer)))
+    expect(record.source_urls).toEqual([])
+  })
 })
 
 
 describe("handlePostToolUse — silent failure logging (M9 fix #2)", () => {
-  test("emits stderr warning when shell errors on probe", async () => {
+  test("logs warning when shell errors on probe", async () => {
     const captured: string[] = []
-    const origWrite = process.stderr.write.bind(process.stderr)
-    ;(process.stderr.write as unknown) = (
-      chunk: string | Uint8Array,
-    ): boolean => {
-      const s = typeof chunk === "string" ? chunk : new TextDecoder().decode(chunk)
-      captured.push(s)
-      return true
-    }
-    try {
-      const failingShell = Layer.succeed(
-        Shell,
-        Shell.of({
-          run: () =>
-            Effect.fail(
-              new ShellError({
-                command: "sh -c 'command -v prettier >/dev/null 2>&1'",
-                exitCode: -1,
-                stderr: "permission denied opening exec",
-                message: "EACCES: permission denied",
-              }),
-            ),
-        }),
-      )
-      const layer = Layer.mergeAll(
-        ProjectTest(),
-        RedactTest(),
-        SessionStateTest(),
-        failingShell,
-      )
-      const d = await Effect.runPromise(
-        handlePostToolUse(editPayload("/repo/src/foo.ts")).pipe(Effect.provide(layer)),
-      )
-      expect(d).toEqual({})
-      const joined = captured.join("")
-      expect(joined).toContain("post-edit-quality:")
-      expect(joined).toContain("failed silently:")
-      expect(joined).toContain("sh")
-    } finally {
-      ;(process.stderr.write as unknown) = origWrite
-    }
+    const logger = Logger.make(({ message }) => {
+      captured.push(String(message))
+    })
+    const failingShell = Layer.succeed(
+      Shell,
+      Shell.of({
+        run: () =>
+          Effect.fail(
+            new ShellError({
+              command: "sh -c 'command -v prettier >/dev/null 2>&1'",
+              exitCode: -1,
+              stderr: "permission denied opening exec",
+              message: "EACCES: permission denied",
+            }),
+          ),
+      }),
+    )
+    const layer = Layer.mergeAll(
+      ProjectTest(),
+      RedactTest(),
+      SessionStateTest(),
+      failingShell,
+    )
+    const d = await Effect.runPromise(
+      handlePostToolUse(editPayload("/repo/src/foo.ts")).pipe(
+        Effect.provide(layer),
+        Effect.provide(Logger.replace(Logger.defaultLogger, logger)),
+      ),
+    )
+    expect(d).toEqual({})
+    const joined = captured.join("")
+    expect(joined).toContain("post-edit-quality:")
+    expect(joined).toContain("failed; continuing:")
+    expect(joined).toContain("sh")
   })
 })
 

@@ -40,6 +40,7 @@ import {
 } from "node:fs"
 import { homedir } from "node:os"
 import { dirname, join, resolve } from "node:path"
+import { writeCliStderr, writeCliStdout } from "./io.ts"
 
 interface CliArgs {
   readonly cwd: string
@@ -255,7 +256,7 @@ export const main = (argv: ReadonlyArray<string>): number => {
   const args = parseArgs(argv)
   const actions = buildActions(args)
   if (actions.length === 0) {
-    process.stderr.write(
+    writeCliStderr(
       "claude-hooks-init: nothing to do. Try --regenerate / --probes / --install-skills / --feedback-dir.\n",
     )
     return 0
@@ -263,15 +264,15 @@ export const main = (argv: ReadonlyArray<string>): number => {
   let failures = 0
   for (const a of actions) {
     if (args.print) {
-      process.stdout.write(`[print] ${a.description}\n`)
+      writeCliStdout(`[print] ${a.description}\n`)
       continue
     }
     try {
       a.run()
-      process.stdout.write(`[ok]    ${a.description}\n`)
+      writeCliStdout(`[ok]    ${a.description}\n`)
     } catch (err) {
       failures += 1
-      process.stderr.write(`[fail]  ${a.description}: ${String(err)}\n`)
+      writeCliStderr(`[fail]  ${a.description}: ${String(err)}\n`)
     }
   }
   return failures > 0 ? 1 : 0

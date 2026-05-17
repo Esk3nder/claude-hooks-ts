@@ -5,7 +5,9 @@ import * as path from "node:path";
 import { FsError } from "../schema/errors.ts";
 import { SessionStateRecordSchema } from "../schema/session-state.ts";
 import { getCurrentSession } from "./session-context.ts";
-import { withFileLock } from "./file-lock.ts";
+import { FileLock, FileLockPlatformLive } from "./file-lock.ts";
+import { logWarningSync } from "./diagnostics.ts";
+import { safeStateSegment } from "./state-paths.ts";
 
 export type VerificationStatus = "passed" | "failed" | "none";
 
@@ -43,6 +45,7 @@ export interface VerificationLedger {
   readonly commands_failed: ReadonlyArray<string>;
   readonly tests_run: ReadonlyArray<string>;
   readonly verification_status: VerificationStatus;
+  readonly verification_at: string | null;
   readonly next_required_action: string | null;
   readonly subagent_starts: ReadonlyArray<string>;
   readonly subagent_stops: ReadonlyArray<string>;
@@ -86,6 +89,7 @@ export const EMPTY_SESSION_STATE: SessionStateRecord = {
   commands_failed: [],
   tests_run: [],
   verification_status: "none",
+  verification_at: null,
   next_required_action: null,
   stop_blocked_once: false,
   source_urls: [],
@@ -162,13 +166,35 @@ export class SessionState extends Context.Tag("SessionState")<
 >() {}
 
 const statePath = (root: string, sessionId: string): string =>
-  path.join(root, ".claude-hooks", "state", `${sessionId}.json`);
+  path.join(root, ".claude-hooks", "state", `${safeStateSegment(sessionId, "session")}.json`);
+
+const MAX_SESSION_ARRAY_ITEMS = 1_000;
+
+const appendableKeys = [
+  "files_read",
+  "files_changed",
+  "commands_run",
+  "commands_failed",
+  "tests_run",
+  "source_urls",
+  "subagent_starts",
+  "subagent_stops",
+] as const satisfies ReadonlyArray<AppendableKey>;
+
+const capArray = (values: ReadonlyArray<string>): ReadonlyArray<string> =>
+  values.slice(-MAX_SESSION_ARRAY_ITEMS);
+
+const capSessionArrays = (record: SessionStateRecord): SessionStateRecord => {
+  let next = record;
+  for (const key of appendableKeys) {
+    const capped = capArray(next[key]);
+    if (capped.length !== next[key].length) next = { ...next, [key]: capped };
+  }
+  return next;
+};
 
 const isRecord = (v: unknown): v is Record<string, unknown> =>
   typeof v === "object" && v !== null && !Array.isArray(v);
-
-const isStringArray = (v: unknown): v is ReadonlyArray<string> =>
-  Array.isArray(v) && v.every((x) => typeof x === "string");
 
 const decodeStrict = Schema.decodeUnknownEither(SessionStateRecordSchema);
 
@@ -183,16 +209,45 @@ const hasAnyKnownKey = (parsed: Record<string, unknown>): boolean => {
   return false;
 };
 
+const isNodeErrorCode = (cause: unknown, code: string): boolean =>
+  typeof cause === "object" &&
+  cause !== null &&
+  "code" in cause &&
+  (cause as { code?: unknown }).code === code;
+
+const fsError = (op: string, path: string, cause: unknown): FsError =>
+  cause instanceof FsError
+    ? cause
+    : new FsError({ op, path, message: String(cause), cause });
+
+const backupCorruptRecord = (
+  raw: string,
+  filePath: string,
+  sessionId: string,
+  reason: string,
+): void => {
+  try {
+    const bak = `${filePath}.corrupt-${Date.now()}.bak`;
+    fsSync.mkdirSync(path.dirname(bak), { recursive: true });
+    fsSync.writeFileSync(bak, raw, "utf8");
+  } catch {
+    // best-effort
+  }
+  logWarningSync(`session-state: ${reason} for ${sessionId}; refusing to reset implicitly`);
+};
+
 const parseRecordStrict = (
   raw: string,
   filePath: string,
   sessionId: string,
-): SessionStateRecord | null => {
+  op: string,
+): SessionStateRecord | FsError => {
   let parsed: unknown;
   try {
     parsed = JSON.parse(raw);
-  } catch {
-    return null;
+  } catch (cause) {
+    backupCorruptRecord(raw, filePath, sessionId, "invalid JSON");
+    return fsError(op, filePath, cause);
   }
   // Forward-compat default merge: if the JSON looks like a legacy session
   // record (has at least one known schema key) but is missing newly-added
@@ -207,97 +262,57 @@ const parseRecordStrict = (
       : parsed;
   const decoded = decodeStrict(candidate);
   if (decoded._tag === "Right") {
-    return decoded.right as SessionStateRecord;
+    return capSessionArrays(decoded.right as SessionStateRecord);
   }
-  try {
-    const bak = `${filePath}.corrupt-${Date.now()}.bak`;
-    fsSync.mkdirSync(path.dirname(bak), { recursive: true });
-    fsSync.writeFileSync(bak, raw, "utf8");
-  } catch {
-    // best-effort
-  }
-  process.stderr.write(
-    `session-state: schema mismatch for ${sessionId}, resetting\n`,
-  );
-  return EMPTY_SESSION_STATE;
+  backupCorruptRecord(raw, filePath, sessionId, "schema mismatch");
+  return fsError(op, filePath, decoded.left);
 };
 
-const parseRecord = (raw: string): SessionStateRecord => {
+const readRecordOrEmpty = async (
+  file: string,
+  sessionId: string,
+  op: string,
+): Promise<SessionStateRecord> => {
+  let raw: string;
   try {
-    const parsed: unknown = JSON.parse(raw);
-    if (!isRecord(parsed)) return EMPTY_SESSION_STATE;
-    const get = (k: string): unknown => parsed[k];
-    const filesRead = get("files_read");
-    const filesChanged = get("files_changed");
-    const commandsRun = get("commands_run");
-    const commandsFailed = get("commands_failed");
-    const testsRun = get("tests_run");
-    const verification = get("verification_status");
-    const next = get("next_required_action");
-    const stopBlocked = get("stop_blocked_once");
-    const sourceUrls = get("source_urls");
-    return {
-      files_read: isStringArray(filesRead) ? filesRead : [],
-      files_changed: isStringArray(filesChanged) ? filesChanged : [],
-      commands_run: isStringArray(commandsRun) ? commandsRun : [],
-      commands_failed: isStringArray(commandsFailed) ? commandsFailed : [],
-      tests_run: isStringArray(testsRun) ? testsRun : [],
-      verification_status:
-        verification === "passed" || verification === "failed"
-          ? verification
-          : "none",
-      next_required_action: typeof next === "string" ? next : null,
-      stop_blocked_once: stopBlocked === true,
-      source_urls: isStringArray(sourceUrls) ? sourceUrls : [],
-      subagent_starts: isStringArray(get("subagent_starts"))
-        ? (get("subagent_starts") as ReadonlyArray<string>)
-        : [],
-      subagent_stops: isStringArray(get("subagent_stops"))
-        ? (get("subagent_stops") as ReadonlyArray<string>)
-        : [],
-      last_workflow:
-        typeof get("last_workflow") === "string"
-          ? (get("last_workflow") as string)
-          : null,
-      last_mode:
-        typeof get("last_mode") === "string"
-          ? (get("last_mode") as string)
-          : null,
-      last_tier:
-        typeof get("last_tier") === "number"
-          ? (get("last_tier") as number)
-          : null,
-      engagement_required: get("engagement_required") === true,
-      expected_isa_path:
-        typeof get("expected_isa_path") === "string"
-          ? (get("expected_isa_path") as string)
-          : null,
-      session_root:
-        typeof get("session_root") === "string"
-          ? (get("session_root") as string)
-          : null,
-      expected_isa_path_absolute:
-        typeof get("expected_isa_path_absolute") === "string"
-          ? (get("expected_isa_path_absolute") as string)
-          : null,
-      isa_engaged_at:
-        typeof get("isa_engaged_at") === "string"
-          ? (get("isa_engaged_at") as string)
-          : null,
-      requires_web_sources: get("requires_web_sources") === true,
-    };
-  } catch {
+    raw = await fs.readFile(file, "utf8");
+  } catch (cause) {
+    if (isNodeErrorCode(cause, "ENOENT")) return EMPTY_SESSION_STATE;
+    throw fsError(op, file, cause);
+  }
+  const decoded = parseRecordStrict(raw, file, sessionId, op);
+  if (decoded instanceof FsError) throw decoded;
+  return decoded;
+};
+
+const readRecordIfExists = async (
+  file: string,
+  sessionId: string,
+  op: string,
+): Promise<SessionStateRecord> => {
+  if (!fsSync.existsSync(file)) {
     return EMPTY_SESSION_STATE;
   }
+  return readRecordOrEmpty(file, sessionId, op);
 };
 
 const mergePatch = (
   prev: SessionStateRecord,
   patch: Partial<SessionStateRecord>,
-): SessionStateRecord => ({
-  ...prev,
-  ...patch,
-});
+): SessionStateRecord => {
+  const merged = {
+    ...prev,
+    ...patch,
+    ...(patch.verification_status === undefined
+      ? {}
+      : {
+          verification_at:
+            patch.verification_at ??
+            (patch.verification_status === "none" ? null : new Date().toISOString()),
+        }),
+  };
+  return capSessionArrays(merged);
+};
 
 const resolveSessionId = (
   explicit: string | undefined,
@@ -317,12 +332,12 @@ const resolveSessionId = (
           : Effect.succeed(sid),
       );
 
-export const SessionStateLive = (
+export const SessionStateLiveBase = (
   root: string = process.cwd(),
-): Layer.Layer<SessionState> =>
-  Layer.succeed(
+): Layer.Layer<SessionState, never, FileLock> =>
+  Layer.effect(
     SessionState,
-    SessionState.of({
+    Effect.map(FileLock, (locks) => SessionState.of({
       get: ((...args: ReadonlyArray<unknown>) => {
         const explicit =
           typeof args[0] === "string" ? (args[0] as string) : undefined;
@@ -331,22 +346,9 @@ export const SessionStateLive = (
             Effect.tryPromise({
               try: async () => {
                 const file = statePath(root, sessionId);
-                try {
-                  const raw = await fs.readFile(file, "utf8");
-                  const strict = parseRecordStrict(raw, file, sessionId);
-                  if (strict !== null) return strict;
-                  return EMPTY_SESSION_STATE;
-                } catch {
-                  return EMPTY_SESSION_STATE;
-                }
+                return readRecordOrEmpty(file, sessionId, "session-state.get");
               },
-              catch: (cause) =>
-                new FsError({
-                  op: "session-state.get",
-                  path: statePath(root, sessionId),
-                  message: String(cause),
-                  cause,
-                }),
+              catch: (cause) => fsError("session-state.get", statePath(root, sessionId), cause),
             }),
           ),
         );
@@ -363,19 +365,25 @@ export const SessionStateLive = (
               try: async () => {
                 const file = statePath(root, sessionId);
                 await fs.mkdir(path.dirname(file), { recursive: true });
-                await withFileLock(file, async () => {
-                  let prev: SessionStateRecord = EMPTY_SESSION_STATE;
-                  if (fsSync.existsSync(file)) {
-                    const raw = await fs.readFile(file, "utf8");
-                    prev = parseRecord(raw);
-                  }
-                  const next = mergePatch(prev, patch);
-                  await fs.writeFile(
+                await Effect.runPromise(
+                  locks.withLock(
                     file,
-                    JSON.stringify(next, null, 2),
-                    "utf8",
-                  );
-                });
+                    Effect.tryPromise({
+                      try: async () => {
+                        const prev = await readRecordIfExists(file, sessionId, "session-state.update");
+                        const next = mergePatch(prev, patch);
+                        await fs.writeFile(
+                          file,
+                          JSON.stringify(next, null, 2),
+                          "utf8",
+                        );
+                      },
+                      catch: (cause) => fsError("session-state.update", file, cause),
+                    }),
+                  ).pipe(
+                    Effect.mapError((cause) => fsError("session-state.update", file, cause)),
+                  ),
+                );
               },
               catch: (cause) =>
                 new FsError({
@@ -398,11 +406,11 @@ export const SessionStateLive = (
         ) as AppendableKey;
         const value = (explicit !== undefined ? args[2] : args[1]) as string;
         const entries = [{ key, value }] as const;
-        return resolveSessionId(explicit).pipe(
-          Effect.flatMap((sessionId) =>
-            appendBatchLive(root, sessionId, entries),
-          ),
-        );
+          return resolveSessionId(explicit).pipe(
+            Effect.flatMap((sessionId) =>
+              appendBatchLive(locks, root, sessionId, entries),
+            ),
+          );
       }) as SessionStateApi["append"],
       appendBatch: ((...args: ReadonlyArray<unknown>) => {
         const explicit =
@@ -415,24 +423,33 @@ export const SessionStateLive = (
           readonly key: AppendableKey;
           readonly value: string;
         }>;
-        return resolveSessionId(explicit).pipe(
-          Effect.flatMap((sessionId) =>
-            appendBatchLive(root, sessionId, entries),
-          ),
-        );
+          return resolveSessionId(explicit).pipe(
+            Effect.flatMap((sessionId) =>
+              appendBatchLive(locks, root, sessionId, entries),
+            ),
+          );
       }) as SessionStateApi["appendBatch"],
       reset: (sessionId: string) =>
         Effect.tryPromise({
           try: async () => {
             const file = statePath(root, sessionId);
             await fs.mkdir(path.dirname(file), { recursive: true });
-            await withFileLock(file, async () => {
-              await fs.writeFile(
+            await Effect.runPromise(
+              locks.withLock(
                 file,
-                JSON.stringify(EMPTY_SESSION_STATE, null, 2),
-                "utf8",
-              );
-            });
+                Effect.tryPromise({
+                  try: () =>
+                    fs.writeFile(
+                      file,
+                      JSON.stringify(EMPTY_SESSION_STATE, null, 2),
+                      "utf8",
+                    ),
+                  catch: (cause) => fsError("session-state.reset", file, cause),
+                }),
+              ).pipe(
+                Effect.mapError((cause) => fsError("session-state.reset", file, cause)),
+              ),
+            );
           },
           catch: (cause) =>
             new FsError({
@@ -442,10 +459,16 @@ export const SessionStateLive = (
               cause,
             }),
         }),
-    }),
+    })),
   );
 
+export const SessionStateLive = (
+  root: string = process.cwd(),
+): Layer.Layer<SessionState> =>
+  Layer.provide(SessionStateLiveBase(root), FileLockPlatformLive);
+
 const appendBatchLive = (
+  locks: FileLock["Type"],
   root: string,
   sessionId: string,
   entries: ReadonlyArray<{
@@ -453,34 +476,29 @@ const appendBatchLive = (
     readonly value: string;
   }>,
 ): Effect.Effect<void, FsError> =>
-  Effect.tryPromise({
-    try: async () => {
-      if (entries.length === 0) return;
-      const file = statePath(root, sessionId);
-      await fs.mkdir(path.dirname(file), { recursive: true });
-      await withFileLock(file, async () => {
-        let prev: SessionStateRecord = EMPTY_SESSION_STATE;
-        if (fsSync.existsSync(file)) {
-          const raw = await fs.readFile(file, "utf8");
-          prev = parseRecord(raw);
-        }
-        let next: SessionStateRecord = prev;
-        for (const { key, value } of entries) {
-          const arr = next[key];
-          if (arr.includes(value)) continue;
-          next = { ...next, [key]: [...arr, value] };
-        }
-        if (next === prev) return;
-        await fs.writeFile(file, JSON.stringify(next, null, 2), "utf8");
-      });
-    },
-    catch: (cause) =>
-      new FsError({
-        op: "session-state.appendBatch",
-        path: statePath(root, sessionId),
-        message: String(cause),
-        cause,
+  Effect.gen(function* () {
+    if (entries.length === 0) return;
+    const file = statePath(root, sessionId);
+    yield* locks.withLock(
+      file,
+      Effect.tryPromise({
+        try: async () => {
+          await fs.mkdir(path.dirname(file), { recursive: true });
+          const prev = await readRecordIfExists(file, sessionId, "session-state.appendBatch");
+          let next: SessionStateRecord = prev;
+          for (const { key, value } of entries) {
+            const arr = next[key];
+            if (arr.includes(value)) continue;
+            next = { ...next, [key]: capArray([...arr, value]) };
+          }
+          if (next === prev) return;
+          await fs.writeFile(file, JSON.stringify(next, null, 2), "utf8");
+        },
+        catch: (cause) => fsError("session-state.appendBatch", file, cause),
       }),
+    ).pipe(
+      Effect.mapError((cause) => fsError("session-state.appendBatch", file, cause)),
+    );
   });
 
 export const SessionStateTest = (
@@ -536,7 +554,7 @@ export const SessionStateTest = (
               Ref.update(ref, (m) => {
                 const prev = m.get(sessionId) ?? EMPTY_SESSION_STATE;
                 const arr = prev[key];
-                const nextArr = arr.includes(value) ? arr : [...arr, value];
+                const nextArr = arr.includes(value) ? arr : capArray([...arr, value]);
                 const next: SessionStateRecord = { ...prev, [key]: nextArr };
                 const out = new Map(m);
                 out.set(sessionId, next);
@@ -563,7 +581,7 @@ export const SessionStateTest = (
                 for (const { key, value } of entries) {
                   const arr = next[key];
                   if (arr.includes(value)) continue;
-                  next = { ...next, [key]: [...arr, value] };
+                  next = { ...next, [key]: capArray([...arr, value]) };
                 }
                 const out = new Map(m);
                 out.set(sessionId, next);
@@ -619,6 +637,7 @@ export const verificationOf = (r: SessionStateRecord): VerificationLedger => ({
   commands_failed: r.commands_failed,
   tests_run: r.tests_run,
   verification_status: r.verification_status,
+  verification_at: r.verification_at,
   next_required_action: r.next_required_action,
   subagent_starts: r.subagent_starts,
   subagent_stops: r.subagent_stops,
