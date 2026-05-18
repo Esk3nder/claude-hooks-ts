@@ -17,7 +17,10 @@ import {
 import { runCommandLive, runShellCommandLive } from "../services/command-runner.ts"
 import { logWarning } from "../services/diagnostics.ts"
 import { reportHookFailure } from "../services/hook-failure.ts"
-import { loadInspectionWhitelist } from "../policies/inspection-whitelist.ts"
+// D5: inspection-whitelist is lazy-loaded inside handleStop only. Keeping it
+// out of the static import graph saves a small but real chunk of dispatcher
+// cold-start time, which matters for the UserPromptSubmit p50 budget.
+import type { loadInspectionWhitelist as LoadInspectionWhitelist } from "../policies/inspection-whitelist.ts"
 const REGEN_TIMEOUT_MS = 10_000
 // Total wall-clock budget the Stop handler is willing to spend. Sits under
 // the dispatcher Stop cap (28_000 ms) and the installer's external 30_000 ms
@@ -209,7 +212,14 @@ export const handleStop = (
     // loader rejects any destructive entry; we still bind the cwd-scoped
     // result here so it's threaded into every gate that calls
     // `isPreIsaInspectionCommand`.
-    const inspectionWhitelistExtras = loadInspectionWhitelist(sessionRoot)
+    const inspectionMod = yield* Effect.promise(
+      () =>
+        import("../policies/inspection-whitelist.ts") as Promise<{
+          loadInspectionWhitelist: typeof LoadInspectionWhitelist
+        }>,
+    )
+    const inspectionWhitelistExtras =
+      inspectionMod.loadInspectionWhitelist(sessionRoot)
     const preflightBlockReasons: string[] = []
     let shouldMarkStopBlockedOnce = false
     const isaVerdict = checkStopReadiness({ cwd: sessionRoot, record })
