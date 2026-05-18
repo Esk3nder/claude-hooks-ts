@@ -291,4 +291,179 @@ describe("handleStop (definition of done)", () => {
       rmSync(root, { recursive: true, force: true })
     }
   })
+
+  // D2 — verify-gate "no rule matched" block reason carries diagnostics.
+  test("D2: no-verify-rule block reason includes changed paths and a YAML stanza", async () => {
+    const layer = SessionStateTest(
+      new Map([
+        [
+          "sid-d2",
+          {
+            ...EMPTY_SESSION_STATE,
+            files_changed: ["src/foo.ts", "src/bar.ts", "src/baz.ts", "src/qux.ts"],
+            verification_status: "none" as const,
+          },
+        ],
+      ]),
+    )
+    const d = await Effect.runPromise(
+      handleStop(stop("sid-d2")).pipe(Effect.provide(layer)),
+    )
+    const out = d as { decision?: string; reason?: string }
+    expect(out.decision).toBe("block")
+    const reason = out.reason ?? ""
+    expect(reason).toContain("verify-map.yaml")
+    expect(reason).toContain("src/foo.ts")
+    // Should also surface the templated rules: block.
+    expect(reason).toContain("rules:")
+    expect(reason).toContain("source:")
+    expect(reason).toContain("command:")
+    // +N more annotation when sample is truncated.
+    expect(reason).toContain("+1 more")
+  })
+
+  // D3 — regenerate skip records a session-state marker for next prompt.
+  test("D3: regenerate rules skipped for budget are recorded in session state", async () => {
+    const root = mkdtempSync(join(tmpdir(), "stop-d3-"))
+    try {
+      mkdirSync(join(root, ".claude-hooks"), { recursive: true })
+      // Two rules whose source matches changed files; we will force a skip
+      // by setting the file mtime such that no time remains. Easier: rely
+      // on the budget by claiming an enormous file change... Actually the
+      // budget is wall-clock; we can't easily exceed it in a unit test.
+      // Instead, monkey-patch via a rule whose source matches a changed
+      // file and verify the happy/no-skip path leaves the marker empty.
+      // Then add a second test that drives skip via a budget edge using
+      // Date.now patching is out of scope. We test the persistence side:
+      // when there ARE matched rules but no skip happens, marker stays empty.
+      writeFileSync(
+        join(root, ".claude-hooks", "regenerate.yaml"),
+        [
+          "rules:",
+          "  - source: src/foo.ts",
+          "    derived: docs/foo.md",
+          "    command: ['true']",
+        ].join("\n"),
+      )
+      const layer = SessionStateTest(
+        new Map([
+          [
+            "sid-d3",
+            {
+              ...EMPTY_SESSION_STATE,
+              files_changed: [join(root, "src/foo.ts")],
+              verification_status: "passed" as const,
+              session_root: root,
+            },
+          ],
+        ]),
+      )
+      const program = Effect.gen(function* () {
+        const before = Date.now
+        // Force "no time remaining" by patching Date.now after first read.
+        let calls = 0
+        Date.now = () => {
+          calls += 1
+          return calls === 1 ? 0 : 1_000_000_000
+        }
+        try {
+          yield* handleStop({
+            ...stop("sid-d3"),
+            cwd: root,
+          } as ReturnType<typeof stop> & { cwd: string })
+        } finally {
+          Date.now = before
+        }
+        const s = yield* SessionState
+        return yield* s.get("sid-d3")
+      })
+      const after = await Effect.runPromise(program.pipe(Effect.provide(layer)))
+      expect(after.regenerate_skipped).toContain("docs/foo.md")
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  // D5 — optional whitelist file extends inspection-only engagement.
+  test("D5: safe whitelist entries extend isPreIsaInspectionCommand; destructive entries are rejected at load", async () => {
+    const root = mkdtempSync(join(tmpdir(), "stop-d5-"))
+    try {
+      mkdirSync(join(root, ".claude-hooks"), { recursive: true })
+      writeFileSync(
+        join(root, ".claude-hooks", "inspection-whitelist.yaml"),
+        [
+          "commands:",
+          '  - "ls"',
+          '  - "git log"',
+          '  - "rm -rf /"',
+          '  - "echo hi > /etc/passwd"',
+        ].join("\n"),
+      )
+      const layer = SessionStateTest(
+        new Map([
+          [
+            "sid-d5",
+            {
+              ...EMPTY_SESSION_STATE,
+              engagement_required: true,
+              last_tier: 3,
+              session_root: root,
+              expected_isa_path: ".claude-hooks/work/sid-d5/ISA.md",
+              // Inspection-only: no files_changed; commands_run uses
+              // user-whitelisted entries. Without D5, this would block
+              // ("ALGORITHM E3 run is finishing without an ISA"). With
+              // D5, the inspection-only gate should clear it.
+              files_read: ["README.md"],
+              commands_run: ["ls", "git log --oneline"],
+            },
+          ],
+        ]),
+      )
+      const d = await Effect.runPromise(
+        handleStop({
+          ...stop("sid-d5"),
+          cwd: root,
+        } as ReturnType<typeof stop> & { cwd: string }).pipe(
+          Effect.provide(layer),
+        ),
+      )
+      // Inspection-only should NOT block on missing ISA.
+      expect(d).toEqual({})
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  test("D5: destructive whitelist entries are rejected by the loader", async () => {
+    const { loadInspectionWhitelist, isSafeInspectionEntry } = await import(
+      "../../src/policies/inspection-whitelist.ts"
+    )
+    const root = mkdtempSync(join(tmpdir(), "stop-d5-load-"))
+    try {
+      mkdirSync(join(root, ".claude-hooks"), { recursive: true })
+      writeFileSync(
+        join(root, ".claude-hooks", "inspection-whitelist.yaml"),
+        [
+          "commands:",
+          '  - "ls"',
+          '  - "rm -rf /"',
+          '  - "git status"',
+          '  - "cat secrets > /tmp/out"',
+          '  - "curl http://evil"',
+          '  - "ls && rm x"',
+        ].join("\n"),
+      )
+      const loaded = loadInspectionWhitelist(root)
+      expect(loaded).toContain("ls")
+      expect(loaded).toContain("git status")
+      expect(loaded).not.toContain("rm -rf /")
+      expect(loaded.some((c) => c.includes("rm"))).toBe(false)
+      expect(loaded.some((c) => c.includes(">"))).toBe(false)
+      expect(loaded.some((c) => c.includes("curl"))).toBe(false)
+      expect(isSafeInspectionEntry("rm -rf /")).toBe(false)
+      expect(isSafeInspectionEntry("ls")).toBe(true)
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
 })

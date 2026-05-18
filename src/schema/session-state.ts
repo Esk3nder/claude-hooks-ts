@@ -30,6 +30,17 @@ export const SessionStateRecordSchema = Schema.Struct({
    */
   requires_web_sources: Schema.Boolean,
   /**
+   * Opt-out for the Stop research-mode source-ledger gate. Set to `true`
+   * only when an active ISA's frontmatter declares
+   * `source_ledger: not_applicable` (detected by post-edit-quality on
+   * an ISA Write/Edit). When true, the Stop gate suppresses the
+   * source-ledger block even if `requires_web_sources` is true — used
+   * for UI builds from a pasted spec, pure-code tasks whose prompt
+   * mentions "current best practices", etc. Default false; the opt-out
+   * must be explicitly declared by the user/agent in the ISA.
+   */
+  source_ledger_opt_out: Schema.Boolean,
+  /**
    * Engagement bookkeeping written by `prompt-router` from the
    * classifier and read by Stop / PostToolUse gates. Together they let the
    * Stop gate enforce "ALGORITHM E3+ ran without an ISA" (absence-is-failure)
@@ -53,6 +64,13 @@ export const SessionStateRecordSchema = Schema.Struct({
    */
   expected_isa_path_absolute: Schema.NullOr(Schema.String),
   isa_engaged_at: Schema.NullOr(Schema.String),
+  /**
+   * Names of regenerate.yaml rules skipped on the last Stop because the
+   * remaining wall-clock budget was too small. Read by the next
+   * `UserPromptSubmit` to surface a one-line heads-up; cleared once
+   * surfaced. (D3)
+   */
+  regenerate_skipped: Schema.Array(Schema.String),
 })
 
 export type SessionStateRecordSchemaType = Schema.Schema.Type<

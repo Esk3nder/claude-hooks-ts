@@ -17,6 +17,7 @@ import {
 import { runCommandLive, runShellCommandLive } from "../services/command-runner.ts"
 import { logWarning } from "../services/diagnostics.ts"
 import { reportHookFailure } from "../services/hook-failure.ts"
+import { loadInspectionWhitelist } from "../policies/inspection-whitelist.ts"
 const REGEN_TIMEOUT_MS = 10_000
 // Total wall-clock budget the Stop handler is willing to spend. Sits under
 // the dispatcher Stop cap (28_000 ms) and the installer's external 30_000 ms
@@ -84,25 +85,42 @@ const isSafeRipgrepInspection = (trimmed: string): boolean => {
   )
 }
 
-const isPreIsaInspectionCommand = (cmd: string): boolean => {
+const isPreIsaInspectionCommand = (
+  cmd: string,
+  extraWhitelist: ReadonlyArray<string> = [],
+): boolean => {
   const trimmed = cmd.trim()
   if (hasUnquotedShellControl(trimmed)) return false
   if (trimmed === "pwd") return true
   if (isSafeRipgrepInspection(trimmed)) return true
-  return (
+  if (
     trimmed === "./bin/claude-hooks-workers list" ||
     trimmed === "./bin/claude-hooks-workers list --json"
-  )
+  ) {
+    return true
+  }
+  // D5: user-extended whitelist. Loader already filtered destructive entries;
+  // we still match defensively — exact-string match OR prefix-match with
+  // word boundary so `"git log"` accepts `git log --oneline` but not
+  // `git logger`.
+  for (const entry of extraWhitelist) {
+    if (trimmed === entry) return true
+    if (trimmed.startsWith(`${entry} `)) return true
+  }
+  return false
 }
 
-const isInspectionOnlyEngagement = (record: {
-  readonly files_read: ReadonlyArray<string>
-  readonly files_changed: ReadonlyArray<string>
-  readonly commands_run: ReadonlyArray<string>
-  readonly commands_failed: ReadonlyArray<string>
-  readonly tests_run: ReadonlyArray<string>
-  readonly subagent_starts: ReadonlyArray<string>
-}): boolean =>
+const isInspectionOnlyEngagement = (
+  record: {
+    readonly files_read: ReadonlyArray<string>
+    readonly files_changed: ReadonlyArray<string>
+    readonly commands_run: ReadonlyArray<string>
+    readonly commands_failed: ReadonlyArray<string>
+    readonly tests_run: ReadonlyArray<string>
+    readonly subagent_starts: ReadonlyArray<string>
+  },
+  extraWhitelist: ReadonlyArray<string> = [],
+): boolean =>
   (record.files_read.length > 0 ||
     record.commands_run.length > 0 ||
     record.subagent_starts.length > 0) &&
@@ -110,7 +128,7 @@ const isInspectionOnlyEngagement = (record: {
   record.commands_failed.length === 0 &&
   record.tests_run.length === 0 &&
   !record.subagent_starts.some((entry) => entry.endsWith(":worker-contract")) &&
-  record.commands_run.every(isPreIsaInspectionCommand)
+  record.commands_run.every((cmd) => isPreIsaInspectionCommand(cmd, extraWhitelist))
 
 const reportStateWriteFailure = (
   sessionId: string,
@@ -187,6 +205,11 @@ export const handleStop = (
         : process.cwd()
     const stopStartedAt = Date.now()
     const sessionRoot = record.session_root ?? currentCwd
+    // D5: load user-extended inspection whitelist. Empty by default. The
+    // loader rejects any destructive entry; we still bind the cwd-scoped
+    // result here so it's threaded into every gate that calls
+    // `isPreIsaInspectionCommand`.
+    const inspectionWhitelistExtras = loadInspectionWhitelist(sessionRoot)
     const preflightBlockReasons: string[] = []
     let shouldMarkStopBlockedOnce = false
     const isaVerdict = checkStopReadiness({ cwd: sessionRoot, record })
@@ -200,7 +223,18 @@ export const handleStop = (
     // web-source regex), NOT the loose `last_workflow` priming tag. This
     // applies to coding/build tasks too when the user explicitly asks for
     // current real data or cited sources.
-    if (record.requires_web_sources && record.source_urls.length === 0) {
+    //
+    // Opt-out: the active ISA can declare `source_ledger: not_applicable`
+    // in frontmatter (read by post-edit-quality on ISA Write/Edit). When
+    // set, this gate is suppressed for the rest of the session so pure-
+    // code tasks whose prompts incidentally match WEB_SOURCES_REQUIRED
+    // (e.g. "current best practices" in a UI build from a pasted spec)
+    // can finish without a stale source-ledger block.
+    if (
+      record.requires_web_sources &&
+      record.source_urls.length === 0 &&
+      !record.source_ledger_opt_out
+    ) {
       preflightBlockReasons.push(RESEARCH_BLOCK_REASON)
     }
 
@@ -214,7 +248,7 @@ export const handleStop = (
       // must NOT — that's the bug this resolver fixes.
       const activeIsa = resolveActiveIsa({ sessionRoot, record })
       const hasAnyIsa = activeIsa !== null && existsSync(activeIsa)
-      if (!hasAnyIsa && !isInspectionOnlyEngagement(record)) {
+      if (!hasAnyIsa && !isInspectionOnlyEngagement(record, inspectionWhitelistExtras)) {
         const tierLabel =
           typeof record.last_tier === "number"
             ? `E${record.last_tier}`
@@ -333,9 +367,25 @@ export const handleStop = (
       record.verification_status !== "passed" &&
       !verifiedThisStop
     ) {
+      // D2: when no verify-map rule matched, tell the user (a) which paths
+      // changed (sample) and (b) a concrete YAML stanza they can paste into
+      // `.claude-hooks/verify-map.yaml` to fix it next time. Keeps the
+      // generic guidance, just adds diagnostics.
+      const sample = record.files_changed.slice(0, 3)
+      const more = record.files_changed.length - sample.length
+      const sampleLine =
+        sample.length === 0
+          ? ""
+          : `\nChanged files (sample): ${sample.join(", ")}${more > 0 ? ` (+${more} more)` : ""}.`
+      const stanza =
+        "\nAdd a rule to `.claude-hooks/verify-map.yaml`, e.g.:\n" +
+        "rules:\n" +
+        '  - source: "src/**/*.ts"\n' +
+        '    command: "bun run typecheck"\n' +
+        "    timeoutMs: 15000"
       const out: HookDecision = {
         decision: "block",
-        reason: BLOCK_REASON,
+        reason: `${BLOCK_REASON}${sampleLine}${stanza}`,
       }
       return out
     }
@@ -345,6 +395,7 @@ export const handleStop = (
     // AFTER all blocking gates pass so we don't waste regen work on a
     // session that's about to be blocked. Failures are logged, never block.
     const rules = loadRegenerateRules(currentCwd)
+    const regenerateSkipped: string[] = []
     if (rules.length > 0 && record.files_changed.length > 0) {
       const matched = matchRules(changedPathCandidates, rules)
       for (const rule of matched) {
@@ -356,6 +407,11 @@ export const handleStop = (
         // (which would force the dispatcher to emit its hook-safe fallback).
         const REGEN_SAFETY_MARGIN_MS = 1_000
         if (remaining < REGEN_TIMEOUT_MS + REGEN_SAFETY_MARGIN_MS) {
+          // D3: surface the silent skip. The warning stays (paper trail in
+          // the diagnostics log); we ALSO collect the rule name into a
+          // session-state marker so the NEXT UserPromptSubmit can inject
+          // a heads-up into additionalContext.
+          regenerateSkipped.push(rule.derived)
           yield* logWarning(
             `[regenerate] skipping ${rule.derived}: ${remaining}ms remaining, need ${REGEN_TIMEOUT_MS + REGEN_SAFETY_MARGIN_MS}ms`,
           )
@@ -401,6 +457,18 @@ export const handleStop = (
           Effect.catchAll(() => Effect.succeed(undefined)),
         )
       }
+    }
+
+    // D3: persist skipped rule names so the next UserPromptSubmit can
+    // surface them. Best-effort: a state-write failure must not block.
+    if (regenerateSkipped.length > 0) {
+      yield* state
+        .update(sid, { regenerate_skipped: regenerateSkipped })
+        .pipe(
+          Effect.catchAll((cause) =>
+            reportStateWriteFailure(sid, "regenerate-skipped", cause),
+          ),
+        )
     }
 
     return NO_DECISION
