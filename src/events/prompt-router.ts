@@ -202,9 +202,19 @@ export const handleUserPromptSubmit = (
         : null
     const engageLine =
       plan === null ? null : renderEngagementDirective(plan, { activeIsaPath })
-    const additionalContext = engageLine
+    // D3: surface regenerate.yaml rules that the prior Stop skipped due to
+    // wall-clock budget. One-shot — cleared in the same state.update below.
+    const regenSkipped = existing?.regenerate_skipped ?? []
+    const regenSkippedLine =
+      regenSkipped.length > 0
+        ? `Note: previous Stop skipped regenerate rule(s) due to time budget: ${regenSkipped.join(", ")}. Re-run them manually if their derived artifacts are stale.`
+        : null
+    const baseContext = engageLine
       ? `${workflowLine}\n${modeLine}\n${engageLine}`
       : `${workflowLine}\n${modeLine}`
+    const additionalContext = regenSkippedLine
+      ? `${baseContext}\n${regenSkippedLine}`
+      : baseContext
     const nextEngagementRequired = engagementRequired || existingEngagementActive
     yield* state
       .update(sessionId, {
@@ -226,6 +236,8 @@ export const handleUserPromptSubmit = (
             : null,
         session_root: sessionRoot,
         expected_isa_path_absolute: expectedIsaPathAbsolute,
+        // D3: clear the one-shot regenerate-skipped marker once surfaced.
+        ...(regenSkipped.length > 0 ? { regenerate_skipped: [] } : {}),
       })
       .pipe(
         Effect.catchAll((cause) =>

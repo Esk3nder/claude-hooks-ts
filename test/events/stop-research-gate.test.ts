@@ -176,6 +176,75 @@ describe("handleStop (research-mode source-ledger gate)", () => {
     expect(d).toEqual({})
   })
 
+  // D1: source-ledger opt-out via ISA frontmatter `source_ledger: not_applicable`.
+  // The flag is set by post-edit-quality on ISA Write/Edit and consumed
+  // here. These tests verify the Stop gate's contract directly.
+
+  test("D1 baseline: gate fires when requires_web_sources=true and no opt-out", async () => {
+    const layer = SessionStateTest(
+      new Map([
+        [
+          "d1-baseline",
+          {
+            ...EMPTY_SESSION_STATE,
+            last_workflow: "coding.feature",
+            requires_web_sources: true,
+            source_ledger_opt_out: false,
+          },
+        ],
+      ]),
+    )
+    const d = await Effect.runPromise(
+      handleStop(stop("d1-baseline")).pipe(Effect.provide(layer)),
+    )
+    const out = d as { decision?: string; reason?: string }
+    expect(out.decision).toBe("block")
+    expect(out.reason ?? "").toMatch(/source ledger/i)
+  })
+
+  test("D1 opt-out: gate is suppressed when source_ledger_opt_out=true", async () => {
+    const layer = SessionStateTest(
+      new Map([
+        [
+          "d1-optout",
+          {
+            ...EMPTY_SESSION_STATE,
+            last_workflow: "coding.feature",
+            requires_web_sources: true,
+            source_ledger_opt_out: true,
+          },
+        ],
+      ]),
+    )
+    const d = await Effect.runPromise(
+      handleStop(stop("d1-optout")).pipe(Effect.provide(layer)),
+    )
+    expect(d).toEqual({})
+  })
+
+  test("D1 opt-out does NOT affect non-matching prompts (no regression)", async () => {
+    // requires_web_sources=false (the strict predicate did not match)
+    // — gate already does not fire. The opt-out must not change any
+    // other Stop behavior for this shape.
+    const layer = SessionStateTest(
+      new Map([
+        [
+          "d1-noregress",
+          {
+            ...EMPTY_SESSION_STATE,
+            last_workflow: "coding.fix",
+            requires_web_sources: false,
+            source_ledger_opt_out: true,
+          },
+        ],
+      ]),
+    )
+    const d = await Effect.runPromise(
+      handleStop(stop("d1-noregress")).pipe(Effect.provide(layer)),
+    )
+    expect(d).toEqual({})
+  })
+
   test("research.synthesis workflow does NOT block on empty source URLs", async () => {
     // Comparing two approaches doesn't require external URLs unless the
     // strict predicate explicitly fires. OLD behavior blocked.

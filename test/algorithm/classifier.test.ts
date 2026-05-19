@@ -253,3 +253,36 @@ describe("renderClassificationLine — implements canonical behavior emitAdditio
     expect(line).toContain("SOURCE: fail-safe")
   })
 })
+
+describe("D6 — praise fast-path suppression when recent context is code-focused", () => {
+  test("'brilliant' with no recent context → MINIMAL (existing behavior preserved)", () => {
+    expect(tryFastPath("brilliant")?.mode).toBe("MINIMAL")
+    expect(tryFastPath("brilliant", "")?.mode).toBe("MINIMAL")
+  })
+
+  test("'brilliant' with recent turn containing a code block → falls through to inference", () => {
+    const ctx = "user: here's the fix\n```ts\nexport const x = 1\n```"
+    expect(tryFastPath("brilliant", ctx)).toBeNull()
+  })
+
+  test("'brilliant refactor' with recent turn containing 'src/foo.ts' → falls through", () => {
+    const ctx = "assistant: I updated src/foo.ts to handle the edge case."
+    expect(tryFastPath("brilliant refactor", ctx)).toBeNull()
+  })
+
+  test("generic non-code praise context → still MINIMAL", () => {
+    const ctx = "assistant: the design rationale was clear and well argued."
+    expect(tryFastPath("brilliant", ctx)?.mode).toBe("MINIMAL")
+    expect(tryFastPath("great job", ctx)?.mode).toBe("MINIMAL")
+  })
+
+  test("shell-command context suppresses praise", () => {
+    const ctx = "assistant: run\n$ bun test\nto verify"
+    expect(tryFastPath("perfect", ctx)).toBeNull()
+  })
+
+  test("function-call context suppresses praise", () => {
+    const ctx = "assistant: I wired it through classify(prompt, opts) end-to-end."
+    expect(tryFastPath("nice work", ctx)).toBeNull()
+  })
+})

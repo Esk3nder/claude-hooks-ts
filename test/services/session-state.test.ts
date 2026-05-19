@@ -108,6 +108,7 @@ describe("SessionStateRecord — focused sub-record projections", () => {
       isa_engaged_at: "2026-05-11T00:00:00.000Z",
       last_tier: 3,
       stop_blocked_once: true,
+      regenerate_skipped: [],
     });
   });
 
@@ -151,6 +152,7 @@ describe("SessionStateRecord — focused sub-record projections", () => {
       last_workflow: "research.foo",
       source_urls: ["http://x"],
       requires_web_sources: false,
+      source_ledger_opt_out: false,
     });
   });
 });

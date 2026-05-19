@@ -9,6 +9,8 @@ import { makeShellCommand } from "../schema/branded.ts"
 import { isIsaFilePath } from "../algorithm/isa/locate.ts"
 import { runCheckpoint } from "../algorithm/isa/checkpoint.ts"
 import { handlePostToolUseIsaEffects } from "../algorithm/isa/lifecycle.ts"
+import { parseFrontmatter } from "../algorithm/isa/frontmatter.ts"
+import { readFileSync } from "node:fs"
 import { Redact } from "../services/redact.ts"
 import { logWarning } from "../services/diagnostics.ts"
 import {
@@ -233,9 +235,29 @@ export const handlePostToolUse = (
     // engage ISA"). Disk is the source of truth for whether the
     // PreToolUse gate releases (see policies/engagement-gate.ts).
     if (isIsaEdit) {
+      // Source-ledger opt-out: when the ISA frontmatter declares
+      // `source_ledger: not_applicable`, set the session-state flag so
+      // the Stop research-mode gate suppresses its source-ledger block.
+      // Opt-IN: the flag never flips back to true on its own; an ISA
+      // edit that REMOVES the declaration clears the flag. Best-effort:
+      // a read error keeps the previous flag value unchanged.
+      let optOut: boolean | undefined = undefined
+      if (file !== null) {
+        try {
+          const content = readFileSync(file, "utf-8")
+          const fm = parseFrontmatter(content)
+          if (fm !== null) {
+            const v = (fm["source_ledger"] ?? "").toLowerCase().trim()
+            optOut = v === "not_applicable"
+          }
+        } catch {
+          // best-effort: leave optOut undefined
+        }
+      }
       yield* state
         .update(sid, {
           isa_engaged_at: new Date().toISOString(),
+          ...(optOut === undefined ? {} : { source_ledger_opt_out: optOut }),
         })
         .pipe(
           Effect.catchAll((cause) => {

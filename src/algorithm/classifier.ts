@@ -127,6 +127,41 @@ const isPositivePraise = (prompt: string): boolean => {
 }
 
 /**
+ * Heuristic — does recent conversation context look code-focused?
+ *
+ * Used to suppress the praise fast-path (D6): short praise like "brilliant
+ * refactor" should fall through to inference when the conversation is clearly
+ * about code, since the model needs to judge whether the praise is a real
+ * acknowledgment or a request-for-change shaped as praise. False positives
+ * here are cheap (route to inference); false negatives cost accuracy.
+ *
+ * Accepts the joined `getRecentContext` string (turns separated by newlines)
+ * or `undefined` when no context is available.
+ */
+export const hasCodeContextInRecent = (recent: string | undefined): boolean => {
+  if (!recent || recent.length === 0) return false
+  // Triple-backtick fenced code block
+  if (recent.includes("```")) return true
+  // File path patterns — directory separator + a code-ish extension
+  if (
+    /[\w./-]+\.(?:ts|tsx|js|jsx|mjs|cjs|py|rs|go|rb|java|kt|swift|c|h|cpp|hpp|cc|cs|php|sh|bash|zsh|fish|sql|json|ya?ml|toml|md)\b/i.test(
+      recent,
+    )
+  ) {
+    return true
+  }
+  // A path with a directory separator (e.g. src/foo, ./bar/baz)
+  if (/(?:^|\s)\.{0,2}\/[\w./-]+/.test(recent)) return true
+  // Function-call pattern: identifier(...)
+  if (/\b[A-Za-z_][\w$]*\s*\([^)]*\)/.test(recent)) return true
+  // Shell-command lines
+  if (/(?:^|\n)\s*(?:\$ |bun |npm |npx |pnpm |yarn |git |cargo |go |python |pip |make |docker |kubectl )/i.test(recent)) {
+    return true
+  }
+  return false
+}
+
+/**
  * the classifier — system-injected text.
  *
  * Exported (renamed `isSystemTextPrompt`) so the prompt-router can check it
@@ -149,7 +184,10 @@ export const isSystemTextPrompt = (prompt: string): boolean =>
  *
  * Order matches the classifier: rating → praise → system-text → length.
  */
-export const tryFastPath = (rawPrompt: string): Classification | null => {
+export const tryFastPath = (
+  rawPrompt: string,
+  recentContext?: string,
+): Classification | null => {
   const prompt = rawPrompt ?? ""
   // Gate 1: explicit rating
   if (isExplicitRating(prompt)) {
@@ -161,8 +199,10 @@ export const tryFastPath = (rawPrompt: string): Classification | null => {
       latencyMs: 0,
     }
   }
-  // Gate 2: positive praise
-  if (isPositivePraise(prompt)) {
+  // Gate 2: positive praise — suppressed when recent context references
+  // code/files (D6). Lets inference disambiguate "brilliant refactor" said
+  // in a code-focused turn from a bare acknowledgment.
+  if (isPositivePraise(prompt) && !hasCodeContextInRecent(recentContext)) {
     return {
       mode: "MINIMAL",
       tier: null,
@@ -214,7 +254,7 @@ export const classify = (
   prompt: string,
   opts?: ClassifyOptions,
 ): Effect.Effect<Classification, never, Inference | ClaudeSubprocess> => {
-  const fast = tryFastPath(prompt)
+  const fast = tryFastPath(prompt, opts?.context)
   if (fast !== null) return Effect.succeed(fast)
   return Effect.gen(function* () {
     const config = yield* loadRuntimeConfig

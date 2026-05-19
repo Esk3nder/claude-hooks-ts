@@ -31,6 +31,12 @@ export interface EngagementState {
   readonly isa_engaged_at: string | null;
   readonly last_tier: number | null;
   readonly stop_blocked_once: boolean;
+  /**
+   * Rule names from regenerate.yaml that were skipped on the previous
+   * Stop because there was no time left in the Stop budget. Surfaced
+   * by the next UserPromptSubmit so silent skips are observable. (D3)
+   */
+  readonly regenerate_skipped: ReadonlyArray<string>;
 }
 
 /**
@@ -69,6 +75,15 @@ export interface ModeCache {
    * `requiresWebSources` in policies/workflow-classifier.ts.
    */
   readonly requires_web_sources: boolean;
+  /**
+   * Opt-out for the source-ledger Stop gate. Set to true by the
+   * PostToolUse ISA-edit handler when the ISA's frontmatter declares
+   * `source_ledger: not_applicable`. The Stop gate consults this flag
+   * to suppress its source-ledger block even when
+   * `requires_web_sources` is true. Default false — the user/agent
+   * must explicitly opt out per ISA.
+   */
+  readonly source_ledger_opt_out: boolean;
 }
 
 /**
@@ -99,11 +114,13 @@ export const EMPTY_SESSION_STATE: SessionStateRecord = {
   last_mode: null,
   last_tier: null,
   requires_web_sources: false,
+  source_ledger_opt_out: false,
   engagement_required: false,
   expected_isa_path: null,
   session_root: null,
   expected_isa_path_absolute: null,
   isa_engaged_at: null,
+  regenerate_skipped: [],
 };
 
 export type AppendableKey =
@@ -627,6 +644,7 @@ export const engagementOf = (r: SessionStateRecord): EngagementState => ({
   isa_engaged_at: r.isa_engaged_at,
   last_tier: r.last_tier,
   stop_blocked_once: r.stop_blocked_once,
+  regenerate_skipped: r.regenerate_skipped,
 });
 
 /** Project the verification slice from a unified record. */
@@ -649,4 +667,5 @@ export const modeCacheOf = (r: SessionStateRecord): ModeCache => ({
   last_mode: r.last_mode,
   source_urls: r.source_urls,
   requires_web_sources: r.requires_web_sources,
+  source_ledger_opt_out: r.source_ledger_opt_out,
 });
