@@ -304,6 +304,99 @@ describe("Inference.classify (with ClaudeSubprocessTest layer)", () => {
   })
 })
 
+describe("Inference.classify — US-3 tier-inflation guard wiring", () => {
+  test("classifier returns tier 5 with low-evidence prompt → floored to tier 3", async () => {
+    const c = await runClassify(
+      {
+        stdout: `{"mode":"ALGORITHM","tier":5,"mode_reason":"fluffy escalation"}`,
+        stderr: "",
+        exitCode: 0,
+        latencyMs: 100,
+        timedOut: false,
+      },
+      "do it carefully",
+    )
+    expect(c.mode).toBe("ALGORITHM")
+    expect(c.tier).toBe(3)
+    expect(c.source).toBe("classifier")
+    expect(c.reason).toContain("inflation-guard")
+    expect(c.reason).toContain("tier 5 floored to 3")
+  })
+
+  test("classifier returns tier 4 with structural-verb prompt → kept at tier 4", async () => {
+    const c = await runClassify(
+      {
+        stdout: `{"mode":"ALGORITHM","tier":4,"mode_reason":"architecture review"}`,
+        stderr: "",
+        exitCode: 0,
+        latencyMs: 100,
+        timedOut: false,
+      },
+      "revisit the architecture of the worker layer",
+    )
+    expect(c.mode).toBe("ALGORITHM")
+    expect(c.tier).toBe(4)
+    expect(c.source).toBe("classifier")
+    expect(c.reason).not.toContain("inflation-guard")
+  })
+
+  test("classifier returns tier 3 → guard does not touch (passthrough)", async () => {
+    const c = await runClassify(
+      {
+        stdout: `{"mode":"ALGORITHM","tier":3,"mode_reason":"normal"}`,
+        stderr: "",
+        exitCode: 0,
+        latencyMs: 100,
+        timedOut: false,
+      },
+      "do it",
+    )
+    expect(c.tier).toBe(3)
+    expect(c.reason).not.toContain("inflation-guard")
+  })
+
+  test("FAIL_SAFE invariant: classifier timeout produces tier 3 fail-safe, guard is bypassed", async () => {
+    const c = await runClassify({
+      stdout: "",
+      stderr: "",
+      exitCode: -1,
+      latencyMs: 14_000,
+      timedOut: true,
+    })
+    // Timeout path returns FAIL_SAFE before reaching the guard. Tier MUST
+    // stay 3 and source MUST be fail-safe (not classifier).
+    expect(c.tier).toBe(3)
+    expect(c.source).toBe("fail-safe")
+    expect(c.reason).not.toContain("inflation-guard")
+  })
+
+  test("FAIL_SAFE invariant: classifier non-zero exit produces tier 3 fail-safe, guard is bypassed", async () => {
+    const c = await runClassify({
+      stdout: "",
+      stderr: "boom",
+      exitCode: 2,
+      latencyMs: 100,
+      timedOut: false,
+    })
+    expect(c.tier).toBe(3)
+    expect(c.source).toBe("fail-safe")
+    expect(c.reason).not.toContain("inflation-guard")
+  })
+
+  test("FAIL_SAFE invariant: unparseable stdout produces tier 3 fail-safe, guard is bypassed", async () => {
+    const c = await runClassify({
+      stdout: "not valid json",
+      stderr: "",
+      exitCode: 0,
+      latencyMs: 100,
+      timedOut: false,
+    })
+    expect(c.tier).toBe(3)
+    expect(c.source).toBe("fail-safe")
+    expect(c.reason).not.toContain("inflation-guard")
+  })
+})
+
 describe("CLASSIFIER_SYSTEM_PROMPT — Algorithm doctrine pin", () => {
   test("contains TASK 3 header verbatim", () => {
     expect(CLASSIFIER_SYSTEM_PROMPT).toContain(

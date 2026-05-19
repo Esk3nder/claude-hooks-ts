@@ -330,6 +330,12 @@ const liveImpl: InferenceApi = {
       // US-3: floor over-escalated tiers when neither prompt nor recent
       // context shows structural evidence of cross-cutting work. Never
       // escalates and never demotes below tier 3 (would skip engagement).
+      //
+      // Note: the guard reads the RAW prompt (not cleanPrompt() / framed)
+      // intentionally — we want the richest possible evidence surface, and
+      // cleanPrompt strips tag-shaped tokens that may include real file
+      // paths or code fences. The classifier itself runs against the
+      // cleaned framed string; the guard runs against the original.
       const guard = checkStructuralEvidence({
         prompt,
         ...(opts?.context !== undefined ? { context: opts.context } : {}),

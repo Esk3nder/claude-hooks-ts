@@ -20,6 +20,8 @@ describe("hasStructuralSignal", () => {
     ["cross-cutting doctrine change", true, "structural verb 'cross-cutting'"],
     ["see .claude-hooks/work/abc/ISA.md", true, "ISA reference"],
     ["The classifier biases up", false, "prose with no structural signal"],
+    ["evaluate the trade-off and/or pivot", false, "common English slash idiom"],
+    ["he/she/they prefer the new flow", false, "pronoun slash idiom"],
   ])("hasStructuralSignal(%p) → %p (%s)", (input, expected) => {
     expect(hasStructuralSignal(input)).toBe(expected)
   })
