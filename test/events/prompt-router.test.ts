@@ -678,6 +678,70 @@ electricity price trends. Cite the sources in the page footer.`,
     expect(record.requires_web_sources).toBe(false)
   })
 
+  test("US-4: coding workflow + WEAK pattern in prompt → requires_web_sources=false (workflow scoping suppresses)", async () => {
+    // 'current best practices for error handling' is the dominant false-
+    // positive class motivating US-4. classifyPrompt routes it to a
+    // coding.* workflow (coding.fix here), which the new
+    // requiresWebSources signature suppresses to false despite the WEAK
+    // pattern match. The end-to-end contract: prompt → router → session
+    // state shows requires_web_sources=false.
+    const { SessionState } = await import(
+      "../../src/services/session-state.ts"
+    )
+    const payload = decode({
+      _tag: "UserPromptSubmit",
+      session_id: "us4-coding-weak",
+      hook_event_name: "UserPromptSubmit",
+      prompt: "current best practices for error handling",
+    })
+    const record = await Effect.runPromise(
+      Effect.gen(function* () {
+        yield* handleUserPromptSubmit(payload)
+        const s = yield* SessionState
+        return yield* s.get("us4-coding-weak")
+      }).pipe(
+        Effect.provide(SessionStateTest()),
+        Effect.provide(inferenceLayer),
+        Effect.provide(subprocLayer),
+        Effect.provide(ClassifierTelemetryTest().layer),
+        Effect.provide(CommandRunnerTest()),
+      ),
+    )
+    // Workflow classifier tags this as coding.fix (error handling).
+    expect(record.last_workflow).toBe("coding.fix")
+    // US-4: workflow-scoping suppresses the WEAK pattern in coding workflows.
+    expect(record.requires_web_sources).toBe(false)
+  })
+
+  test("US-4: coding workflow + STRONG pattern still forces requires_web_sources=true (belt-and-suspenders)", async () => {
+    // A coding task that EXPLICITLY invokes web research still triggers
+    // the ledger — STRONG patterns are workflow-agnostic.
+    const { SessionState } = await import(
+      "../../src/services/session-state.ts"
+    )
+    const payload = decode({
+      _tag: "UserPromptSubmit",
+      session_id: "us4-coding-strong",
+      hook_event_name: "UserPromptSubmit",
+      prompt: "build a feature that uses cite the sources at the bottom",
+    })
+    const record = await Effect.runPromise(
+      Effect.gen(function* () {
+        yield* handleUserPromptSubmit(payload)
+        const s = yield* SessionState
+        return yield* s.get("us4-coding-strong")
+      }).pipe(
+        Effect.provide(SessionStateTest()),
+        Effect.provide(inferenceLayer),
+        Effect.provide(subprocLayer),
+        Effect.provide(ClassifierTelemetryTest().layer),
+        Effect.provide(CommandRunnerTest()),
+      ),
+    )
+    expect(record.last_workflow).toBe("coding.feature")
+    expect(record.requires_web_sources).toBe(true)
+  })
+
   test("non-UserPromptSubmit payload → NO_DECISION", async () => {
     const payload = decode({
       _tag: "Stop",

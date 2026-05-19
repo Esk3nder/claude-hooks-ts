@@ -97,29 +97,34 @@ These four stories collectively make the repo's enforced flow match the marketin
 
 ---
 
-### US-4 — Source-ledger gate v2: classifier-intent based 🔴
+### US-4 — Source-ledger gate v2: workflow-tag scoping 🟢
 
 > **As** an engineer doing coding work that incidentally mentions "current best practices",
-> **I want** the source-ledger gate to fire only when the classifier's workflow tag is `research.*`,
-> **So that** the gate stops blocking legitimate code turns while still catching genuine web-research prompts.
+> **I want** the source-ledger gate suppressed for confidently-tagged non-research workflows,
+> **So that** the gate stops blocking legitimate code turns while still catching prompts that explicitly invoke web research.
 
-**Acceptance criteria**
-1. The `Classification` schema (`src/services/inference.ts:31-38`) is extended with `workflow?: WorkflowTag | null`.
-2. The Sonnet rubric is updated to also emit the workflow tag (one of the existing 15 tags in `src/policies/workflow-classifier.ts`).
-3. `src/events/prompt-router.ts:99-126` consumes the workflow tag and computes `requires_web_sources` as: `classification.workflow?.startsWith("research.") === true` ∨ existing strict pattern match (belt-and-suspenders).
-4. PR-#48's ISA frontmatter opt-out continues to override.
-5. Tests: prompt with "current best practices" classified as `coding.feature` → `requires_web_sources = false`; same phrase in `research.synthesis` workflow → `true`.
+**Shipped in PR #51 (2026-05-19).** Note: design refined during implementation versus the original spec — see Decisions below.
 
-**Implementation notes**
-- Sonnet rubric edit in `src/services/inference.ts:51-83` — add workflow tag to JSON contract.
-- Parser update at `src/services/inference.ts:139-200` — decode the new field, default to `null` on absence.
-- `WorkflowTag` union already exists in `src/policies/workflow-classifier.ts`; reuse.
+**Final acceptance criteria (shipped)**
+1. `WEB_SOURCES_REQUIRED` in `src/policies/workflow-classifier.ts` split into STRONG and WEAK tiers.
+2. `requiresWebSources(prompt, workflow?)` takes an optional `WorkflowTag` argument.
+3. When `workflow` is supplied and is **not** `"unknown"` (including `research.*`), only STRONG patterns fire — loose priming tags must not force the ledger.
+4. When `workflow` is `"unknown"` or absent, the combined STRONG+WEAK set fires (belt-and-suspenders, original behavior).
+5. STRONG patterns: explicit invocations (`search the web`, `google for X`, `cite the sources`, `pull current benchmark data`, `latest news on/in`, `online research`, `web research`).
+6. WEAK patterns: common-English idioms that misfire on coding/writing/ops (`current best practices`, `state of the art`, `recent news/updates`).
+7. PR-#48's ISA frontmatter opt-out continues to override at the Stop gate downstream.
+8. `prompt-router.ts:103` passes the existing regex-derived `workflow` tag from `classifyPrompt` — no Sonnet rubric change, no `Classification` schema change.
 
-**Test pattern**: `test/policies/workflow-classifier.test.ts` extended; new `test/algorithm/classifier.test.ts` cases for the parsed workflow field.
+**Design deviation from original spec**
+- Original spec said `research.* → true` (always force ledger on research workflows). This broke the existing decoupling contract pinned by `test/events/prompt-router.test.ts` ("persists requires_web_sources=false for a loose research.web priming match"). Loose `research.web` priming from "look up my notes" must NOT force the ledger.
+- Final design: all confidently-tagged workflows (including `research.*`) are STRONG-only. The ledger fires only when the prompt **explicitly** invokes web research.
 
-**LOC estimate**: ~150 (schema 15, rubric 20, parser 15, router consumer 20, tests 80)
+**Files (shipped)**
+- `src/policies/workflow-classifier.ts` — split patterns, extend signature
+- `src/events/prompt-router.ts` — pass workflow tag through
+- `test/policies/workflow-classifier.test.ts` — 19 new tests
 
-**Risk** (T10/T4): inference may not reliably emit the workflow tag; treat missing field as `null`, fall back to existing substring patterns. Telemetry on workflow-tag-emit-rate after rollout.
+**Actual LOC**: +140 / -3.
 
 ---
 
