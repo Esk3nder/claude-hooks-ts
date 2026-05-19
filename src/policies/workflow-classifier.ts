@@ -188,7 +188,10 @@ const RULES: ReadonlyArray<Rule> = [
  *
  * Tested deny-by-default in workflow-classifier.test.ts.
  */
-const WEB_SOURCES_REQUIRED: ReadonlyArray<RegExp> = [
+/** STRONG patterns — fire regardless of the workflow tag because the
+ * prompt explicitly invokes web search / external citation. These are
+ * almost never false positives. */
+const WEB_SOURCES_REQUIRED_STRONG: ReadonlyArray<RegExp> = [
   /\bsearch (?:the )?web\b/i,
   /\bweb research\b/i,
   /\b(?:google|duckduckgo|bing)\s+(?:for|the)\s+\S+/i,
@@ -198,9 +201,23 @@ const WEB_SOURCES_REQUIRED: ReadonlyArray<RegExp> = [
   /\b(?:pull|use|include|gather|fetch)\s+(?:real\s+)?(?:current|recent|latest)\s+(?:benchmarks?|benchmark data|market|industry|pricing|price|cost|rate|tax|electricity|wage|data)\b/i,
   /\bwhat'?s the latest (?:news|on|in)\b/i,
   /\blatest news (?:on|about|in)\b/i,
+]
+
+/** WEAK patterns — common idioms that PROBABLY indicate research but
+ * misfire on coding/writing/ops tasks ("current best practices for error
+ * handling", "state of the art rate limiter"). US-4 suppresses these when
+ * the workflow tag is confidently non-research. */
+const WEB_SOURCES_REQUIRED_WEAK: ReadonlyArray<RegExp> = [
   /\bcurrent best practices?\b/i,
   /\bstate of the art\b/i,
   /\brecent (?:news|update)s?\b/i,
+]
+
+/** Back-compat alias — union of strong + weak. Existing callers that pass
+ * no workflow tag get the original combined deny-by-default behavior. */
+const WEB_SOURCES_REQUIRED: ReadonlyArray<RegExp> = [
+  ...WEB_SOURCES_REQUIRED_STRONG,
+  ...WEB_SOURCES_REQUIRED_WEAK,
 ]
 
 const META_EVALUATION_PROMPT =
@@ -225,14 +242,43 @@ const isMetaEvaluationOnlyPrompt = (prompt: string): boolean =>
  * force a turn into a source-ledger requirement.
  *
  * Deliberately deny-by-default for short / common-English prompts.
+ *
+ * US-4: when a `workflow` tag is supplied by the caller (the prompt-router
+ * computes one via `classifyPrompt` immediately before this call), it acts
+ * as a SCOPING SIGNAL:
+ *   - `research.*` → always true (the prompt is recognized as research-shaped)
+ *   - `coding.*` / `writing.*` / `ops.*` → always false (override substring
+ *     match: even if the prompt mentions "current best practices" or
+ *     similar, this is a coding/writing/ops task and the gate would
+ *     misfire). This closes the dominant Stop-loop pain class.
+ *   - `unknown` → fall through to the existing strict-pattern match
+ *     (belt-and-suspenders).
+ *
+ * The PR-#48 ISA frontmatter opt-out (`source_ledger: not_applicable`)
+ * continues to override at the Stop gate, downstream of this decision.
  */
-export const requiresWebSources = (rawPrompt: string): boolean => {
+export const requiresWebSources = (
+  rawPrompt: string,
+  workflow?: WorkflowTag,
+): boolean => {
   const prompt = (rawPrompt ?? "").trim()
   if (prompt.length === 0) return false
   if (META_EVALUATION_PROMPT.test(prompt) && hasSourceBackedTaskInMetaPrompt(prompt)) {
     return true
   }
   if (isMetaEvaluationOnlyPrompt(prompt)) return false
+  // US-4 scoping by workflow tag.
+  //
+  // Design choice: a confidently-tagged workflow (anything except "unknown",
+  // including `research.*`) restricts the ledger gate to STRONG patterns
+  // only. Loose priming tags like `research.web` from "look up my notes"
+  // must NOT force a source-ledger requirement — only an explicit invocation
+  // ("search the web", "cite the sources", etc.) does. WEAK patterns
+  // ("current best practices", "state of the art") remain only for the
+  // `unknown` workflow fallback (belt-and-suspenders).
+  if (workflow !== undefined && workflow !== "unknown") {
+    return WEB_SOURCES_REQUIRED_STRONG.some((re) => re.test(prompt))
+  }
   return WEB_SOURCES_REQUIRED.some((re) => re.test(prompt))
 }
 

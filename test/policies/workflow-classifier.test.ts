@@ -215,3 +215,89 @@ describe("requiresWebSources", () => {
     expect(requiresWebSources(prompt)).toBe(true)
   })
 })
+
+/**
+ * US-4: workflow tag scopes the source-ledger decision.
+ *
+ * Design (refined to preserve the existing priming-vs-gating decoupling
+ * contract — loose research priming must NOT force the ledger):
+ *  - any workflow ≠ "unknown" (including `research.*`) → STRONG patterns
+ *    only fire. WEAK idioms like "current best practices" / "state of the
+ *    art" are common-English false positives in confidently-tagged
+ *    workflows.
+ *  - workflow === "unknown" → combined STRONG + WEAK (belt-and-suspenders).
+ *
+ * Net effect: confidently-tagged turns only require web sources when the
+ * prompt explicitly says so ("search the web", "cite the sources", "google
+ * for X", "pull current benchmark data"). Ambiguous (unknown) turns still
+ * get the loose pattern fallback.
+ */
+describe("requiresWebSources(prompt, workflow) — US-4 scoping", () => {
+  // ── short-circuits unchanged
+  test("empty prompt always → false (short-circuits before workflow check)", () => {
+    expect(requiresWebSources("", "research.web")).toBe(false)
+  })
+
+  // ── tagged workflow (any non-"unknown") → STRONG-only
+  test("research.synthesis + WEAK pattern ('current best practices') → false (loose priming should not force ledger)", () => {
+    expect(requiresWebSources("current best practices", "research.synthesis")).toBe(false)
+  })
+  test("research.web + WEAK pattern ('state of the art') → false", () => {
+    expect(requiresWebSources("state of the art", "research.web")).toBe(false)
+  })
+  test("research.web + STRONG pattern ('search the web') → true", () => {
+    expect(requiresWebSources("search the web for the design", "research.web")).toBe(true)
+  })
+  test("coding.feature + WEAK pattern ('current best practices for error handling') → false", () => {
+    expect(
+      requiresWebSources("current best practices for error handling", "coding.feature"),
+    ).toBe(false)
+  })
+  test("coding.fix: 'current best practices' classifies as coding.fix and is also suppressed", () => {
+    expect(classifyPrompt("current best practices for error handling").workflow).toBe(
+      "coding.fix",
+    )
+    expect(
+      requiresWebSources("current best practices for error handling", "coding.fix"),
+    ).toBe(false)
+  })
+  test("writing.doc + WEAK pattern ('recent news on bun') → false", () => {
+    expect(requiresWebSources("recent news on bun", "writing.doc")).toBe(false)
+  })
+  test("ops.git + WEAK pattern → false", () => {
+    expect(requiresWebSources("state of the art", "ops.git")).toBe(false)
+  })
+
+  // ── STRONG patterns ALWAYS fire, regardless of workflow tag
+  test("coding.feature + STRONG ('search the web') → true", () => {
+    expect(requiresWebSources("search the web for the design", "coding.feature")).toBe(true)
+  })
+  test("coding.feature + STRONG ('cite the sources') → true", () => {
+    expect(requiresWebSources("cite the sources in the footer", "coding.feature")).toBe(true)
+  })
+  test("ops.deploy + STRONG ('google for X') → true", () => {
+    expect(requiresWebSources("google for the canary playbook", "ops.deploy")).toBe(true)
+  })
+  test("writing.doc + STRONG ('pull real current benchmark data') → true", () => {
+    expect(requiresWebSources("pull real current benchmark data", "writing.doc")).toBe(true)
+  })
+
+  // ── workflow=unknown → existing combined-pattern behavior preserved
+  test("unknown workflow: 'current best practices' → true (WEAK still fires)", () => {
+    expect(requiresWebSources("current best practices", "unknown")).toBe(true)
+  })
+  test("unknown workflow: 'search the web' → true (STRONG fires)", () => {
+    expect(requiresWebSources("search the web for the design", "unknown")).toBe(true)
+  })
+  test("unknown workflow: 'merge these arrays' → false (no pattern)", () => {
+    expect(requiresWebSources("merge these arrays", "unknown")).toBe(false)
+  })
+
+  // ── back-compat: no workflow arg → original combined behavior
+  test("no workflow arg: 'current best practices' → true (back-compat preserved)", () => {
+    expect(requiresWebSources("current best practices")).toBe(true)
+  })
+
+  // ── ISA opt-out (session-state.source_ledger_opt_out) is downstream and
+  //    consulted at the Stop gate, not here. This function remains pure.
+})

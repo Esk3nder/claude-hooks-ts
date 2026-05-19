@@ -100,7 +100,12 @@ export const handleUserPromptSubmit = (
     //    source-ledger gate). Kept separate so a loose priming match
     //    cannot turn into a source-URL requirement at Stop time.
     const { workflow, playbook } = classifyPrompt(payload.prompt)
-    const requiresWebSrc = requiresWebSources(payload.prompt)
+    // US-4: pass the workflow tag as a scoping signal. `coding.*` /
+    // `writing.*` / `ops.*` short-circuit to false, eliminating false-
+    // positive Stop-loops on coding tasks that mention "current best
+    // practices" or similar phrases. `research.*` always returns true.
+    // `unknown` falls through to the existing strict-pattern match.
+    const requiresWebSrc = requiresWebSources(payload.prompt, workflow)
     const state = yield* SessionState
     const sessionId = payload.session_id
     const existing = yield* state
