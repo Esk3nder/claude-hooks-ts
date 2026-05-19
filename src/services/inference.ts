@@ -14,6 +14,7 @@ import { Context, Effect, Layer } from "effect"
 import { ClaudeSubprocess } from "./claude-subprocess.ts"
 import { durationMillis, loadRuntimeConfig } from "./runtime-config.ts"
 import { reportHookFailure } from "./hook-failure.ts"
+import { checkStructuralEvidence } from "../algorithm/classifier-inflation-guard.ts"
 
 export type Mode = "MINIMAL" | "NATIVE" | "ALGORITHM"
 /** Numeric tiers 1-5 internally — mirrors the InferenceResult.tier shape.
@@ -326,10 +327,28 @@ const liveImpl: InferenceApi = {
           latencyMs: result.latencyMs,
         }
       }
+      // US-3: floor over-escalated tiers when neither prompt nor recent
+      // context shows structural evidence of cross-cutting work. Never
+      // escalates and never demotes below tier 3 (would skip engagement).
+      //
+      // Note: the guard reads the RAW prompt (not cleanPrompt() / framed)
+      // intentionally — we want the richest possible evidence surface, and
+      // cleanPrompt strips tag-shaped tokens that may include real file
+      // paths or code fences. The classifier itself runs against the
+      // cleaned framed string; the guard runs against the original.
+      const guard = checkStructuralEvidence({
+        prompt,
+        ...(opts?.context !== undefined ? { context: opts.context } : {}),
+        tier: parsed.tier,
+      })
+      const finalTier = guard.pass ? parsed.tier : guard.floorTier
+      const finalReason = guard.pass
+        ? parsed.reason
+        : `${parsed.reason} [inflation-guard: ${guard.reason}]`
       return {
         mode: parsed.mode,
-        tier: parsed.tier,
-        reason: parsed.reason,
+        tier: finalTier,
+        reason: finalReason,
         source: "classifier",
         latencyMs: result.latencyMs,
       }
