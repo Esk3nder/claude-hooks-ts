@@ -9,6 +9,10 @@ export interface RuntimeConfig {
   readonly classifierTimeoutMs: Duration.Duration
   readonly classifierDisabled: boolean
   readonly isaPretoolGateDisabled: boolean
+  /** US-1: opt-in PreToolUse TDD gate. When true, Write/Edit on non-test
+   * `src/**` files is blocked unless a companion test exists on disk or
+   * was touched in this session. Default false (opt-in). */
+  readonly tddGateEnabled: boolean
   readonly otelEndpoint: Option.Option<Redacted.Redacted<string>>
   readonly lockRetryTimeoutMs: Duration.Duration
   readonly approvalGcInterval: Duration.Duration
@@ -44,6 +48,7 @@ export const DEFAULT_RUNTIME_CONFIG: RuntimeConfig = {
   classifierTimeoutMs: millis(25_000),
   classifierDisabled: false,
   isaPretoolGateDisabled: false,
+  tddGateEnabled: false,
   otelEndpoint: Option.none(),
   lockRetryTimeoutMs: millis(5_000),
   approvalGcInterval: millis(24 * 60 * 60 * 1000),
@@ -105,6 +110,7 @@ export const runtimeConfigFromEnv = (
   ...base,
   classifierDisabled: envFlag(env["CLAUDE_HOOKS_DISABLE_CLASSIFIER"]),
   isaPretoolGateDisabled: env["CLAUDE_HOOKS_DISABLE_ISA_PRETOOL_GATE"] === "1",
+  tddGateEnabled: envFlag(env["CLAUDE_HOOKS_TDD_GATE_ENABLED"]),
   otelEndpoint: Option.map(nonEmpty(env["OTEL_EXPORTER_OTLP_ENDPOINT"]), (v) =>
     Redacted.make(v),
   ),
@@ -159,6 +165,7 @@ export interface RuntimeConfigSummary {
   readonly classifierTimeoutMs: number
   readonly classifierDisabled: boolean
   readonly isaPretoolGateDisabled: boolean
+  readonly tddGateEnabled: boolean
   readonly otelEndpointConfigured: boolean
   readonly lockRetryTimeoutMs: number
   readonly approvalGcIntervalMs: number
@@ -182,6 +189,7 @@ export const summarizeRuntimeConfig = (
   classifierTimeoutMs: durationMillis(cfg.classifierTimeoutMs),
   classifierDisabled: cfg.classifierDisabled,
   isaPretoolGateDisabled: cfg.isaPretoolGateDisabled,
+  tddGateEnabled: cfg.tddGateEnabled,
   otelEndpointConfigured: Option.isSome(cfg.otelEndpoint),
   lockRetryTimeoutMs: durationMillis(cfg.lockRetryTimeoutMs),
   approvalGcIntervalMs: durationMillis(cfg.approvalGcInterval),
