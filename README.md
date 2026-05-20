@@ -1,8 +1,18 @@
 # claude-hooks-ts
 
-**A type-safe dispatcher that turns Claude Code's 29 hook events into one verifiable control plane** — schemas, policies, and gates instead of ad-hoc shell scripts. One binary decodes every hook payload through a strict schema, runs it through declarative policies, and emits the exact JSON Claude Code expects. Includes a mode classifier, an ISA-driven completeness gate, an engagement gate that requires a written spec before non-trivial work, and an auto-checkpoint that commits when verification probes pass.
+**A worker-and-policy system for Claude Code that makes the agent's process verifiable.** It enforces a Read-Plan-Implement loop (the ISA artifact must exist before any implementation tool runs), test-driven development (writes to `src/**` are denied without a companion test), classifier-driven engagement (the right ceremony for the actual scope of work), and bounded subagent delegation (at deep tiers, work is pushed to workers with a strict output contract). One Bun binary handles every one of Claude Code's 29 hook events through a strict schema, runs the payload through declarative policies, and emits the exact JSON Claude Code expects.
 
 If you're running Claude Code in any context where "looks done" isn't good enough — production code, regulated work, anything you'd hate to debug later — this gives you receipts.
+
+## What it enforces (the methodology)
+
+| Pillar | Mechanism | Default |
+| --- | --- | --- |
+| **R**ead-**P**lan-**I**mplement (RPI) | Engagement gate denies non-ISA implementation tools until the per-task ISA artifact exists on disk; Stop gate blocks completion until the ISA's `## Test Strategy` ISCs are checked. | **on** for ALGORITHM tier ≥ E3 |
+| **T**est-Driven Development | TDD-first PreToolUse gate denies `Write`/`Edit` on a non-test `src/**` file unless a companion test exists OR was touched in the same session (bootstrap-batch escape). | opt-in: `CLAUDE_HOOKS_TDD_GATE_ENABLED=1` |
+| **Leveraged subagent workers** | At classifier tier ≥ E4, direct writes are recommended-asked or strict-denied unless a subagent is already active; `Task`/`Agent` launches get the worker contract injected and structured output enforced. | opt-in: `CLAUDE_HOOKS_WORKER_MANDATORY_MODE=recommend\|strict` |
+| **Right-sized ceremony** | Sonnet mode classifier picks MINIMAL / NATIVE / ALGORITHM-E1..E5; an inflation guard floors E4/E5 verdicts to E3 when the prompt and recent context show no structural evidence; workflow-scoped source-ledger suppresses common-English false positives on coding/writing/ops tagged turns. | **on** |
+| **Verifiable completion** | PostToolUse hot-loads `.claude-hooks/probes.ts` and flips ISC checkboxes on pass; `Stop` blocks until probes pass; opt-in auto-checkpoint commits when the repo is allow-listed. | probes auto-run; checkpoint opt-in via `checkpoint-repos.txt` |
 
 ---
 
@@ -13,8 +23,9 @@ Claude Code fires a hook for every meaningful step in a session: `PreToolUse`, `
 - No shared state between handlers, so you can't say "block Stop because the run produced no verifiable artifact."
 - No schema for payloads, so you write defensive parsers in every script.
 - No way to know whether a session was a 30-second one-shot or a 2-hour algorithmic effort — they get the same gates.
+- No way to make doctrine (RPI, TDD, leveraged workers) into something the agent literally cannot bypass.
 
-This package replaces that with one Bun binary. It decodes payloads against a strict Effect Schema, routes through 29 typed handlers (exhaustiveness enforced at compile time), and writes a session ledger so what happened is reconstructible after the fact.
+This package replaces that with one Bun binary. It decodes payloads against a strict Effect Schema, routes through 29 typed handlers (exhaustiveness enforced at compile time), writes a session ledger so what happened is reconstructible after the fact, and stacks the policy gates above so the methodology is a property of the system rather than a request in the prompt.
 
 ---
 
