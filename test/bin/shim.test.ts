@@ -31,6 +31,33 @@ const findBun = (): string | null => {
 
 const BUN = findBun()
 
+/**
+ * P0-2: the shim now uses `#!/usr/bin/env node`, so the spawn env must
+ * include node's directory on PATH. The test still sanitizes away bun
+ * (the regression these tests pin is "bun not on PATH"), it just needs
+ * to keep node reachable so the shim itself can launch.
+ */
+const findNodeDir = (): string => {
+  const candidates = [
+    process.env["NODE"] ? path.dirname(process.env["NODE"]) : null,
+    "/opt/homebrew/bin",
+    "/usr/local/bin",
+    "/usr/bin",
+  ].filter((c): c is string => c !== null)
+  for (const dir of candidates) {
+    const probe = path.join(dir, "node")
+    try {
+      fs.accessSync(probe, fs.constants.X_OK)
+      return dir
+    } catch {
+      /* not here */
+    }
+  }
+  return "/usr/bin"
+}
+const NODE_DIR = findNodeDir()
+const SANITIZED_PATH = `/usr/bin:/bin:${NODE_DIR}`
+
 describe("bin/claude-hook shim", () => {
   test("works under sanitized PATH (no bun on PATH) — regression for hook-fire failure", () => {
     if (!BUN) return
@@ -48,7 +75,7 @@ describe("bin/claude-hook shim", () => {
       }),
       env: {
         // Sanitized PATH simulating Claude Code's hook subprocess env.
-        PATH: "/usr/bin:/bin",
+        PATH: SANITIZED_PATH,
         HOME: os.homedir(),
         BUN, // explicit absolute path, what the shim would use as fallback
       },
@@ -72,7 +99,7 @@ describe("bin/claude-hook shim", () => {
         tool_name: "Bash",
         tool_input: { command: "ls" },
       }),
-      env: { PATH: "/usr/bin:/bin", HOME: os.homedir(), BUN },
+      env: { PATH: SANITIZED_PATH, HOME: os.homedir(), BUN },
       encoding: "utf8",
     })
     fs.rmSync(dir, { recursive: true, force: true })
@@ -84,7 +111,7 @@ describe("bin/claude-hook shim", () => {
   test("emits actionable error when bun cannot be located", () => {
     const r = spawnSync(SHIM, ["PreToolUse"], {
       input: "{}",
-      env: { PATH: "/usr/bin:/bin", HOME: "/nonexistent" },
+      env: { PATH: SANITIZED_PATH, HOME: "/nonexistent" },
       encoding: "utf8",
     })
     // exit 1 with a usable error pointing to the install command

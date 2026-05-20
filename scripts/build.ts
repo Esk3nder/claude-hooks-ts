@@ -3,17 +3,16 @@ import * as fs from "node:fs"
 import * as path from "node:path"
 import { runCommandLive } from "../src/services/command-runner.ts"
 import { writeCliStderr, writeCliStdout } from "./io.ts"
+import { bunCompileTarget, dispatcherBinaryName } from "./platform.ts"
 
-const platform =
-  process.platform === "darwin"
-    ? "darwin"
-    : process.platform === "linux"
-      ? "linux"
-      : process.platform
-const arch =
-  process.arch === "x64" ? "x64" : process.arch === "arm64" ? "arm64" : process.arch
-const target = `bun-${platform}-${arch}`
-const outfile = path.join("dist", `claude-hook-${platform}-${arch}`)
+// P0-2: use the shared platform mapping so Windows emits the correct
+// Bun target (`bun-windows-x64`) and the output file carries `.exe` —
+// kept in sync with install.ts via the same helpers.
+const target = bunCompileTarget(process.platform, process.arch)
+const outfile = path.join(
+  "dist",
+  dispatcherBinaryName(process.platform, process.arch),
+)
 
 fs.mkdirSync("dist", { recursive: true })
 const result = await runCommandLive(

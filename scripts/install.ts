@@ -20,6 +20,7 @@ import { HOOK_EVENT_NAMES } from "../src/schema/hook-events.ts";
 import { shellQuote, splitShellWords } from "../src/services/shell-words.ts";
 import { runCommandLive } from "../src/services/command-runner.ts";
 import { writeCliStderr, writeCliStdout } from "./io.ts";
+import { dispatcherBinaryName } from "./platform.ts";
 
 const DISPATCHER_MARKERS = ["claude-hooks-ts/bin/claude-hook", "claude-hook"];
 const DEFAULT_TARGET = path.join(os.homedir(), ".claude", "settings.json");
@@ -103,15 +104,15 @@ const resolveDispatcherPath = async (
   if (noBinary) {
     return path.join(installRoot, "bin", "claude-hook");
   }
-  const archMap: Record<string, string> = { x64: "x64", arm64: "arm64" };
-  const arch = archMap[process.arch] ?? process.arch;
-  const platform =
-    process.platform === "linux"
-      ? "linux"
-      : process.platform === "darwin"
-        ? "darwin"
-        : process.platform;
-  const binary = path.join(installRoot, "dist", `claude-hook-${platform}-${arch}`);
+  // P0-2: use the shared mapping so we look for the same filename
+  // scripts/build.ts emits. On Windows that's `claude-hook-windows-
+  // <arch>.exe`; pre-P0-2 we'd look for `claude-hook-win32-<arch>`
+  // and always fall through to the (broken) bash shim.
+  const binary = path.join(
+    installRoot,
+    "dist",
+    dispatcherBinaryName(process.platform, process.arch),
+  );
   if (allowBuild && !fs.existsSync(binary)) {
     await tryBuild(installRoot, out);
   }
