@@ -31,6 +31,7 @@ import {
   type Probe,
 } from "../algorithm/isa/probes.ts";
 import type { CriterionEntry } from "../algorithm/isa/criteria.ts";
+import { logWarning } from "../services/diagnostics.ts";
 
 export const invocationKey = (payload: {
   readonly session_id: string;
@@ -172,10 +173,11 @@ const replayWorkerVerification = (
     const registry: Readonly<Record<string, Probe>> = yield* Effect.promise(
       () => loadProbes(cwd),
     );
-    const out: ReplayResult[] = [];
     // Run unique check names only — avoid double-running a probe when the
-    // worker reported the same check twice.
+    // worker reported the same check twice — and build the probe-run
+    // Effects up-front so we can dispatch them concurrently.
     const seen = new Set<string>();
+    const probeRuns: Array<Effect.Effect<ReplayResult>> = [];
     for (const claim of claims) {
       if (seen.has(claim.check)) continue;
       seen.add(claim.check);
@@ -188,9 +190,17 @@ const replayWorkerVerification = (
         type: "criterion",
         status: "pending",
       };
-      const passed = yield* runProbe(resolved.fn, criterion, resolved.timeoutMs);
-      out.push({ check: claim.check, passed });
+      const checkName = claim.check;
+      probeRuns.push(
+        Effect.map(
+          runProbe(resolved.fn, criterion, resolved.timeoutMs),
+          (passed) => ({ check: checkName, passed } as ReplayResult),
+        ),
+      );
     }
+    // Parallel: each probe is independent. Worst-case wall-clock is the
+    // slowest single probe's timeoutMs rather than the sum.
+    const out = yield* Effect.all(probeRuns, { concurrency: "unbounded" });
     return out;
   });
 
@@ -397,6 +407,14 @@ export const handleSubagentStop = (
         workerIdForSubagent(payload),
         payload.output,
       ).pipe(Effect.either);
+      // Observability: recordWorkerStop already parsed once successfully.
+      // If the second parse disagrees, log so a parser/race issue doesn't
+      // silently skip the verification replay.
+      if (reparsed._tag === "Left") {
+        yield* logWarning(
+          `[verification-replay] re-parse of worker output failed after recordWorkerStop succeeded; skipping replay for session ${payload.session_id}`,
+        );
+      }
       if (reparsed._tag === "Right" && reparsed.right.verification.length > 0) {
         const cwd =
           typeof payload.cwd === "string" && payload.cwd.length > 0

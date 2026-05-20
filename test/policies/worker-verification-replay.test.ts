@@ -178,4 +178,23 @@ describe("evaluateVerificationReplay — duplicate / multiple claims for same ch
     expect(v.kind).toBe("block")
     expect(v.kind === "block" && v.reason).toContain("typecheck")
   })
+
+  test("contradictory same-check claims (passed AND failed) + replay passes → block, disagreement named once", () => {
+    // Worker contradicts itself for the same check. Replay says passed.
+    // The `passed` claim agrees (ignored); the `failed` claim disagrees
+    // (blocks). The disagreement should appear exactly once in the
+    // reason — dedup keyed by check, not by (check, status).
+    const v = evaluateVerificationReplay({
+      claims: [
+        baseClaim("typecheck", "passed"),
+        baseClaim("typecheck", "failed"),
+      ],
+      replays: [{ check: "typecheck", passed: true }],
+    })
+    expect(v.kind).toBe("block")
+    if (v.kind === "block") {
+      const matches = v.reason.match(/typecheck: worker claimed/g) ?? []
+      expect(matches.length).toBe(1)
+    }
+  })
 })
