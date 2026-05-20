@@ -259,6 +259,10 @@ On success the last line is `✓ Methodology enforced end-to-end`. On failure th
 
 ---
 
+## Security
+
+Threat model, mitigations inventory with `file:line` audit refs, known gaps, and disclosure path live in [`SECURITY.md`](./SECURITY.md). Report vulnerabilities via GitHub Security Advisories.
+
 ## License
 
 See [`LICENSE`](./LICENSE).
