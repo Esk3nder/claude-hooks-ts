@@ -101,9 +101,35 @@ export interface ModeCache {
 export interface SessionStateRecord
   extends EngagementState,
     VerificationLedger,
-    ModeCache {}
+    ModeCache {
+  /**
+   * P0-5: schema version stamp. Records written by this build carry the
+   * current `SESSION_STATE_SCHEMA_VERSION`. Optional on read (legacy
+   * records without it parse via the forward-compat merge that defaults
+   * missing fields). A record with a version GREATER than this build's
+   * `SESSION_STATE_SCHEMA_VERSION` is rejected as "from a newer install"
+   * — the read returns EMPTY_SESSION_STATE without touching the file
+   * (so an older install cannot destroy a newer install's session data).
+   */
+  readonly _schema_version?: number;
+}
+
+/**
+ * P0-5: on-disk schema version for session-state records.
+ *
+ * Increment when: (a) you rename a field, (b) you change the SEMANTICS of
+ * an existing field, (c) you delete a field. Do NOT increment when adding
+ * a new field — those are forward-compatible via the existing
+ * `{ ...EMPTY_SESSION_STATE, ...parsed }` merge in `parseRecordStrict`.
+ *
+ * When you do increment, also register a migration in
+ * `migrateSessionStateRecord` below so legacy records from older versions
+ * still parse.
+ */
+export const SESSION_STATE_SCHEMA_VERSION = 1 as const;
 
 export const EMPTY_SESSION_STATE: SessionStateRecord = {
+  _schema_version: SESSION_STATE_SCHEMA_VERSION,
   files_read: [],
   files_changed: [],
   commands_run: [],
@@ -262,6 +288,29 @@ const backupCorruptRecord = (
   logWarningSync(`session-state: ${reason} for ${sessionId}; refusing to reset implicitly`);
 };
 
+/**
+ * P0-5: detect a record from a newer build (higher `_schema_version`).
+ * Older builds must NOT silently merge a future record's fields with
+ * stale assumptions, and must NOT back-up-and-reset (that would let an
+ * older install destroy a newer install's session data). Instead we
+ * warn loudly and return EMPTY so the older build proceeds with a
+ * clean slate while leaving the on-disk record untouched.
+ */
+const detectFutureSchemaVersion = (
+  parsed: unknown,
+  filePath: string,
+  sessionId: string,
+): number | null => {
+  if (!isRecord(parsed)) return null;
+  const v = parsed["_schema_version"];
+  if (typeof v !== "number" || !Number.isFinite(v)) return null;
+  if (v <= SESSION_STATE_SCHEMA_VERSION) return null;
+  logWarningSync(
+    `session-state: _schema_version ${v} from ${filePath} is newer than this build's ${SESSION_STATE_SCHEMA_VERSION} for session ${sessionId}; refusing to merge — returning EMPTY_SESSION_STATE and leaving the on-disk record untouched.`,
+  );
+  return v;
+};
+
 const parseRecordStrict = (
   raw: string,
   filePath: string,
@@ -274,6 +323,11 @@ const parseRecordStrict = (
   } catch (cause) {
     backupCorruptRecord(raw, filePath, sessionId, "invalid JSON");
     return fsError(op, filePath, cause);
+  }
+  // P0-5: future-version short-circuit BEFORE merge/decode. If the record
+  // was written by a newer build, do not pretend to understand it.
+  if (detectFutureSchemaVersion(parsed, filePath, sessionId) !== null) {
+    return EMPTY_SESSION_STATE;
   }
   // Forward-compat default merge: if the JSON looks like a legacy session
   // record (has at least one known schema key) but is missing newly-added
