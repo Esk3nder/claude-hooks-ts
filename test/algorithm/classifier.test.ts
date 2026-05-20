@@ -90,17 +90,60 @@ describe("tryFastPath — this package pre-inference gates (verbatim)", () => {
     expect(tryFastPath("yes")).toBeNull()
   })
 
-  // Length-gate behavior: Gate 4 (short prompt < 3 chars) wins for
-  // very-short tokens BEFORE the "single-word approval" rule can fire.
-  // The approval rule applies inside the Sonnet classifier; the length
-  // gate is a pre-classifier filter.
-  test("'ok' (2 chars) → MINIMAL via short-prompt gate", () => {
+  // US-20 — context-aware short-prompt gate.
+  //
+  // Pre-US-20 the gate returned MINIMAL on any prompt under 3 chars,
+  // regardless of context. That bypassed the doctrine "Single-word
+  // approvals to multi-step plans are NEVER MINIMAL." US-20 makes the
+  // short-prompt gate delegate to inference when the prompt is a
+  // context-sensitive approval token AND recent context shows pending
+  // work signal.
+  test("'ok' with NO context → still MINIMAL (back-compat)", () => {
     const r = tryFastPath("ok")
     expect(r?.mode).toBe("MINIMAL")
     expect(r?.reason).toBe("prompt too short for classification")
   })
-  test("'no' (2 chars) → MINIMAL via short-prompt gate", () => {
+  test("'no' with NO context → still MINIMAL", () => {
     expect(tryFastPath("no")?.mode).toBe("MINIMAL")
+  })
+
+  test("US-20: 'ok' AFTER multi-step plan context → null (delegates to inference)", () => {
+    const ctx = [
+      "Assistant: I will do three fixes:",
+      "1. update parser",
+      "2. add tests",
+      "3. refactor router",
+    ].join("\n")
+    expect(tryFastPath("ok", ctx)).toBeNull()
+  })
+
+  test("US-20: 'yes' after a numbered list context → null", () => {
+    const ctx = "Plan:\n1. fix foo\n2. add bar\n3. ship"
+    expect(tryFastPath("yes", ctx)).toBeNull()
+  })
+
+  test("US-20: 'go' after a bulleted plan → null", () => {
+    const ctx = "Steps:\n- inventory\n- cleanup\n- migrate"
+    expect(tryFastPath("go", ctx)).toBeNull()
+  })
+
+  test("US-20: 'ok' after code-context (US-6 helper) → null", () => {
+    const ctx = "look at this:\n```ts\nfunction foo() {}\n```"
+    expect(tryFastPath("ok", ctx)).toBeNull()
+  })
+
+  test("US-20: 'ok' after irrelevant chatter → still MINIMAL", () => {
+    // Conversational context without plan/proposal/code signals should
+    // not promote a bare ack out of MINIMAL.
+    const ctx = "Assistant: glad that worked. anything else on your mind?"
+    expect(tryFastPath("ok", ctx)?.mode).toBe("MINIMAL")
+  })
+
+  test("US-20: 'hi' after plan context → still MINIMAL (not in SHORT_CONTEXT_TOKENS)", () => {
+    // Only specific approval/decision tokens get the context-aware
+    // promotion. Greetings stay MINIMAL even with plan context.
+    const ctx = "Plan:\n1. step\n2. step\n3. step"
+    expect(tryFastPath("hi", ctx)?.mode).toBe("MINIMAL")
   })
   test("'yes' (3 chars, not < MIN_PROMPT_LENGTH) → NOT fast-path → inference", () => {
     expect(tryFastPath("yes")).toBeNull()
