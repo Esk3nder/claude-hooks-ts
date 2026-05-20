@@ -336,7 +336,34 @@ export const handlePostToolUse = (
     // Pass the session record so probe targeting honors session-scoped
     // ISA identity (a stale foreign-slug ISA under session_root must NOT
     // be flipped by the current session's probe runner).
-    yield* handlePostToolUseIsaEffects(isaRoot, record ?? undefined)
+    // US-14: collect ISC ids that probes actually flipped this round so
+    // the Stop completeness gate can distinguish probe-verified from
+    // model-asserted checkboxes. Append happens AFTER the effect runs to
+    // keep handlePostToolUseIsaEffects sync-callback-friendly.
+    //
+    // ORDERING INVARIANT: this append MUST happen before the next ISA
+    // PostToolUse event fires. The probe-flip path inside
+    // handlePostToolUseIsaEffects writes `[x]` to the ISA file, which
+    // triggers a follow-on PostToolUse event for that ISA edit. If the
+    // append were deferred (e.g., moved after the formatter branch
+    // below), the follow-on ISA-edit event could take the `isIsaEdit`
+    // branch and the appender for THIS flip would never run, breaking
+    // the provenance contract. Keep the append immediately after the
+    // probe runner; do NOT move it past any other effectful step.
+    const probeFlippedIscs: string[] = []
+    yield* handlePostToolUseIsaEffects(isaRoot, record ?? undefined, {
+      onProbeFlipped: (iscId) => {
+        probeFlippedIscs.push(iscId)
+      },
+    })
+    if (probeFlippedIscs.length > 0) {
+      const state = yield* SessionState
+      for (const iscId of probeFlippedIscs) {
+        yield* state
+          .append(payload.session_id, "probe_verified_iscs", iscId)
+          .pipe(Effect.catchAll(() => Effect.succeed(undefined)))
+      }
+    }
 
     // Branch (b): formatter. Only runs when this was a file edit AND the
     // file isn't an ISA AND a formatter is registered for the extension.

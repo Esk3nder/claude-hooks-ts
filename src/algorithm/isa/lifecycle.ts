@@ -26,6 +26,10 @@ import { runCheckpoint } from "./checkpoint.ts"
 import { logWarningSync } from "../../services/diagnostics.ts"
 import { checkCompleteness } from "./completeness.ts"
 import { countCriteria, parseCriteriaList } from "./criteria.ts"
+import {
+  evaluateProbeProvenance,
+  parseProbeRequirements,
+} from "./probe-provenance.ts"
 import { parseFrontmatter } from "./frontmatter.ts"
 import { findLatestISA, findProjectIsa } from "./locate.ts"
 import { resolveExpectedIsaAbsolute } from "./path-contract.ts"
@@ -138,7 +142,22 @@ export type ResolveActiveIsaRecord = Pick<
   | "expected_isa_path"
   | "last_mode"
   | "last_tier"
->
+> & {
+  /**
+   * Optional — only the Stop completeness gate (US-14) reads this; other
+   * consumers don't need to populate it.
+   *
+   * **Posture for legacy/un-threaded callers**: when this field is
+   * `undefined`, the Stop completeness gate treats it as `[]` (empty
+   * verified list). For ISAs that don't declare `requires_probe: true`
+   * in Test Strategy this changes nothing — the gate finds no
+   * requirements and short-circuits. For ISAs that DO declare it, a
+   * caller that doesn't track probe provenance will see the gate block
+   * — intentional: a `requires_probe: true` ISC must not be satisfied
+   * by a caller that has no way to verify probe-flip provenance.
+   */
+  readonly probe_verified_iscs?: ReadonlyArray<string>
+}
 
 export interface ResolveActiveIsaInput {
   readonly sessionRoot: string
@@ -371,6 +390,31 @@ export const checkStopReadiness = (
     }
   }
 
+  // US-14: probe-provenance check. If the ISA's Test Strategy declares
+  // requires_probe: true for any ISC, that criterion's `[x]` must have
+  // been flipped by a probe-pass (recorded in session-state) rather than
+  // by a direct model Edit. Without this, "all ISCs checked" can be
+  // satisfied by claim alone.
+  const sections = parseSections(content)
+  const tsBody = sections.get("Test Strategy")?.body ?? ""
+  if (tsBody.length > 0 && input.record !== undefined) {
+    const requirements = parseProbeRequirements(tsBody)
+    if (requirements.size > 0) {
+      const criteria = parseCriteriaList(content)
+      const provenance = evaluateProbeProvenance({
+        criteria,
+        requirements,
+        verifiedIscs: input.record.probe_verified_iscs ?? [],
+      })
+      if (provenance.kind === "block") {
+        return {
+          _tag: "block",
+          reason: `ISA at ${isaPath}: ${provenance.reason}`,
+        }
+      }
+    }
+  }
+
   return { _tag: "noop" }
 }
 
@@ -443,9 +487,18 @@ const flipIscCheckbox = (isaPath: string, iscId: string): boolean => {
  * frozen root so a Bash `cd` does not move the probe runner's view of the
  * active ISA.
  */
+export interface PostToolUseIsaEffectsOptions {
+  /** US-14: invoked synchronously for each ISC id whose `[x]` was flipped
+   * by a probe pass. The caller (post-edit-quality) uses this to append
+   * the id to session-state.probe_verified_iscs so the Stop completeness
+   * gate can distinguish probe-flipped from model-flipped checkboxes. */
+  readonly onProbeFlipped?: (iscId: string) => void
+}
+
 export const handlePostToolUseIsaEffects = (
   cwd: string = process.cwd(),
   record?: ResolveActiveIsaRecord,
+  options?: PostToolUseIsaEffectsOptions,
 ): Effect.Effect<void, never> =>
   Effect.tryPromise({
     try: async () => {
@@ -491,6 +544,7 @@ export const handlePostToolUseIsaEffects = (
         )
         if (passed && flipIscCheckbox(isa, m.criterion.id)) {
           anyFlipped = true
+          options?.onProbeFlipped?.(m.criterion.id)
         }
       }
       // Atomic with the flip: if anything flipped, checkpoint MUST run so

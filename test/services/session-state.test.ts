@@ -21,6 +21,25 @@ describe("SessionState (test layer)", () => {
     expect(r).toEqual(EMPTY_SESSION_STATE);
   });
 
+  test("US-14: probe_verified_iscs defaults to [] in EMPTY_SESSION_STATE (back-compat)", () => {
+    // Pin the default so a future refactor that drops the field can't
+    // silently break the Stop completeness gate's provenance check.
+    expect(EMPTY_SESSION_STATE.probe_verified_iscs).toEqual([]);
+  });
+
+  test("US-14: append('probe_verified_iscs', iscId) persists across get()", async () => {
+    const program = Effect.gen(function* () {
+      const s = yield* SessionState;
+      yield* s.append("sid", "probe_verified_iscs", "ISC-1");
+      yield* s.append("sid", "probe_verified_iscs", "ISC-2");
+      return yield* s.get("sid");
+    });
+    const r = await Effect.runPromise(
+      program.pipe(Effect.provide(SessionStateTest())),
+    );
+    expect(r.probe_verified_iscs).toEqual(["ISC-1", "ISC-2"]);
+  });
+
   test("update merges patch", async () => {
     const program = Effect.gen(function* () {
       const s = yield* SessionState;
