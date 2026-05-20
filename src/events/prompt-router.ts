@@ -126,10 +126,18 @@ export const handleUserPromptSubmit = (
       existing?.requires_web_sources === true && existing.source_urls.length === 0
     const nextRequiresWebSources =
       requiresWebSrc || existingSourceObligationActive
+    // Enforcement-plane P1 #7: when the new prompt requires web sources,
+    // reset `source_ledger_opt_out` to false. Pre-fix, an earlier ISA
+    // declaring `source_ledger: not_applicable` would leave the flag
+    // sticky-true; a subsequent web-source-requiring task would then
+    // bypass the Stop source-ledger gate. The opt-out is meant to be
+    // per-ISA, so a new source-requiring prompt resets the slate.
     const workflowPatch = {
       last_workflow: workflow,
       requires_web_sources: nextRequiresWebSources,
-      ...(requiresWebSrc ? { source_urls: [] } : {}),
+      ...(requiresWebSrc
+        ? { source_urls: [], source_ledger_opt_out: false }
+        : {}),
     }
     yield* state
       .update(sessionId, workflowPatch)
