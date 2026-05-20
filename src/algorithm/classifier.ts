@@ -43,11 +43,11 @@ import { durationMillis, loadRuntimeConfig } from "../services/runtime-config.ts
 // FROM this hooks/PromptProcessing.hook.ts
 // ════════════════════════════════════════════════════════════════
 
-/** the classifier. */
-const MIN_PROMPT_LENGTH = 3
+/** the classifier. Exported for the generated contract (US-22). */
+export const MIN_PROMPT_LENGTH = 3
 
-/** the classifier. */
-const POSITIVE_PRAISE_WORDS: ReadonlySet<string> = new Set([
+/** the classifier. Exported for the generated contract (US-22). */
+export const POSITIVE_PRAISE_WORDS: ReadonlySet<string> = new Set([
   "excellent",
   "amazing",
   "brilliant",
@@ -69,8 +69,8 @@ const POSITIVE_PRAISE_WORDS: ReadonlySet<string> = new Set([
   "splendid",
 ])
 
-/** the classifier. */
-const POSITIVE_PHRASES: ReadonlySet<string> = new Set([
+/** the classifier. Exported for the generated contract (US-22). */
+export const POSITIVE_PHRASES: ReadonlySet<string> = new Set([
   "great job",
   "good job",
   "nice work",
@@ -85,8 +85,8 @@ const POSITIVE_PHRASES: ReadonlySet<string> = new Set([
   "that works",
 ])
 
-/** the classifier. */
-const SYSTEM_TEXT_PATTERNS: ReadonlyArray<RegExp> = [
+/** the classifier. Exported for the generated contract (US-22). */
+export const SYSTEM_TEXT_PATTERNS: ReadonlyArray<RegExp> = [
   /^<task-notification>/i,
   /^<system-reminder>/i,
   /^This session is being continued from a previous conversation/i,
@@ -169,7 +169,7 @@ export const hasCodeContextInRecent = (recent: string | undefined): boolean => {
  * "Single-word approvals to multi-step plans are NEVER MINIMAL"; this
  * set is the gate's recognition list for that case.
  */
-const SHORT_CONTEXT_TOKENS: ReadonlySet<string> = new Set([
+export const SHORT_CONTEXT_TOKENS: ReadonlySet<string> = new Set([
   "ok",
   "yes",
   "no",

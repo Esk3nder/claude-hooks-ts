@@ -1,0 +1,92 @@
+{
+  "version": "1.0.0",
+  "generatedFrom": "src/algorithm/classifier.ts",
+  "fastPath": {
+    "gates": [
+      {
+        "order": 1,
+        "name": "explicit-rating",
+        "result": "MINIMAL",
+        "reason": "explicit rating"
+      },
+      {
+        "order": 2,
+        "name": "positive-praise",
+        "result": "MINIMAL",
+        "reason": "positive praise / acknowledgment",
+        "suppressedWhen": "hasCodeContextInRecent(recentContext) === true"
+      },
+      {
+        "order": 3,
+        "name": "system-text",
+        "result": "handled by prompt-router BEFORE classify() — no additionalContext emitted"
+      },
+      {
+        "order": 4,
+        "name": "short-prompt",
+        "result": "MINIMAL",
+        "reason": "prompt too short for classification",
+        "delegatesWhen": "prompt.trim().toLowerCase() ∈ SHORT_CONTEXT_TOKENS AND hasPendingWorkSignal(recentContext)"
+      }
+    ]
+  },
+  "constants": {
+    "minPromptLength": 3,
+    "shortContextTokens": [
+      "go",
+      "kk",
+      "n",
+      "no",
+      "ok",
+      "sure",
+      "y",
+      "yes"
+    ],
+    "positivePraiseWords": [
+      "amazing",
+      "awesome",
+      "beautiful",
+      "brilliant",
+      "excellent",
+      "fantastic",
+      "great",
+      "incredible",
+      "magnificent",
+      "nice",
+      "outstanding",
+      "perfect",
+      "phenomenal",
+      "remarkable",
+      "splendid",
+      "stellar",
+      "superb",
+      "terrific",
+      "wonderful"
+    ],
+    "positivePhrases": [
+      "good job",
+      "good work",
+      "great job",
+      "looks good",
+      "looks great",
+      "love it",
+      "nailed it",
+      "nice job",
+      "nice work",
+      "that works",
+      "thats great",
+      "well done"
+    ],
+    "systemTextPatterns": [
+      "^<task-notification>",
+      "^<system-reminder>",
+      "^This session is being continued from a previous conversation",
+      "^Please continue the conversation",
+      "^Note:.*was read before"
+    ]
+  },
+  "failSafe": {
+    "trigger": "classifier subprocess failure OR runtime config classifierDisabled === true",
+    "result": "ALGORITHM E3"
+  }
+}
