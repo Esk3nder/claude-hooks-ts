@@ -397,6 +397,89 @@ describe("Inference.classify — US-3 tier-inflation guard wiring", () => {
   })
 })
 
+describe("Inference.classify — US-3c deflation guard wiring", () => {
+  test("MINIMAL + structurally-rich prompt → escalated to ALGORITHM E1", async () => {
+    const c = await runClassify(
+      {
+        stdout: `{"mode":"MINIMAL","tier":null,"mode_reason":"ack"}`,
+        stderr: "",
+        exitCode: 0,
+        latencyMs: 100,
+        timedOut: false,
+      },
+      "touch src/a.ts, src/b.ts, and src/c.ts",
+    )
+    expect(c.mode).toBe("ALGORITHM")
+    expect(c.tier).toBe(1)
+    expect(c.source).toBe("classifier")
+    expect(c.reason).toContain("deflation-guard")
+  })
+
+  test("NATIVE + code-fenced prompt → escalated to ALGORITHM E1", async () => {
+    const c = await runClassify(
+      {
+        stdout: `{"mode":"NATIVE","tier":null,"mode_reason":"single edit"}`,
+        stderr: "",
+        exitCode: 0,
+        latencyMs: 100,
+        timedOut: false,
+      },
+      "rewrite\n```ts\nconst x = 1\n```",
+    )
+    expect(c.mode).toBe("ALGORITHM")
+    expect(c.tier).toBe(1)
+    expect(c.reason).toContain("deflation-guard")
+  })
+
+  test("MINIMAL ack with no structural evidence → untouched", async () => {
+    const c = await runClassify(
+      {
+        stdout: `{"mode":"MINIMAL","tier":null,"mode_reason":"ack"}`,
+        stderr: "",
+        exitCode: 0,
+        latencyMs: 100,
+        timedOut: false,
+      },
+      "thanks",
+    )
+    expect(c.mode).toBe("MINIMAL")
+    expect(c.tier).toBe(null)
+    expect(c.reason).not.toContain("deflation-guard")
+  })
+
+  test("ALGORITHM tier 3 untouched by deflation guard", async () => {
+    const c = await runClassify(
+      {
+        stdout: `{"mode":"ALGORITHM","tier":3,"mode_reason":"normal"}`,
+        stderr: "",
+        exitCode: 0,
+        latencyMs: 100,
+        timedOut: false,
+      },
+      "do it",
+    )
+    expect(c.mode).toBe("ALGORITHM")
+    expect(c.tier).toBe(3)
+    expect(c.reason).not.toContain("deflation-guard")
+  })
+
+  test("FAIL_SAFE invariant: timeout produces fail-safe E3; deflation guard does NOT escalate to higher", async () => {
+    const c = await runClassify({
+      stdout: "",
+      stderr: "",
+      exitCode: -1,
+      latencyMs: 14_000,
+      timedOut: true,
+    })
+    // Fail-safe path bypasses both guards. Mode stays ALGORITHM, tier
+    // stays 3, source is fail-safe.
+    expect(c.mode).toBe("ALGORITHM")
+    expect(c.tier).toBe(3)
+    expect(c.source).toBe("fail-safe")
+    expect(c.reason).not.toContain("deflation-guard")
+  })
+})
+
 describe("CLASSIFIER_SYSTEM_PROMPT — Algorithm doctrine pin", () => {
   test("contains TASK 3 header verbatim", () => {
     expect(CLASSIFIER_SYSTEM_PROMPT).toContain(

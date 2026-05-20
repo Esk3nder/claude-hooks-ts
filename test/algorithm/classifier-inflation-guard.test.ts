@@ -1,9 +1,10 @@
 import { describe, expect, test } from "bun:test"
 import {
   checkStructuralEvidence,
+  checkUnderClassification,
   hasStructuralSignal,
 } from "../../src/algorithm/classifier-inflation-guard.ts"
-import type { Tier } from "../../src/services/inference.ts"
+import type { Mode, Tier } from "../../src/services/inference.ts"
 
 describe("hasStructuralSignal", () => {
   test.each<[string, boolean, string]>([
@@ -148,5 +149,150 @@ describe("checkStructuralEvidence — prompt-OR-context evidence", () => {
     })
     expect(r.pass).toBe(false)
     expect(r.floorTier).toBe(3)
+  })
+})
+
+// ──────────────────────────────────────────────────────────────────────
+// US-3c — Deflation guard (symmetric to checkStructuralEvidence)
+// ──────────────────────────────────────────────────────────────────────
+
+describe("checkUnderClassification — short-circuits (no escalation)", () => {
+  test.each<[Mode, Tier | null]>([
+    ["ALGORITHM", 1],
+    ["ALGORITHM", 2],
+    ["ALGORITHM", 3],
+    ["ALGORITHM", 4],
+    ["ALGORITHM", 5],
+  ])("ALGORITHM mode at any tier → pass (never escalates an already-engaged classification)", (mode, tier) => {
+    const r = checkUnderClassification({
+      prompt: "touch src/a.ts and src/b.ts and src/c.ts",
+      mode,
+      tier,
+    })
+    expect(r.pass).toBe(true)
+  })
+
+  test("MINIMAL with no structural signal → pass (true negative)", () => {
+    const r = checkUnderClassification({
+      prompt: "thanks",
+      mode: "MINIMAL",
+      tier: null,
+    })
+    expect(r.pass).toBe(true)
+  })
+
+  test("NATIVE with no structural signal → pass (true negative)", () => {
+    const r = checkUnderClassification({
+      prompt: "what time is it",
+      mode: "NATIVE",
+      tier: null,
+    })
+    expect(r.pass).toBe(true)
+  })
+
+  test("empty prompt with no context → pass", () => {
+    const r = checkUnderClassification({
+      prompt: "",
+      mode: "MINIMAL",
+      tier: null,
+    })
+    expect(r.pass).toBe(true)
+  })
+})
+
+describe("checkUnderClassification — escalation on structural evidence", () => {
+  test("MINIMAL + prompt naming ≥3 src files → escalates to ALGORITHM E1", () => {
+    // A single file path is NOT a structural signal — "fix the typo on
+    // foo.ts" is canonically NATIVE per the rubric and the guard
+    // correctly leaves it alone. The deflation guard fires on the same
+    // signal set US-3 uses, which requires ≥3 file paths.
+    const r = checkUnderClassification({
+      prompt: "fix typos in src/foo.ts, src/bar.ts, and src/baz.ts",
+      mode: "MINIMAL",
+      tier: null,
+    })
+    expect(r.pass).toBe(false)
+    expect(r.floorMode).toBe("ALGORITHM")
+    expect(r.floorTier).toBe(1)
+    expect(r.reason).toContain("deflation-guard")
+  })
+
+  test("MINIMAL + single file path → pass (canonical NATIVE case, no escalation)", () => {
+    // Documenting the asymmetry: the classifier should pick NATIVE here.
+    // If it picked MINIMAL by mistake, the deflation guard still
+    // declines to escalate — a single file edit is not strong enough
+    // structural evidence to warrant engagement ceremony.
+    const r = checkUnderClassification({
+      prompt: "fix the typo on src/foo.ts",
+      mode: "MINIMAL",
+      tier: null,
+    })
+    expect(r.pass).toBe(true)
+  })
+
+  test("NATIVE + prompt with code fence → escalates to ALGORITHM E1", () => {
+    const r = checkUnderClassification({
+      prompt: "rewrite this\n```ts\nconst x = 1\n```",
+      mode: "NATIVE",
+      tier: null,
+    })
+    expect(r.pass).toBe(false)
+    expect(r.floorMode).toBe("ALGORITHM")
+    expect(r.floorTier).toBe(1)
+  })
+
+  test("MINIMAL ack + recent context with code block → escalates (praise-after-code case)", () => {
+    const r = checkUnderClassification({
+      prompt: "thanks",
+      context: "look at this:\n```ts\nfunction foo() {}\n```",
+      mode: "MINIMAL",
+      tier: null,
+    })
+    expect(r.pass).toBe(false)
+    expect(r.floorMode).toBe("ALGORITHM")
+    expect(r.floorTier).toBe(1)
+  })
+
+  test("NATIVE + structural verb 'cross-cutting' → escalates", () => {
+    const r = checkUnderClassification({
+      prompt: "do the cross-cutting refactor",
+      mode: "NATIVE",
+      tier: null,
+    })
+    expect(r.pass).toBe(false)
+    expect(r.floorTier).toBe(1)
+  })
+
+  test("never escalates above tier 1", () => {
+    // A very rich prompt — code fence, file paths, structural verb.
+    // Floor tier is still 1, never 2 or 3.
+    const r = checkUnderClassification({
+      prompt:
+        "multi-step refactor:\n```ts\nfn()\n```\nin src/a.ts, src/b.ts, src/c.ts",
+      mode: "MINIMAL",
+      tier: null,
+    })
+    expect(r.pass).toBe(false)
+    expect(r.floorMode).toBe("ALGORITHM")
+    expect(r.floorTier).toBe(1)
+  })
+})
+
+describe("checkUnderClassification — symmetry with checkStructuralEvidence", () => {
+  test("inflation and deflation guards share the same signal definition", () => {
+    const evidencePrompt = "look at src/foo.ts and src/bar.ts and src/baz.ts"
+    expect(hasStructuralSignal(evidencePrompt)).toBe(true)
+    // Inflation guard keeps an evidence-bearing E5
+    const infl = checkStructuralEvidence({ prompt: evidencePrompt, tier: 5 })
+    expect(infl.pass).toBe(true)
+    expect(infl.floorTier).toBe(5)
+    // Deflation guard escalates the same prompt out of MINIMAL
+    const defl = checkUnderClassification({
+      prompt: evidencePrompt,
+      mode: "MINIMAL",
+      tier: null,
+    })
+    expect(defl.pass).toBe(false)
+    expect(defl.floorTier).toBe(1)
   })
 })
