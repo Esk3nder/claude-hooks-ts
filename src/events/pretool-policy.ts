@@ -254,12 +254,15 @@ export const handlePreToolUse = (
               ? (payload.tool_input as { file_path?: unknown }).file_path
               : undefined
           const resolvedFilePath = safeResolvePath(currentCwd, inputFp)
-          const tddVerdict = evaluateTddGate({
-            enabled: true,
-            toolName: payload.tool_name,
-            resolvedFilePath,
-            filesChangedInSession: record.files_changed,
-          })
+          const tddVerdict = evaluateTddGate(
+            {
+              enabled: true,
+              toolName: payload.tool_name,
+              resolvedFilePath,
+              filesChangedInSession: record.files_changed,
+            },
+            currentCwd,
+          )
           if (tddVerdict.kind !== "passthrough") {
             return toHookDecision(tddVerdict)
           }

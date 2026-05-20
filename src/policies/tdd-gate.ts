@@ -25,7 +25,7 @@
  */
 
 import { existsSync, realpathSync } from "node:fs"
-import { basename, dirname, extname, sep } from "node:path"
+import { basename, dirname, extname, isAbsolute, relative, resolve, sep } from "node:path"
 import type { PolicyDecision } from "./types.ts"
 
 export interface TddGateInput {
@@ -197,25 +197,57 @@ const tddDenyReason = (
 }
 
 /**
- * Best-effort symlink-collapsing normalizer. Used by the deep entry point
- * to make the gate's path comparisons resilient to surface differences
- * like the macOS `/var → /private/var` symlink. Realpath can throw on
- * EPERM / ELOOP / ENOENT — paths that don't exist on disk yet (the
- * common bootstrap-batch case) AND paths above an unreadable directory
- * both fall through to the original string, which is the safe fallback.
+ * P0-4: Containment-aware symlink normalizer. Returns the realpath of `p`
+ * ONLY when the resolved result is path-equal to or under `repoRoot`. If
+ * realpath escapes the workspace (e.g., a symlink at `<root>/test/foo.test.ts
+ * -> /external/somewhere.ts`), falls back to the original input string —
+ * the gate must not match against out-of-repo paths in `files_changed`,
+ * which would let a planted symlink bypass the "real companion test
+ * required" rule. Realpath throws on EPERM / ELOOP / ENOENT — paths not
+ * yet on disk (common bootstrap-batch case) and paths above an unreadable
+ * directory both fall through to the original string, preserving US-1d.
  */
-const tryRealpath = (p: string): string => {
+export const safeRealpath = (p: string, repoRoot: string): string => {
+  let resolved: string
   try {
-    return realpathSync(p)
+    resolved = realpathSync(p)
   } catch {
     return p
   }
+  // Compare resolved against the REALPATH of repoRoot — on macOS the
+  // session cwd may be `/var/folders/...` (symlink) while realpath
+  // returns `/private/var/folders/...`. Without normalizing both
+  // sides, every in-repo lookup would falsely "escape" containment.
+  let rootReal: string
+  try {
+    rootReal = realpathSync(repoRoot)
+  } catch {
+    rootReal = resolve(repoRoot)
+  }
+  if (resolved === rootReal) return resolved
+  const rel = relative(rootReal, resolved)
+  if (rel === "" || (!rel.startsWith("..") && !isAbsolute(rel))) {
+    return resolved
+  }
+  // Escape — realpath landed outside the workspace. Fall back to the
+  // input path so the gate compares apples-to-apples in-repo strings
+  // and cannot be tricked into matching an outside `files_changed` entry.
+  return p
 }
 
 /**
  * Deep entry point: filesystem-backed. Pass-through to the shallow form
- * with `existsSync` as the disk check and a realpath-based normalizer
- * (US-1d) so the companion-test lookup is symlink-insensitive.
+ * with `existsSync` as the disk check and a containment-aware realpath
+ * normalizer (US-1d + P0-4) so the companion-test lookup is symlink-
+ * insensitive within the workspace AND symlink-resistant across the
+ * workspace boundary.
  */
-export const evaluateTddGate = (input: TddGateInput): PolicyDecision =>
-  evaluateTddGateShallow(input, (p) => existsSync(p), tryRealpath)
+export const evaluateTddGate = (
+  input: TddGateInput,
+  repoRoot: string,
+): PolicyDecision =>
+  evaluateTddGateShallow(
+    input,
+    (p) => existsSync(p),
+    (p) => safeRealpath(p, repoRoot),
+  )
