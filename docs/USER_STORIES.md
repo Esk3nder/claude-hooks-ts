@@ -8,6 +8,57 @@ This document is the canonical backlog for closing the architectural gaps identi
 
 ---
 
+## Dependency graph
+
+Build sequence — each node depends on its incoming edges landing first. Status is updated inline as stories ship so the graph doubles as a live progress board.
+
+```mermaid
+graph LR
+  classDef done fill:#1e3a1e,stroke:#3a7d3a,color:#dfe7df;
+  classDef flight fill:#3a311e,stroke:#9d7d2e,color:#f0e7d0;
+  classDef todo fill:#1a1a1a,stroke:#4a4a4a,color:#cfcfcf;
+
+  US3["US-3 classifier inflation guard"]:::done
+  US4["US-4 source-ledger v2"]:::done
+  US1["US-1 TDD-first PreToolUse gate"]:::done
+  US2["US-2 mandatory worker delegation E4+"]:::done
+  US1b["US-1b worker session-state inheritance for TDD"]:::todo
+  US3b["US-3b structured floor telemetry"]:::todo
+  US5["US-5 token-level deny-list"]:::todo
+  US6["US-6 regenerate-skipped telemetry"]:::todo
+  US7["US-7 cross-session worker context"]:::todo
+  US8["US-8 skills manifest"]:::todo
+  US9["US-9 D1 ISA scoping"]:::todo
+  US10["US-10 D2 LCP stanza"]:::todo
+  US11["US-11 D6 helper shape"]:::todo
+  US12["US-12 CORE_FLOW.md"]:::todo
+  US13["US-13 doctor gate report"]:::todo
+
+  US1 --> US1b
+  US2 --> US1b
+  US3 --> US3b
+  US4 --> US8
+  US2 --> US7
+  US1 --> US12
+  US2 --> US12
+  US4 --> US12
+  US1 --> US13
+  US2 --> US13
+  US3 --> US13
+  US4 --> US13
+```
+
+**Reading the graph:** an arrow `A --> B` means *B should not ship before A is merged on `main`*. Stories with no incoming arrows are independent and can ship in parallel. The four Theme A pillars (US-1 → US-4) are the foundation; downstream stories light up as they land.
+
+**Live shipped/in-flight (auto-update on every story PR):**
+- 🟢 US-3 (PR #50, merged 2026-05-19)
+- 🟢 US-4 (PR #51, merged 2026-05-19)
+- 🟢 US-1 (PR #52, merged 2026-05-19)
+- 🟢 US-2 (PR #54, merged 2026-05-19)
+- 🔴 everything else (US-1b unblocked next)
+
+---
+
 ## Theme A — Core flow enforcement (the "design promise" stories)
 
 These four stories collectively make the repo's enforced flow match the marketing-page promise: **RPI methodology + TDD + leveraged workers**, end-to-end, codified.
@@ -39,6 +90,37 @@ These four stories collectively make the repo's enforced flow match the marketin
 **LOC estimate**: ~250 (policy 80, schema field 10, post-edit recorder 20, pretool wiring 30, tests 110)
 
 **Risk** (T10/T1): blocking the very first test-creation Write. Mitigated by (a) bootstrap-batch check above and (b) gate disabled by default. Reviewers must verify the batch escape.
+
+---
+
+### US-1b — Worker session-state inheritance for TDD (and provenance) 🔴
+
+> **As** a user delegating implementation to a worker after authoring the test in the parent session,
+> **I want** the worker's session-state to inherit the parent's `files_changed` ledger at `SubagentStart`,
+> **So that** the TDD gate (US-1) recognizes the parent-written test as a "companion test touched in this session" and lets the worker write the implementation.
+
+**Why this exists (gap discovered after US-1 verification)**
+- Workers run with their own `session_id` (`src/events/subagent-scope-gate.ts:24-27`); their `SessionState.files_changed` is independent of the parent's.
+- Today, after parent writes `test/foo.test.ts`, spawning a worker to write `src/foo.ts` triggers the TDD gate because the worker's own `files_changed` is empty.
+- `worker-runs.ts:22` already carries `parent_task_id` linkage — the plumbing exists; only the inheritance is missing.
+
+**Acceptance criteria**
+1. In `src/events/subagent-scope-gate.ts:handleSubagentStart` (~L260): when the `SubagentStart` event arrives, look up the parent's `SessionState.files_changed` and seed the worker session's record with the same list (as `inherited_files_changed: ReadonlyArray<string>` if we want to keep provenance separate, OR by merging into `files_changed` directly).
+2. The TDD gate (`src/policies/tdd-gate.ts`) consults the merged list (or both lists) when checking the bootstrap-batch escape.
+3. New tests: worker spawned after parent wrote test → TDD gate allows; worker spawned with no parent test → TDD gate denies (regression of US-1 behavior).
+4. Provenance preserved: the gate's allow reason names which file matched (parent vs. worker-local).
+5. No leak in the other direction — the parent's session-state must not absorb the worker's changes (one-way inheritance).
+
+**Implementation notes**
+- Smallest correct change: copy `parent.files_changed` into `worker.files_changed` at `SubagentStart`. Lose nothing; gain bootstrap escape across the parent/worker boundary.
+- Cleaner: add `inherited_files_changed?: ReadonlyArray<string>` to `SessionStateRecord` schema and have the TDD gate check both arrays. Preserves provenance and avoids confusing PostToolUse handlers that key off "did *this session* change file X".
+- Risk: the parent's session-state may not exist yet on the worker host when `SubagentStart` fires (sessions can be hosted by separate hook processes if cross-machine). Mitigate: best-effort lookup, swallow failures (the worker just falls back to its own ledger, current behavior).
+
+**Test pattern**: `test/events/subagent-scope-gate.test.ts` — extend with TDD-gate-aware integration cases. Mock parent session state via `SessionStateTest()`.
+
+**LOC estimate**: ~120 (schema 10, gate read-merge 20, subagent-scope-gate seeding 30, tests 60).
+
+**Risk** (additional): if a worker is spawned in a session group where the parent's tests are intentionally NOT meant to count (e.g. an explicit *new* feature in the worker's scope), inheritance could allow a write that would have been denied. Mitigated by US-1's opt-in posture (`tddGateEnabled: false` by default) — operators turning it on are signaling they want this behavior.
 
 ---
 
@@ -318,14 +400,16 @@ These four stories collectively make the repo's enforced flow match the marketin
 
 ## Suggested ship order
 
-1. **US-3** (classifier guard) — immediately reduces friction across all subsequent work. Smallest blast radius.
-2. **US-4** (source-ledger v2) — eliminates the dominant Stop-loop pain seen in this session.
-3. **US-1** (TDD gate) — converts a documented practice into an enforced one.
-4. **US-2** (mandatory workers) — completes the "leveraged subagents" pillar.
-5. **US-12** (CORE_FLOW.md) — once 1–4 land, the doc finally tells the truth.
-6. **US-5** → **US-9** → **US-10** → **US-11** — gate hardening in priority order.
-7. **US-6** → **US-7** → **US-8** — observability & convenience.
-8. **US-13** — capstone visibility check.
+1. ✅ **US-3** (classifier guard) — immediately reduces friction across all subsequent work. Smallest blast radius.
+2. ✅ **US-4** (source-ledger v2) — eliminates the dominant Stop-loop pain seen in this session.
+3. ✅ **US-1** (TDD gate) — converts a documented practice into an enforced one.
+4. ✅ **US-2** (mandatory worker delegation E4+) — completes the "leveraged subagents" pillar.
+5. **US-1b** (worker session-state inheritance) — UNBLOCKED. Fixes the TDD-gate-vs-workers gap discovered after US-1 verification. Depends on US-1 AND US-2 — both now on main.
+6. **US-12** (CORE_FLOW.md) — once US-1, US-2, US-4 land, the doc finally tells the truth.
+7. **US-5** → **US-9** → **US-10** → **US-11** — gate hardening in priority order.
+8. **US-3b** (structured floor telemetry) — deferred follow-up to US-3 ISC-4.
+9. **US-6** → **US-7** → **US-8** — observability & convenience.
+10. **US-13** — capstone visibility check.
 
 ## Cross-cutting acceptance bars (apply to every story)
 
