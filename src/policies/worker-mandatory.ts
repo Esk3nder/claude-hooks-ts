@@ -27,6 +27,7 @@
  */
 
 import type { PolicyDecision } from "./types.ts"
+import { isBashFileWrite } from "./write-class.ts"
 
 export type WorkerMandatoryMode = "off" | "recommend" | "strict"
 
@@ -41,17 +42,35 @@ export interface WorkerMandatoryInput {
    * NEVER block a worker's own writes; the worker IS the delegation
    * target. Defaults to false (parent session). */
   readonly isWorkerSession?: boolean
+  /**
+   * Enforcement-plane P0 #6: when `toolName === "Bash"`, the bash command
+   * string. Used to detect heredoc-style file writes (`cat > x <<EOF`,
+   * `tee`, `sed -i`, etc.) that bypassed worker-mandatory strict mode
+   * before this field existed. Pre-P0 fix, the gate trusted
+   * `destructive-commands` to handle Bash, but that policy only catches
+   * CATASTROPHIC patterns, not arbitrary file writes.
+   *
+   * Optional for back-compat: callers that don't supply it preserve
+   * the prior toolName-only behavior (Bash always passes through).
+   */
+  readonly bashCommand?: string
 }
 
-/** Tool names that are subject to the gate when above E4.
+/** Direct-write tool names that are always subject to the gate when
+ * above E4.
  *
  * Intentionally absent:
  *   - `Task` / `Agent`: the delegation tools themselves. Gating them
  *     would defeat the gate's whole purpose.
- *   - `Bash`: handled by `destructive-commands` policy elsewhere; this
- *     gate only inspects toolName, not Bash commands, so adding "Bash"
- *     here would deny ALL Bash (including read-only inspection) which
- *     is too coarse.
+ *   - `Bash`: not in this set because not every Bash command is a write
+ *     (read-only inspection like `ls` / `git status` must pass through).
+ *     Bash-with-a-write-class-command is gated separately via the
+ *     optional `bashCommand` field on `WorkerMandatoryInput` (see the
+ *     `isBashFileWrite` check in the predicate below). Callers that
+ *     want Bash-aware gating pass `toolName: "Bash"` AND `bashCommand:
+ *     <command>`; the evaluator runs `isBashFileWrite` on the command
+ *     and applies the same recommend/strict decision used for direct
+ *     write tools.
  */
 const WRITE_TOOLS: ReadonlySet<string> = new Set([
   "Write",
@@ -60,12 +79,6 @@ const WRITE_TOOLS: ReadonlySet<string> = new Set([
   "NotebookEdit",
   "Update",
 ])
-
-/** Bash write-class verbs, when toolName is "Bash" and we want to inspect
- * the command. Pure form takes only the toolName so far — callers that
- * want Bash-aware gating pass `toolName: "Bash"` AND should pre-resolve
- * whether the command is a write before invoking this evaluator. Keeping
- * the policy itself toolName-only matches engagement-gate / tdd-gate. */
 
 export interface ActiveWorkerCounts {
   readonly starts: number
@@ -95,7 +108,14 @@ export const evaluateWorkerMandatoryGate = (
   if (input.lastTier === null || input.lastTier < 4) {
     return { kind: "passthrough" }
   }
-  if (!WRITE_TOOLS.has(input.toolName)) {
+  // Enforcement-plane P0 #6: Bash with a write-class command is treated
+  // exactly like a direct write tool. Without this, the model could
+  // bypass strict mode via `cat > src/x.ts <<EOF\n...\nEOF`.
+  const isBashWriteClass =
+    input.toolName === "Bash" &&
+    typeof input.bashCommand === "string" &&
+    isBashFileWrite(input.bashCommand)
+  if (!WRITE_TOOLS.has(input.toolName) && !isBashWriteClass) {
     return { kind: "passthrough" }
   }
   if (input.activeWorkerCount > 0) {

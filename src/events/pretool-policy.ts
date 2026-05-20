@@ -27,6 +27,7 @@ import {
 import { safeResolvePath } from "../services/path-resolution.ts"
 import { evaluateWorkerTaskPrompt } from "../policies/worker-contract.ts"
 import { evaluateWorkerToolPermission } from "../policies/worker-permissions.ts"
+import { mutablePathFromInput } from "../policies/write-class.ts"
 import { SessionState } from "../services/session-state.ts"
 import { loadRuntimeConfig } from "../services/runtime-config.ts"
 import { reportHookFailure } from "../services/hook-failure.ts"
@@ -88,6 +89,19 @@ const evaluateBash = (input: unknown): ToolEvaluation => {
   return toolEvaluation(evaluateDestructiveCommand(decoded.right.command))
 }
 
+/**
+ * Decode a Bash tool input and return the `command` string when it
+ * validates, else `undefined`. Used by callers that need the Bash
+ * command but tolerate malformed inputs without an `ask` (the
+ * downstream gate decides — typically passthrough when no command).
+ * Mirrors `evaluateBash` for input handling consistency (PR #72
+ * self-review non-blocker #3 — replaces an inline `as` cast).
+ */
+const bashCommandIfValid = (input: unknown): string | undefined => {
+  const decoded = Schema.decodeUnknownEither(BashInput)(input)
+  return decoded._tag === "Right" ? decoded.right.command : undefined
+}
+
 const evaluateRead = (input: unknown): ToolEvaluation => {
   const decoded = Schema.decodeUnknownEither(ReadInput)(input)
   if (decoded._tag === "Left") {
@@ -134,6 +148,35 @@ const evaluateEditOrWrite = (input: unknown): ToolEvaluation => {
   )
 }
 
+/**
+ * Enforcement-plane P0 #2: Update / NotebookEdit dispatch.
+ * Pre-fix: these fell through to passthrough, bypassing every write-
+ * path policy (secret-paths, settings-self-protection, generated-files,
+ * lockfile-paths, protected-paths). Now: extract `file_path` (Update) or
+ * `notebook_path` (NotebookEdit) via the shared `mutablePathFromInput`
+ * helper and run the same reducer Edit/Write/MultiEdit use.
+ *
+ * Kept separate from `evaluateEditOrWrite` so the existing fail-closed
+ * posture for malformed Edit/Write/MultiEdit inputs (ask, not silent
+ * passthrough) is preserved exactly.
+ */
+const evaluateUpdateOrNotebookEdit = (input: unknown): ToolEvaluation => {
+  const extracted = mutablePathFromInput(input)
+  if (extracted !== null) {
+    return toolEvaluation(
+      reducePolicies(collectPathPolicies(extracted, "write")),
+    )
+  }
+  return toolEvaluation(
+    {
+      kind: "ask",
+      reason:
+        "Update/NotebookEdit input did not carry a recognizable file_path or notebook_path; confirming for safety so write-path checks aren't silently bypassed.",
+    },
+    "update/notebook-edit input missing path",
+  )
+}
+
 const evaluateForToolWithFailure = (
   toolName: string,
   toolInput: unknown,
@@ -147,6 +190,10 @@ const evaluateForToolWithFailure = (
     case "Write":
     case "MultiEdit":
       return evaluateEditOrWrite(toolInput)
+    case "Update":
+    case "NotebookEdit":
+      // Enforcement-plane P0 #2.
+      return evaluateUpdateOrNotebookEdit(toolInput)
     default:
       return toolEvaluation({ kind: "passthrough" })
   }
@@ -274,6 +321,16 @@ export const handlePreToolUse = (
         // ("strict"). A live worker grants passthrough. Worker sessions
         // (CLAUDE_HOOKS_WORKER_ID set) are always passthrough.
         if (config.workerMandatoryMode !== "off") {
+          // Enforcement-plane P0 #6: extract the Bash command (when the
+          // tool is Bash) and pass it so worker-mandatory can detect
+          // heredoc-style writes. Without this, `cat > src/x.ts <<EOF`
+          // would have bypassed strict mode entirely. Uses the shared
+          // schema-decode helper so malformed Bash inputs aren't
+          // accidentally treated as a string (PR #72 review #3).
+          const bashCommandForGate =
+            payload.tool_name === "Bash"
+              ? bashCommandIfValid(payload.tool_input)
+              : undefined
           const verdict = evaluateWorkerMandatoryGate({
             mode: config.workerMandatoryMode,
             toolName: payload.tool_name,
@@ -286,6 +343,9 @@ export const handlePreToolUse = (
             // processes; when present, this PreToolUse is happening
             // inside a worker session and the gate must short-circuit.
             isWorkerSession: Option.isSome(config.workerIdOverride),
+            ...(bashCommandForGate !== undefined
+              ? { bashCommand: bashCommandForGate }
+              : {}),
           })
           if (verdict.kind !== "passthrough") {
             return toHookDecision(verdict)
