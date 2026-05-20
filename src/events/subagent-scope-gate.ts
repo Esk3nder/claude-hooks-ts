@@ -19,6 +19,18 @@ import {
 import { parseWorkerResultText } from "../services/worker-supervisor.ts";
 import type { WorkerResult } from "../schema/worker-run.ts";
 import { WORKER_CONTRACT_MARKER } from "../policies/worker-contract.ts";
+import {
+  evaluateVerificationReplay,
+  type ReplayResult,
+  type WorkerVerificationClaim,
+} from "../policies/worker-verification-replay.ts";
+import {
+  loadProbes,
+  resolveProbe,
+  runProbe,
+  type Probe,
+} from "../algorithm/isa/probes.ts";
+import type { CriterionEntry } from "../algorithm/isa/criteria.ts";
 
 export const invocationKey = (payload: {
   readonly session_id: string;
@@ -139,6 +151,48 @@ interface WorkerStopRecord {
   readonly cancelled: boolean;
   readonly blockReason: string | null;
 }
+
+/**
+ * US-1c — re-run the worker's claimed verification probes in the parent
+ * process. Returns one ReplayResult per claim whose `check` name resolves
+ * to a probe in the registry. Claims with no matching probe are silently
+ * absent from the result (treated as "unverifiable" by the pure policy,
+ * not blocking).
+ *
+ * Synthesizes a CriterionEntry per claim so probes designed for ISC
+ * verification can be invoked unchanged; the synthetic id is the check
+ * name itself.
+ */
+const replayWorkerVerification = (
+  claims: ReadonlyArray<WorkerVerificationClaim>,
+  cwd: string,
+): Effect.Effect<ReadonlyArray<ReplayResult>> =>
+  Effect.gen(function* () {
+    if (claims.length === 0) return [];
+    const registry: Readonly<Record<string, Probe>> = yield* Effect.promise(
+      () => loadProbes(cwd),
+    );
+    const out: ReplayResult[] = [];
+    // Run unique check names only — avoid double-running a probe when the
+    // worker reported the same check twice.
+    const seen = new Set<string>();
+    for (const claim of claims) {
+      if (seen.has(claim.check)) continue;
+      seen.add(claim.check);
+      const probe = registry[claim.check];
+      if (probe === undefined) continue;
+      const resolved = resolveProbe(probe);
+      const criterion: CriterionEntry = {
+        id: claim.check,
+        description: "worker verification replay",
+        type: "criterion",
+        status: "pending",
+      };
+      const passed = yield* runProbe(resolved.fn, criterion, resolved.timeoutMs);
+      out.push({ check: claim.check, passed });
+    }
+    return out;
+  });
 
 const recordWorkerStop = (
   payload: Extract<NormalizedHookEvent, { readonly _tag: "SubagentStop" }>,
@@ -332,6 +386,31 @@ export const handleSubagentStop = (
       };
     }
     if (workerStop.cancelled) return NO_DECISION;
+
+    // US-1c: replay the worker's claimed verification probes in the parent
+    // process. Disagreements block the SubagentStop. Missing probes are
+    // unverifiable, not unverified — they pass through. We parse the
+    // payload output a second time here rather than threading the WorkerResult
+    // out of recordWorkerStop to keep that function's signature unchanged.
+    if (payload.output !== undefined && payload.output.trim().length > 0) {
+      const reparsed = yield* parseWorkerResultText(
+        workerIdForSubagent(payload),
+        payload.output,
+      ).pipe(Effect.either);
+      if (reparsed._tag === "Right" && reparsed.right.verification.length > 0) {
+        const cwd =
+          typeof payload.cwd === "string" && payload.cwd.length > 0
+            ? payload.cwd
+            : process.cwd();
+        const claims: ReadonlyArray<WorkerVerificationClaim> =
+          reparsed.right.verification;
+        const replays = yield* replayWorkerVerification(claims, cwd);
+        const verdict = evaluateVerificationReplay({ claims, replays });
+        if (verdict.kind === "block") {
+          return { decision: "block", reason: verdict.reason };
+        }
+      }
+    }
 
     const workerContractActive =
       workerStop.active || prev.subagent_starts.includes(workerContractKey(key));
