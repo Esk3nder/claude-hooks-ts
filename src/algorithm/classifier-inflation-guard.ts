@@ -16,7 +16,7 @@
  * `parseClassifierResponse` returns.
  */
 
-import type { Tier } from "../services/inference.ts"
+import type { Mode, Tier } from "../services/inference.ts"
 
 export interface StructuralEvidenceInput {
   readonly prompt: string
@@ -114,5 +114,63 @@ export const checkStructuralEvidence = (
     pass: false,
     floorTier: 3,
     reason: `tier ${tier} floored to 3: no code blocks, ≥3 file paths, structural verbs, or ISA references in prompt or recent context`,
+  }
+}
+
+// ──────────────────────────────────────────────────────────────────────
+// US-3c — Deflation guard (symmetric counterpart to checkStructuralEvidence)
+// ──────────────────────────────────────────────────────────────────────
+
+/**
+ * Under-classification guard. Symmetric to `checkStructuralEvidence`: that
+ * one floors over-classified tiers DOWN; this one floors under-classified
+ * MINIMAL/NATIVE verdicts UP to ALGORITHM E1 when the prompt or recent
+ * context shows the same structural signals.
+ *
+ * The asymmetry in the floor target is deliberate. Inflation floors to E3
+ * because that's the lowest engaged tier — anything below would skip
+ * engagement entirely. Deflation floors to E1 because the prompt was
+ * classified as trivial; E1 is the lightest engaged tier and the right
+ * step up. Crossing into E3+ from MINIMAL would be too aggressive a
+ * correction.
+ *
+ * Only fires when:
+ *   - mode is MINIMAL or NATIVE (already-ALGORITHM is passed through —
+ *     the inflation guard handles that direction)
+ *   - prompt OR context contains a structural signal
+ */
+
+export interface UnderClassificationInput {
+  readonly prompt: string
+  readonly context?: string
+  readonly mode: Mode
+  readonly tier: Tier | null
+}
+
+export interface UnderClassificationResult {
+  readonly pass: boolean
+  readonly floorMode?: Mode
+  readonly floorTier?: Tier
+  readonly reason: string
+}
+
+export const checkUnderClassification = (
+  input: UnderClassificationInput,
+): UnderClassificationResult => {
+  if (input.mode !== "MINIMAL" && input.mode !== "NATIVE") {
+    return { pass: true, reason: "mode is ALGORITHM; no escalation" }
+  }
+  const promptSignal = hasStructuralSignal(input.prompt)
+  const contextSignal =
+    input.context !== undefined && hasStructuralSignal(input.context)
+  if (!promptSignal && !contextSignal) {
+    return { pass: true, reason: "no structural signal; no escalation" }
+  }
+  const where = promptSignal ? "prompt" : "recent context"
+  return {
+    pass: false,
+    floorMode: "ALGORITHM",
+    floorTier: 1,
+    reason: `${input.mode} escalated to ALGORITHM E1: structural signal in ${where} [deflation-guard]`,
   }
 }

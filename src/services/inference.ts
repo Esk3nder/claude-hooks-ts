@@ -14,7 +14,10 @@ import { Context, Effect, Layer } from "effect"
 import { ClaudeSubprocess } from "./claude-subprocess.ts"
 import { durationMillis, loadRuntimeConfig } from "./runtime-config.ts"
 import { reportHookFailure } from "./hook-failure.ts"
-import { checkStructuralEvidence } from "../algorithm/classifier-inflation-guard.ts"
+import {
+  checkStructuralEvidence,
+  checkUnderClassification,
+} from "../algorithm/classifier-inflation-guard.ts"
 
 export type Mode = "MINIMAL" | "NATIVE" | "ALGORITHM"
 /** Numeric tiers 1-5 internally — mirrors the InferenceResult.tier shape.
@@ -341,14 +344,27 @@ const liveImpl: InferenceApi = {
         ...(opts?.context !== undefined ? { context: opts.context } : {}),
         tier: parsed.tier,
       })
-      const finalTier = guard.pass ? parsed.tier : guard.floorTier
-      const finalReason = guard.pass
-        ? parsed.reason
-        : `${parsed.reason} [inflation-guard: ${guard.reason}]`
-      return {
+      const tierAfterInflation = guard.pass ? parsed.tier : guard.floorTier
+      // US-3c: deflation guard — symmetric counterpart to the inflation
+      // guard. If the classifier returned MINIMAL or NATIVE but the
+      // prompt/context shows structural signals (same set US-3 uses),
+      // escalate to ALGORITHM E1. Never crosses into E3+ territory.
+      const defl = checkUnderClassification({
+        prompt,
+        ...(opts?.context !== undefined ? { context: opts.context } : {}),
         mode: parsed.mode,
+        tier: tierAfterInflation,
+      })
+      const finalMode = defl.pass ? parsed.mode : defl.floorMode ?? parsed.mode
+      const finalTier = defl.pass ? tierAfterInflation : defl.floorTier ?? tierAfterInflation
+      const inflationNote = guard.pass
+        ? ""
+        : ` [inflation-guard: ${guard.reason}]`
+      const deflationNote = defl.pass ? "" : ` [${defl.reason}]`
+      return {
+        mode: finalMode,
         tier: finalTier,
-        reason: finalReason,
+        reason: `${parsed.reason}${inflationNote}${deflationNote}`,
         source: "classifier",
         latencyMs: result.latencyMs,
       }
