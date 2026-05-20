@@ -235,7 +235,24 @@ export const evaluateEngagementGateShallow = (
   ctx: EngagementContext,
 ): PolicyDecision => {
   if (!ctx.engagement_required) return { kind: "passthrough" }
-  if (ctx.acceptedWritePaths.length === 0) return { kind: "passthrough" }
+  // Enforcement-plane P1 #4 (shallow-form mirror): if engagement is
+  // required but the caller has no accepted write paths to enforce
+  // against, that's the same corrupt-state signal the deep entry
+  // catches at :363. Mirror the `ask` here so the shallow form is
+  // also defense-in-depth-safe — currently all production callers
+  // go through the deep entry, but the shallow form is exported and
+  // a future caller driving it directly would otherwise still fail
+  // open. (PR #73 review #3.)
+  if (ctx.acceptedWritePaths.length === 0) {
+    return {
+      kind: "ask",
+      reason:
+        "Engagement state is corrupt: no accepted write paths " +
+        "available even though `engagement_required=true`. The " +
+        "deep entry produces this state when `expected_isa_path` " +
+        "is null — repair via UserPromptSubmit re-run.",
+    }
+  }
 
   const targetsAcceptedEditPath =
     ctx.resolvedToolFilePath !== null &&

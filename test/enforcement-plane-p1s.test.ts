@@ -258,6 +258,31 @@ describe("Enforcement P1 #5 — NotebookEdit recorded in files_changed", () => {
     expect(record.verification_status).toBe("none")
   })
 
+  test("empty-string file_path → NOT recorded (delegation to mutablePathFromInput)", async () => {
+    // PR #73 review non-blocker #4: pinning the intentional behavior
+    // change. Pre-fix `filePathFromInput` returned "" for {file_path:""};
+    // post-fix `mutablePathFromInput` rejects empty/whitespace-only and
+    // returns null, so the path is not recorded. Empty `file_path` was
+    // never a meaningful PostToolUse signal — this pin documents the
+    // behavior and prevents accidental re-introduction.
+    const payload = decode({
+      _tag: "PostToolUse",
+      session_id: "s",
+      hook_event_name: "PostToolUse",
+      tool_name: "Edit",
+      tool_input: { file_path: "" },
+      tool_response: { success: true },
+    })
+    const program = Effect.gen(function* () {
+      yield* handlePostToolUse(payload)
+      const state = yield* SessionState
+      return yield* state.get("s")
+    })
+    const record = await Effect.runPromise(program.pipe(Effect.provide(layer)))
+    expect(record.files_changed).not.toContain("")
+    expect(record.files_changed.length).toBe(0)
+  })
+
   test("Update with file_path also recorded (already-fixed sanity check)", async () => {
     const payload = decode({
       _tag: "PostToolUse",

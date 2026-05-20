@@ -45,9 +45,28 @@ describe("evaluateEngagementGate — passthrough cases", () => {
     expect(v.kind).toBe("passthrough")
   })
 
-  test("acceptedWritePaths=[] → fail-open passthrough", () => {
+  test("acceptedWritePaths=[] + engagement_required → ask (enforcement P1 #4 shallow mirror)", () => {
+    // Pre-fix this returned passthrough (the corrupt-state bug —
+    // mirror of the deep-entry P1 #4). Now the shallow form also
+    // asks so it's defense-in-depth-safe when called directly.
+    // The deep entry catches the underlying record.expected_isa_path
+    // === null case at engagement-gate.ts:363; the shallow form's
+    // empty-paths check at :237 is the parallel signal.
     const v = evaluateEngagementGate({
       ...baseCtx,
+      acceptedWritePaths: [],
+      acceptedEditPaths: [],
+      toolName: "Write",
+      toolInput: { file_path: "/repo/src/foo.ts" },
+      resolvedToolFilePath: "/repo/src/foo.ts",
+    })
+    expect(v.kind).toBe("ask")
+  })
+
+  test("acceptedWritePaths=[] + engagement_required=false → passthrough (not corrupt)", () => {
+    const v = evaluateEngagementGate({
+      ...baseCtx,
+      engagement_required: false,
       acceptedWritePaths: [],
       acceptedEditPaths: [],
       toolName: "Write",
