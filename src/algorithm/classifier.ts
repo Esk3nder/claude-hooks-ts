@@ -162,6 +162,49 @@ export const hasCodeContextInRecent = (recent: string | undefined): boolean => {
 }
 
 /**
+ * US-20 — Context-sensitive approval/decision tokens. When the prompt
+ * normalizes to one of these AND recent context shows pending work,
+ * the short-prompt fast-path delegates to inference rather than
+ * collapsing to MINIMAL. The Sonnet rubric explicitly says
+ * "Single-word approvals to multi-step plans are NEVER MINIMAL"; this
+ * set is the gate's recognition list for that case.
+ */
+const SHORT_CONTEXT_TOKENS: ReadonlySet<string> = new Set([
+  "ok",
+  "yes",
+  "no",
+  "go",
+  "y",
+  "n",
+  "sure",
+  "kk",
+])
+
+/**
+ * US-20 — Heuristic: does recent context show pending work that a short
+ * approval would inherit? Reuses `hasCodeContextInRecent` as one signal
+ * and adds plan/proposal/numbered-or-bulleted-list detection.
+ *
+ * False positives here are cheap (route to Sonnet — pay one classifier
+ * call). False negatives are expensive (silently bypass engagement).
+ */
+export const hasPendingWorkSignal = (recent: string | undefined): boolean => {
+  if (!recent || recent.length === 0) return false
+  if (hasCodeContextInRecent(recent)) return true
+  // Plan / proposal verbs in recent context — broad on purpose
+  if (
+    /\b(?:plan|proposal|step(?:s)?|approach|fix(?:es)?|change(?:s)?|implement|write|edit|create|update|refactor|migrate|audit|build|design|review)\b/i.test(
+      recent,
+    )
+  ) {
+    return true
+  }
+  // Numbered or bulleted list lines anywhere in recent context
+  if (/(?:^|\n)\s*(?:\d+[.)]|[-*])\s+\S+/.test(recent)) return true
+  return false
+}
+
+/**
  * the classifier — system-injected text.
  *
  * Exported (renamed `isSystemTextPrompt`) so the prompt-router can check it
@@ -216,8 +259,21 @@ export const tryFastPath = (
   // We do NOT check it here; if the router somehow lets system text through,
   // it would fall to inference and Sonnet would classify it normally.
   //
-  // Gate 4: short prompt
+  // Gate 4: short prompt. US-20: when the short prompt normalizes to a
+  // context-sensitive approval token AND recent context shows pending
+  // work, return null so inference (Sonnet) can apply the doctrine
+  // "Single-word approvals to multi-step plans are NEVER MINIMAL." The
+  // pre-US-20 behavior (any sub-3-char prompt → MINIMAL) bypassed that
+  // rule and US-3c's deflation guard didn't catch it because the guard
+  // only runs on Sonnet-returned classifications, not fast-path returns.
   if (prompt.length < MIN_PROMPT_LENGTH) {
+    const normalized = prompt.trim().toLowerCase()
+    if (
+      SHORT_CONTEXT_TOKENS.has(normalized) &&
+      hasPendingWorkSignal(recentContext)
+    ) {
+      return null
+    }
     return {
       mode: "MINIMAL",
       tier: null,
