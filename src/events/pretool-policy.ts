@@ -19,6 +19,8 @@ import { evaluateGeneratedFile } from "../policies/generated-files.ts"
 import { evaluateLockfile } from "../policies/lockfile-paths.ts"
 import { shouldRewrite, rewriteTestCommand } from "../policies/test-output-rewrite.ts"
 import { evaluateEngagementGate } from "../policies/engagement-gate.ts"
+import { evaluateTddGate } from "../policies/tdd-gate.ts"
+import { safeResolvePath } from "../services/path-resolution.ts"
 import { evaluateWorkerTaskPrompt } from "../policies/worker-contract.ts"
 import { evaluateWorkerToolPermission } from "../policies/worker-permissions.ts"
 import { SessionState } from "../services/session-state.ts"
@@ -234,6 +236,29 @@ export const handlePreToolUse = (
         })
         if (engagementVerdict.kind !== "passthrough") {
           return toHookDecision(engagementVerdict)
+        }
+        // US-1: TDD-first gate. Default off (tddGateEnabled=false). When
+        // enabled, blocks Write/Edit/MultiEdit/NotebookEdit on a non-test
+        // file under src/** unless a companion test exists on disk OR was
+        // touched in this session. Bootstrap-batch escape: if the test
+        // file was created/edited earlier in the same session (i.e.
+        // appears in record.files_changed), the implementation write is
+        // allowed.
+        if (config.tddGateEnabled) {
+          const inputFp =
+            typeof payload.tool_input === "object" && payload.tool_input !== null
+              ? (payload.tool_input as { file_path?: unknown }).file_path
+              : undefined
+          const resolvedFilePath = safeResolvePath(currentCwd, inputFp)
+          const tddVerdict = evaluateTddGate({
+            enabled: true,
+            toolName: payload.tool_name,
+            resolvedFilePath,
+            filesChangedInSession: record.files_changed,
+          })
+          if (tddVerdict.kind !== "passthrough") {
+            return toHookDecision(tddVerdict)
+          }
         }
       }
     }
