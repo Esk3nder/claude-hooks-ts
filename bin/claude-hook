@@ -1,37 +1,88 @@
-#!/usr/bin/env bash
-# Robust bin shim for claude-hooks-ts. Two failure modes the naive
-# `exec bun run "$(dirname "$0")/../src/dispatcher.ts" "$@"` shim has:
-#
-#   1. $(dirname "$0") does NOT resolve symlinks. When a package manager
-#      (`bun add -g`, `npm i -g`, etc.) symlinks this shim onto PATH,
-#      $0 is the symlink path, so the relative `../src/dispatcher.ts` resolves
-#      against the wrong directory and fails with "Module not found".
-#
-#   2. Bare `bun` requires `bun` on PATH. Hook subprocesses spawned by
-#      Claude Code run with a sanitized PATH that does not include
-#      $HOME/.bun/bin, so `exec bun` fails with "bun: not found" and
-#      every hook event errors out.
-#
-# The block below resolves the symlink portably (works on macOS bash 3.2
-# without GNU `readlink -f`) and probes for bun in the common locations
-# before falling back to PATH lookup.
-set -e
-SOURCE="$0"
-while [ -L "$SOURCE" ]; do
-  TARGET="$(readlink "$SOURCE")"
-  case "$TARGET" in /*) SOURCE="$TARGET" ;; *) SOURCE="$(dirname "$SOURCE")/$TARGET" ;; esac
-done
-HERE="$(cd "$(dirname "$SOURCE")" && pwd)"
-BUN="${BUN:-}"
-if [ -z "$BUN" ] || [ ! -x "$BUN" ]; then
-  for c in "$HOME/.bun/bin/bun" "/opt/homebrew/bin/bun" "/usr/local/bin/bun" "$(command -v bun 2>/dev/null || true)"; do
-    if [ -n "$c" ] && [ -x "$c" ]; then BUN="$c"; break; fi
-  done
-fi
-if [ ! -x "$BUN" ]; then
-  echo "claude-hook: bun not found." >&2
-  echo "  Set \$BUN to an absolute path, or install bun:" >&2
-  echo "    curl -fsSL https://bun.sh/install | bash" >&2
-  exit 1
-fi
-exec "$BUN" run "$HERE/../src/dispatcher.ts" "$@"
+#!/usr/bin/env node
+/* eslint-disable */
+/**
+ * Cross-platform bin shim for `claude-hook`. P0-2 — replaces the prior
+ * bash shim so Windows installs work without WSL/Git-Bash.
+ *
+ * Same two failure modes the bash version guarded against still apply:
+ *   1. `process.argv[1]` is the symlink path when a package manager
+ *      (`bun add -g`, `npm i -g`, ...) puts this on PATH. `fs.realpathSync`
+ *      resolves the symlink so the relative `../src/dispatcher.ts`
+ *      anchors to the package install root.
+ *   2. Bare `bun` requires `bun` on PATH. Claude Code spawns hooks with
+ *      a sanitized PATH that omits `$HOME/.bun/bin`. We probe
+ *      `$BUN` -> `~/.bun/bin/bun(.exe)` -> `/opt/homebrew/bin/bun` ->
+ *      `/usr/local/bin/bun` -> PATH lookup before giving up.
+ *
+ * Why Node not bash: bash isn't on Windows by default; cmd-shim generated
+ * by npm/bun reads the shebang and invokes `node`, which IS reliably
+ * available on Windows. The shim's job is purely to find bun and re-exec.
+ */
+import { spawnSync } from "node:child_process"
+import * as fs from "node:fs"
+import * as path from "node:path"
+
+const TARGET = "../src/dispatcher.ts"
+const PROGRAM = "claude-hook"
+
+const resolveSource = () => {
+  const arg = process.argv[1] ?? ""
+  try {
+    return fs.realpathSync(arg)
+  } catch {
+    return arg
+  }
+}
+
+const isExecutableFile = (p) => {
+  try {
+    const st = fs.statSync(p)
+    return st.isFile()
+  } catch {
+    return false
+  }
+}
+
+const findBun = () => {
+  const env = process.env
+  const isWin = process.platform === "win32"
+  const bunExe = isWin ? "bun.exe" : "bun"
+  const candidates = [
+    env.BUN,
+    env.HOME ? path.join(env.HOME, ".bun", "bin", bunExe) : null,
+    env.USERPROFILE
+      ? path.join(env.USERPROFILE, ".bun", "bin", bunExe)
+      : null,
+    "/opt/homebrew/bin/bun",
+    "/usr/local/bin/bun",
+  ].filter(Boolean)
+  for (const c of candidates) {
+    if (isExecutableFile(c)) return c
+  }
+  const probe = spawnSync(isWin ? "where" : "which", ["bun"], {
+    encoding: "utf8",
+  })
+  if (probe.status === 0) {
+    const first = probe.stdout.trim().split(/\r?\n/)[0]
+    if (first && isExecutableFile(first)) return first
+  }
+  return null
+}
+
+const source = resolveSource()
+const here = path.dirname(source)
+const bun = findBun()
+if (!bun) {
+  process.stderr.write(`${PROGRAM}: bun not found.\n`)
+  process.stderr.write("  Set $BUN to an absolute path, or install bun:\n")
+  process.stderr.write("    POSIX:   curl -fsSL https://bun.sh/install | bash\n")
+  process.stderr.write(
+    "    Windows: powershell -c \"irm bun.sh/install.ps1 | iex\"\n",
+  )
+  process.exit(1)
+}
+const target = path.join(here, TARGET)
+const result = spawnSync(bun, ["run", target, ...process.argv.slice(2)], {
+  stdio: "inherit",
+})
+process.exit(result.status ?? 1)
