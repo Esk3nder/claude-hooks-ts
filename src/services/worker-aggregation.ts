@@ -27,6 +27,28 @@ const countStatus = (
   status: WorkerRun["status"],
 ): number => runs.filter((run) => run.status === status).length
 
+const ACTIVE_RUN_STATUSES: ReadonlySet<WorkerRun["status"]> = new Set([
+  "queued",
+  "running",
+  "blocked",
+])
+
+/**
+ * P0-1: pretool worker-mandatory gate previously derived "is a worker
+ * active?" from the `subagent_starts.length - subagent_stops.length`
+ * delta on session state. If a SubagentStop append silently failed
+ * (the catch in `subagent-scope-gate.ts` only reports), the delta stayed
+ * permanently positive and the gate returned `allow` for every direct
+ * write at tier ≥ E4. This helper exposes the runs ledger as the
+ * authoritative source — a run is "active" iff its latest status is
+ * queued/running/blocked.
+ */
+export const countActiveRuns = (runs: ReadonlyArray<WorkerRun>): number =>
+  runs.reduce(
+    (acc, run) => (ACTIVE_RUN_STATUSES.has(run.status) ? acc + 1 : acc),
+    0,
+  )
+
 const workerResult = (run: WorkerRun) => run.result ?? run.output
 
 const normalizeChangedPath = (run: WorkerRun, changedPath: string): string => {

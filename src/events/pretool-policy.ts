@@ -31,6 +31,8 @@ import { mutablePathFromInput } from "../policies/write-class.ts"
 import { SessionState } from "../services/session-state.ts"
 import { loadRuntimeConfig } from "../services/runtime-config.ts"
 import { reportHookFailure } from "../services/hook-failure.ts"
+import { WorkerRuns } from "../services/worker-runs.ts"
+import { countActiveRuns } from "../services/worker-aggregation.ts"
 
 const decision = (
   permissionDecision: "allow" | "deny" | "ask",
@@ -331,14 +333,59 @@ export const handlePreToolUse = (
             payload.tool_name === "Bash"
               ? bashCommandIfValid(payload.tool_input)
               : undefined
+          // P0-1: derive the active-worker signal from the worker-runs
+          // ledger when the service is available (production wiring and
+          // any test that provides it). Falls back to the legacy
+          // `subagent_starts.length - subagent_stops.length` delta only
+          // when WorkerRuns is absent from context (older targeted unit
+          // tests). The legacy signal is corrupt by design: a dropped
+          // SubagentStop append leaves `starts > stops` forever, and
+          // worker-mandatory returns `allow` whenever the count is
+          // positive — so the parent silently regains direct-write
+          // ability for the rest of the session. The runs ledger has
+          // terminal-status semantics maintained atomically by
+          // `recordWorkerStop`, so it does not suffer the same drift.
+          const runsService = yield* Effect.serviceOption(WorkerRuns)
+          let derivedActiveCount: number
+          if (Option.isSome(runsService)) {
+            const runsResult = yield* Effect.either(
+              runsService.value.forSession(payload.session_id),
+            )
+            if (runsResult._tag === "Right") {
+              derivedActiveCount = countActiveRuns(runsResult.right)
+            } else {
+              // Ledger read failed (filesystem error, malformed tail).
+              // Fall back to starts-stops rather than zeroing the count
+              // (which would deny *all* direct writes during a transient
+              // ledger outage). Report via hook-failure for observability.
+              yield* reportHookFailure({
+                kind: "state_read_failed",
+                event: "PreToolUse",
+                sessionId: payload.session_id,
+                cause: runsResult.left,
+                hookSafe: true,
+                context: {
+                  op: "worker-runs.forSession",
+                  stage: "worker-mandatory active-count derivation",
+                  tool_name: payload.tool_name,
+                },
+              })
+              derivedActiveCount = activeWorkerCount({
+                starts: record.subagent_starts.length,
+                stops: record.subagent_stops.length,
+              })
+            }
+          } else {
+            derivedActiveCount = activeWorkerCount({
+              starts: record.subagent_starts.length,
+              stops: record.subagent_stops.length,
+            })
+          }
           const verdict = evaluateWorkerMandatoryGate({
             mode: config.workerMandatoryMode,
             toolName: payload.tool_name,
             lastTier: record.last_tier,
-            activeWorkerCount: activeWorkerCount({
-              starts: record.subagent_starts.length,
-              stops: record.subagent_stops.length,
-            }),
+            activeWorkerCount: derivedActiveCount,
             // CLAUDE_HOOKS_WORKER_ID is set by the harness on subagent
             // processes; when present, this PreToolUse is happening
             // inside a worker session and the gate must short-circuit.
