@@ -66,9 +66,9 @@ The shim (`bin/claude-hook`) is a small wrapper that `exec bun run`s the dispatc
 
 A few of the things wired into specific events:
 
-- **`PreToolUse`** — denies edits to `protected-paths.yaml` entries, refuses writes to `generated-files.yaml`, blocks destructive shell patterns, gates ISA-required sessions to writing the spec first.
+- **`PreToolUse`** — denies edits to `protected-paths.yaml` entries, refuses writes to `generated-files.yaml`, blocks destructive shell patterns, gates ISA-required sessions to writing the spec first. Two opt-in policy gates compose on top: the **TDD gate** denies writes to `src/**` without a companion test in the same session, and the **worker-mandatory gate** denies direct writes at classifier tier ≥ E4 unless a subagent worker is active. Both are off by default — see [Opt-in policy gates](#opt-in-policy-gates).
 - **`PreToolUse` + `SubagentStart` / `SubagentStop`** — turns marked `Task` / `Agent` launches into bounded workers by injecting scope/output contracts and requiring structured, evidenced output while leaving bare subagents alone.
-- **`UserPromptSubmit`** — classifies the prompt's cognitive mode (MINIMAL / NATIVE / ALGORITHM with tier E1–E5), records the classification, and injects it as `additionalContext` so the model enters the right depth. Conservative fail-safe to ALGORITHM E3 on any error.
+- **`UserPromptSubmit`** — classifies the prompt's cognitive mode (MINIMAL / NATIVE / ALGORITHM with tier E1–E5), records the classification, and injects it as `additionalContext` so the model enters the right depth. Two follow-on normalizations protect against classifier noise: the **tier-inflation guard** floors E4/E5 verdicts to E3 when neither the prompt nor recent context shows structural evidence (code fences, ≥3 file paths, multi-step verbs, ISA refs); the **workflow-scoped source-ledger** suppresses weak research idioms ("current best practices", "state of the art") on confidently coding/writing/ops tagged workflows so the source-ledger Stop gate only fires on explicit web-research prompts. Conservative fail-safe to ALGORITHM E3 on any error.
 - **`PostToolUse`** — runs your `.claude-hooks/probes.ts` (hot-loaded) against the active ISA; on pass, flips `[ ]` to `[x]` and auto-commits.
 - **`Stop`** — blocks when the active ISA is `phase: complete` but tier-required sections are missing or ISCs are unchecked. Runs declarative regenerate rules when source files changed.
 - **`SessionEnd`** — archives completed ISAs to `.claude-hooks/archive/<YYYY-MM-DD>/<slug>/ISA.md`.
@@ -134,6 +134,27 @@ export const probes = {
 In your ISA's `## Test Strategy` section, name the probe per criterion (`tool` column). When a probe returns `true`, the matching `- [ ] ISC-N` flips to `- [x]` and — if the repo is in `.claude-hooks/checkpoint-repos.txt` — a checkpoint commit is made. The allowlist is empty by default; **nothing is auto-committed unless you opt the repo in.**
 
 Probes run with full Node privileges in the dispatcher process (same boundary as `make` or `npm test`). Each one is wrapped in a 1s timeout and a catch-all; failure to load or run is treated as non-passing, never as a crash.
+
+### Opt-in policy gates
+
+Both of the following gates are **off by default**. Set the env vars to enable. Each runs at PreToolUse, inside the engagement-gate block, so they only fire on sessions where the engagement gate is already active.
+
+```bash
+export CLAUDE_HOOKS_TDD_GATE_ENABLED=1
+export CLAUDE_HOOKS_WORKER_MANDATORY_MODE=recommend   # or "strict" or "off"
+```
+
+**TDD gate.** When enabled, denies `Write` / `Edit` / `MultiEdit` / `NotebookEdit` on a non-test file under `src/**` unless a companion test exists on disk OR was touched in the current session. Companion candidates for `src/foo/bar.ts` are `src/foo/bar.test.ts` (inline), `src/foo/__tests__/bar.test.ts`, and `test/foo/bar.test.ts` (mirrored test/ tree). `.spec.ts` and matching-extension (`tsx`, `js`) variants also accepted. Bootstrap-batch escape: when the test file appears in this session's `files_changed`, the implementation write is allowed — so a fresh feature can ship by writing the test first, then the implementation.
+
+**Worker-mandatory gate.** When enabled, the gate fires only when `last_tier >= 4` and the tool is a direct write (`Write` / `Edit` / `MultiEdit` / `NotebookEdit` / `Update`):
+
+| Mode | Behavior |
+| --- | --- |
+| `off` (default) | passthrough — no change |
+| `recommend` | `ask` with a hint pointing at the Task tool |
+| `strict` | `deny` with the same hint — model MUST launch a Task first |
+
+A live subagent (one or more `SubagentStart` not yet matched by `SubagentStop`) grants passthrough — workers are the delegation target. Worker sessions themselves (detected via `CLAUDE_HOOKS_WORKER_ID` set by the harness) are always passthrough so the gate never deadlocks a subagent's own writes.
 
 ### Disable the classifier
 
