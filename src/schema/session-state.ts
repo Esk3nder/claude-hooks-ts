@@ -8,6 +8,17 @@ import { Schema } from "effect"
  * Mirrors `SessionStateRecord` in services/session-state.ts.
  */
 export const SessionStateRecordSchema = Schema.Struct({
+  /**
+   * P0-5: schema version stamp. Optional in the schema so legacy records
+   * (written before P0-5) keep parsing via the forward-compat merge that
+   * fills missing fields from EMPTY_SESSION_STATE. Newly-written records
+   * carry the current `SESSION_STATE_SCHEMA_VERSION`. Records with a
+   * version GREATER than the runtime's known version are rejected
+   * upstream of strict decode (see `parseRecordStrict`), to refuse
+   * silently merging unknown future shapes — and the future record on
+   * disk is preserved, not backed-up-and-reset.
+   */
+  _schema_version: Schema.optional(Schema.Number),
   files_read: Schema.Array(Schema.String),
   files_changed: Schema.Array(Schema.String),
   commands_run: Schema.Array(Schema.String),
