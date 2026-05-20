@@ -31,6 +31,8 @@
     "install:dry": "bun run scripts/install.ts --dry-run",
     "install:apply": "bun run scripts/install.ts --apply",
     "build:bin": "bun run scripts/build.ts",
+    "contract:generate": "bun run scripts/generate-classifier-contract.ts",
+    "contract:check": "bun run scripts/generate-classifier-contract.ts --check",
     "postinstall": "bun run scripts/postinstall.ts"
   },
   "dependencies": {

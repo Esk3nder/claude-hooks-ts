@@ -18,6 +18,8 @@ jobs:
         run: bun install --frozen-lockfile
       - name: Typecheck
         run: bun run typecheck
+      - name: Classifier contract drift check (US-22)
+        run: bun run contract:check
       - name: Test
         run: bun test
 
