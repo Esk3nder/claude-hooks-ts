@@ -143,8 +143,19 @@ export type ResolveActiveIsaRecord = Pick<
   | "last_mode"
   | "last_tier"
 > & {
-  /** Optional — only the Stop completeness gate (US-14) reads this; other
-   * consumers don't need to populate it. */
+  /**
+   * Optional — only the Stop completeness gate (US-14) reads this; other
+   * consumers don't need to populate it.
+   *
+   * **Posture for legacy/un-threaded callers**: when this field is
+   * `undefined`, the Stop completeness gate treats it as `[]` (empty
+   * verified list). For ISAs that don't declare `requires_probe: true`
+   * in Test Strategy this changes nothing — the gate finds no
+   * requirements and short-circuits. For ISAs that DO declare it, a
+   * caller that doesn't track probe provenance will see the gate block
+   * — intentional: a `requires_probe: true` ISC must not be satisfied
+   * by a caller that has no way to verify probe-flip provenance.
+   */
   readonly probe_verified_iscs?: ReadonlyArray<string>
 }
 

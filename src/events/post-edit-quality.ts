@@ -340,6 +340,16 @@ export const handlePostToolUse = (
     // the Stop completeness gate can distinguish probe-verified from
     // model-asserted checkboxes. Append happens AFTER the effect runs to
     // keep handlePostToolUseIsaEffects sync-callback-friendly.
+    //
+    // ORDERING INVARIANT: this append MUST happen before the next ISA
+    // PostToolUse event fires. The probe-flip path inside
+    // handlePostToolUseIsaEffects writes `[x]` to the ISA file, which
+    // triggers a follow-on PostToolUse event for that ISA edit. If the
+    // append were deferred (e.g., moved after the formatter branch
+    // below), the follow-on ISA-edit event could take the `isIsaEdit`
+    // branch and the appender for THIS flip would never run, breaking
+    // the provenance contract. Keep the append immediately after the
+    // probe runner; do NOT move it past any other effectful step.
     const probeFlippedIscs: string[] = []
     yield* handlePostToolUseIsaEffects(isaRoot, record ?? undefined, {
       onProbeFlipped: (iscId) => {
