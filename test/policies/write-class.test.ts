@@ -139,6 +139,13 @@ describe("isUnknownTool", () => {
     ["Task", false],
     ["Agent", false],
     ["TodoWrite", false],
+    // Engagement-allowlist members folded into write-class sets so the
+    // unknown-tool ask branch matches the engagement-gate allowlist
+    // (PR #72 self-review non-blocker #2):
+    ["Skill", false],
+    ["AskUserQuestion", false],
+    ["List", false],
+    ["NotebookRead", false],
     ["mcp__filesystem__write_file", true],
     ["mcp__docs__search", true],
     ["mcp__repo__apply_patch", true],

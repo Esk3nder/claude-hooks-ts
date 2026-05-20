@@ -133,14 +133,21 @@ export const isBashFileWrite = (command: string): boolean => {
  * Exposed for callers (engagement-gate) that need to distinguish
  * "this is a known safe tool" from "this is an unknown tool we should
  * ask about".
+ *
+ * Kept in sync with engagement-gate's `ALLOWED_TOOLS_DURING_ENGAGEMENT`:
+ * any read-only tool added there should be reflected here so the
+ * unknown-tool ask branch doesn't fire on a tool the engagement gate
+ * already considers safe. See review non-blocker #2 (PR #72).
  */
 export const KNOWN_READ_ONLY_TOOLS: ReadonlySet<string> = new Set([
   "Read",
   "Grep",
   "Glob",
   "LS",
+  "List",
   "WebFetch",
   "WebSearch",
+  "NotebookRead",
 ])
 
 /**
@@ -162,6 +169,10 @@ const DISPATCHER_AND_CONTROL_TOOLS: ReadonlySet<string> = new Set([
   "BashOutput",
   "KillShell",
   "ExitPlanMode",
+  // Engagement-allowlist members that don't fit the read-only set
+  // cleanly but are also not implementation-class writes.
+  "Skill",
+  "AskUserQuestion",
 ])
 
 export const isUnknownTool = (toolName: string): boolean => {

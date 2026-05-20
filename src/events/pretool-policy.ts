@@ -89,6 +89,19 @@ const evaluateBash = (input: unknown): ToolEvaluation => {
   return toolEvaluation(evaluateDestructiveCommand(decoded.right.command))
 }
 
+/**
+ * Decode a Bash tool input and return the `command` string when it
+ * validates, else `undefined`. Used by callers that need the Bash
+ * command but tolerate malformed inputs without an `ask` (the
+ * downstream gate decides — typically passthrough when no command).
+ * Mirrors `evaluateBash` for input handling consistency (PR #72
+ * self-review non-blocker #3 — replaces an inline `as` cast).
+ */
+const bashCommandIfValid = (input: unknown): string | undefined => {
+  const decoded = Schema.decodeUnknownEither(BashInput)(input)
+  return decoded._tag === "Right" ? decoded.right.command : undefined
+}
+
 const evaluateRead = (input: unknown): ToolEvaluation => {
   const decoded = Schema.decodeUnknownEither(ReadInput)(input)
   if (decoded._tag === "Left") {
@@ -311,14 +324,12 @@ export const handlePreToolUse = (
           // Enforcement-plane P0 #6: extract the Bash command (when the
           // tool is Bash) and pass it so worker-mandatory can detect
           // heredoc-style writes. Without this, `cat > src/x.ts <<EOF`
-          // would have bypassed strict mode entirely.
+          // would have bypassed strict mode entirely. Uses the shared
+          // schema-decode helper so malformed Bash inputs aren't
+          // accidentally treated as a string (PR #72 review #3).
           const bashCommandForGate =
-            payload.tool_name === "Bash" &&
-            typeof payload.tool_input === "object" &&
-            payload.tool_input !== null &&
-            typeof (payload.tool_input as { command?: unknown }).command ===
-              "string"
-              ? ((payload.tool_input as { command: string }).command)
+            payload.tool_name === "Bash"
+              ? bashCommandIfValid(payload.tool_input)
               : undefined
           const verdict = evaluateWorkerMandatoryGate({
             mode: config.workerMandatoryMode,
