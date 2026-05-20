@@ -24,7 +24,7 @@
  * `files_changed`, the next implementation Write is unblocked.
  */
 
-import { existsSync } from "node:fs"
+import { existsSync, realpathSync } from "node:fs"
 import { basename, dirname, extname, sep } from "node:path"
 import type { PolicyDecision } from "./types.ts"
 
@@ -133,10 +133,18 @@ const mirrorSrcToTest = (dir: string): string | null => {
 /**
  * Pure decision: given facts, return a PolicyDecision. No I/O. Tests can
  * drive this directly without filesystem setup.
+ *
+ * US-1d: `normalizePath` collapses filesystem aliases (notably the macOS
+ * `/var → /private/var` symlink) so the companion-test lookup compares
+ * canonical paths rather than the path-string forms each side happened
+ * to record. Both `resolvedFilePath`-derived candidates AND
+ * `filesChangedInSession` entries pass through the normalizer. Default
+ * identity preserves prior behavior for callers that don't pass one.
  */
 export const evaluateTddGateShallow = (
   input: TddGateInput,
   testFileExistsOnDisk: (path: string) => boolean,
+  normalizePath: (path: string) => string = (p) => p,
 ): PolicyDecision => {
   if (!input.enabled) return { kind: "passthrough" }
   if (!WRITE_TOOLS.has(input.toolName)) return { kind: "passthrough" }
@@ -147,8 +155,11 @@ export const evaluateTddGateShallow = (
   const candidates = inferTestPaths(input.resolvedFilePath)
   if (candidates.length === 0) return { kind: "passthrough" }
 
-  const changedSet = new Set(input.filesChangedInSession)
-  const inSession = candidates.some((p) => changedSet.has(p))
+  // US-1d: normalize both sides of the comparison. On macOS the
+  // dispatcher may have stored unresolved /var/... while the gate
+  // derives candidates from realpath-canonical /private/var/...
+  const changedSet = new Set(input.filesChangedInSession.map(normalizePath))
+  const inSession = candidates.some((p) => changedSet.has(normalizePath(p)))
   if (inSession) {
     return {
       kind: "allow",
@@ -186,8 +197,25 @@ const tddDenyReason = (
 }
 
 /**
+ * Best-effort symlink-collapsing normalizer. Used by the deep entry point
+ * to make the gate's path comparisons resilient to surface differences
+ * like the macOS `/var → /private/var` symlink. Realpath can throw on
+ * EPERM / ELOOP / ENOENT — paths that don't exist on disk yet (the
+ * common bootstrap-batch case) AND paths above an unreadable directory
+ * both fall through to the original string, which is the safe fallback.
+ */
+const tryRealpath = (p: string): string => {
+  try {
+    return realpathSync(p)
+  } catch {
+    return p
+  }
+}
+
+/**
  * Deep entry point: filesystem-backed. Pass-through to the shallow form
- * with `existsSync` as the disk check.
+ * with `existsSync` as the disk check and a realpath-based normalizer
+ * (US-1d) so the companion-test lookup is symlink-insensitive.
  */
 export const evaluateTddGate = (input: TddGateInput): PolicyDecision =>
-  evaluateTddGateShallow(input, (p) => existsSync(p))
+  evaluateTddGateShallow(input, (p) => existsSync(p), tryRealpath)

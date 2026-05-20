@@ -195,6 +195,63 @@ describe("evaluateTddGateShallow — deny", () => {
   })
 })
 
+describe("evaluateTddGateShallow — US-1d: symlink-normalized companion lookup", () => {
+  test("ledger has /var/sandbox/src/foo/bar.test.ts + resolved is /private/var/sandbox/src/foo/bar.ts → ALLOW (macOS symlink case)", () => {
+    // Repros the dogfood-discovered macOS bug:
+    //  - files_changed has the unresolved /var/... form (as the
+    //    dispatcher recorded it)
+    //  - resolvedFilePath came back realpath-canonical /private/var/...
+    //  - on-disk check returns false (bootstrap-batch — file not yet on
+    //    disk)
+    // Before this fix, the string compare missed → false deny.
+    const normalize = (p: string): string =>
+      p.startsWith("/var/") ? `/private${p}` : p
+    const v = evaluateTddGateShallow(
+      {
+        enabled: true,
+        toolName: "Write",
+        resolvedFilePath: "/private/var/sandbox/src/foo/bar.ts",
+        filesChangedInSession: ["/var/sandbox/src/foo/bar.test.ts"],
+      },
+      () => false,
+      normalize,
+    )
+    expect(v.kind).toBe("allow")
+  })
+
+  test("inverse direction: ledger has /private/var/..., resolved is /var/... → ALLOW", () => {
+    const normalize = (p: string): string =>
+      p.startsWith("/var/") ? `/private${p}` : p
+    const v = evaluateTddGateShallow(
+      {
+        enabled: true,
+        toolName: "Write",
+        resolvedFilePath: "/var/sandbox/src/foo/bar.ts",
+        filesChangedInSession: ["/private/var/sandbox/src/foo/bar.test.ts"],
+      },
+      () => false,
+      normalize,
+    )
+    expect(v.kind).toBe("allow")
+  })
+
+  test("identity normalizer (default) preserves prior behavior", () => {
+    // Calling the shallow form without a normalizer must behave exactly
+    // as before the fix — pins back-compat for the existing test suite
+    // that passes no normalizer arg.
+    const v = evaluateTddGateShallow(
+      {
+        enabled: true,
+        toolName: "Write",
+        resolvedFilePath: "/private/var/sandbox/src/foo/bar.ts",
+        filesChangedInSession: ["/var/sandbox/src/foo/bar.test.ts"],
+      },
+      () => false,
+    )
+    expect(v.kind).toBe("deny")
+  })
+})
+
 describe("evaluateTddGateShallow — disable escape", () => {
   test("flag off keeps existing behavior even with deny-worthy state", () => {
     const v = evaluateTddGateShallow(
