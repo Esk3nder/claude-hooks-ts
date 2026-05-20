@@ -279,6 +279,9 @@ export const handlePreToolUse = (
               starts: record.subagent_starts.length,
               stops: record.subagent_stops.length,
             }),
+            // CLAUDE_HOOKS_WORKER_ID is set by the harness on subagent
+            // processes; when present, this PreToolUse is happening
+            // inside a worker session and the gate must short-circuit.
             isWorkerSession: Option.isSome(config.workerIdOverride),
           })
           if (verdict.kind !== "passthrough") {

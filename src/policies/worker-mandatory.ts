@@ -35,9 +35,24 @@ export interface WorkerMandatoryInput {
   readonly toolName: string
   readonly lastTier: number | null
   readonly activeWorkerCount: number
+  /** True when the current PreToolUse is happening inside a worker
+   * (subagent) session — typically signalled by `CLAUDE_HOOKS_WORKER_ID`
+   * being set (read via `RuntimeConfig.workerIdOverride`). The gate must
+   * NEVER block a worker's own writes; the worker IS the delegation
+   * target. Defaults to false (parent session). */
+  readonly isWorkerSession?: boolean
 }
 
-/** Tool names that are subject to the gate when above E4. */
+/** Tool names that are subject to the gate when above E4.
+ *
+ * Intentionally absent:
+ *   - `Task` / `Agent`: the delegation tools themselves. Gating them
+ *     would defeat the gate's whole purpose.
+ *   - `Bash`: handled by `destructive-commands` policy elsewhere; this
+ *     gate only inspects toolName, not Bash commands, so adding "Bash"
+ *     here would deny ALL Bash (including read-only inspection) which
+ *     is too coarse.
+ */
 const WRITE_TOOLS: ReadonlySet<string> = new Set([
   "Write",
   "Edit",
@@ -71,6 +86,12 @@ export const evaluateWorkerMandatoryGate = (
   input: WorkerMandatoryInput,
 ): PolicyDecision => {
   if (input.mode === "off") return { kind: "passthrough" }
+  // Worker sessions are excluded — the gate exists to push PARENT
+  // sessions toward delegating; once inside a worker, the model IS the
+  // delegation target and direct writes are exactly what it was spawned
+  // to do. Without this short-circuit, a worker classified at tier ≥ E4
+  // (e.g., a long-spec worker prompt) would be unable to write anything.
+  if (input.isWorkerSession === true) return { kind: "passthrough" }
   if (input.lastTier === null || input.lastTier < 4) {
     return { kind: "passthrough" }
   }

@@ -144,6 +144,51 @@ describe("evaluateWorkerMandatoryGate — strict denies, recommend asks", () => 
   })
 })
 
+describe("evaluateWorkerMandatoryGate — worker-session short-circuit (P0 from #54 review)", () => {
+  test("isWorkerSession=true + strict + E5 + 0 active workers → passthrough (worker writes are OK)", () => {
+    const v = evaluateWorkerMandatoryGate({
+      mode: "strict",
+      toolName: "Write",
+      lastTier: 5,
+      activeWorkerCount: 0,
+      isWorkerSession: true,
+    })
+    expect(v.kind).toBe("passthrough")
+  })
+
+  test("isWorkerSession=true + recommend + E4 → passthrough", () => {
+    const v = evaluateWorkerMandatoryGate({
+      mode: "recommend",
+      toolName: "Edit",
+      lastTier: 4,
+      activeWorkerCount: 0,
+      isWorkerSession: true,
+    })
+    expect(v.kind).toBe("passthrough")
+  })
+
+  test("isWorkerSession=false (parent session) + strict + E5 + 0 active → deny (existing behavior preserved)", () => {
+    const v = evaluateWorkerMandatoryGate({
+      mode: "strict",
+      toolName: "Write",
+      lastTier: 5,
+      activeWorkerCount: 0,
+      isWorkerSession: false,
+    })
+    expect(v.kind).toBe("deny")
+  })
+
+  test("isWorkerSession omitted → treated as false (back-compat with existing callers)", () => {
+    const v = evaluateWorkerMandatoryGate({
+      mode: "strict",
+      toolName: "Write",
+      lastTier: 5,
+      activeWorkerCount: 0,
+    })
+    expect(v.kind).toBe("deny")
+  })
+})
+
 describe("evaluateWorkerMandatoryGate — worker lifecycle (active count derived)", () => {
   test("starts=2, stops=1 → 1 active → allow", () => {
     const active = activeWorkerCount({ starts: 2, stops: 1 })
