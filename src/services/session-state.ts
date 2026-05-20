@@ -55,6 +55,12 @@ export interface VerificationLedger {
   readonly next_required_action: string | null;
   readonly subagent_starts: ReadonlyArray<string>;
   readonly subagent_stops: ReadonlyArray<string>;
+  /**
+   * US-14: ISC ids whose `[x]` was flipped by a probe pass during this
+   * session (not by a direct model Edit). Consulted by the Stop
+   * completeness gate's probe-provenance check.
+   */
+  readonly probe_verified_iscs: ReadonlyArray<string>;
 }
 
 /**
@@ -110,6 +116,7 @@ export const EMPTY_SESSION_STATE: SessionStateRecord = {
   source_urls: [],
   subagent_starts: [],
   subagent_stops: [],
+  probe_verified_iscs: [],
   last_workflow: null,
   last_mode: null,
   last_tier: null,
@@ -131,7 +138,8 @@ export type AppendableKey =
   | "tests_run"
   | "source_urls"
   | "subagent_starts"
-  | "subagent_stops";
+  | "subagent_stops"
+  | "probe_verified_iscs";
 
 export interface SessionStateApi {
   readonly get: {
@@ -196,6 +204,7 @@ const appendableKeys = [
   "source_urls",
   "subagent_starts",
   "subagent_stops",
+  "probe_verified_iscs",
 ] as const satisfies ReadonlyArray<AppendableKey>;
 
 const capArray = (values: ReadonlyArray<string>): ReadonlyArray<string> =>
@@ -659,6 +668,7 @@ export const verificationOf = (r: SessionStateRecord): VerificationLedger => ({
   next_required_action: r.next_required_action,
   subagent_starts: r.subagent_starts,
   subagent_stops: r.subagent_stops,
+  probe_verified_iscs: r.probe_verified_iscs,
 });
 
 /** Project the mode-cache slice from a unified record. */

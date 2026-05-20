@@ -71,6 +71,15 @@ export const SessionStateRecordSchema = Schema.Struct({
    * surfaced. (D3)
    */
   regenerate_skipped: Schema.Array(Schema.String),
+  /**
+   * US-14: ids of ISCs whose `[x]` was flipped by a probe pass during this
+   * session (not by a direct model Edit). The Stop completeness gate
+   * consults this against the ISA's `## Test Strategy` `requires_probe`
+   * column — a criterion marked `requires_probe: true` that is checked
+   * but absent from this list is rejected as model-asserted rather than
+   * probe-verified.
+   */
+  probe_verified_iscs: Schema.Array(Schema.String),
 })
 
 export type SessionStateRecordSchemaType = Schema.Schema.Type<
