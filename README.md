@@ -241,6 +241,24 @@ Conventions enforced by the codebase, not just the docs:
 
 ---
 
+## Confirming the methodology
+
+The methodology system (RPI engagement, TDD-first gates, mandatory leveraged workers, right-sized ceremony) is enforced by handlers in `src/events/` and proven end-to-end by the fixture suite in `test/integration/methodology/`. A single script gates the whole thing:
+
+```bash
+bash scripts/confirm-methodology.sh
+```
+
+Exit 0 means:
+
+- `bun run typecheck` is clean
+- `bun test test/integration/methodology/` is green
+- the suite still contains at least 17 fixture tests (today: 19)
+
+On success the last line is `✓ Methodology enforced end-to-end`. On failure the script names the gate that failed and tails the relevant log. `--help` prints usage. `CONFIRM_METHODOLOGY_DRY_RUN=1` skips the heavy steps and only emits the summary — used by the script's own smoke test in `test/scripts/confirm-methodology.test.ts`.
+
+---
+
 ## License
 
 See [`LICENSE`](./LICENSE).
