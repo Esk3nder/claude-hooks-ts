@@ -26,13 +26,14 @@
  * and $HOME prefixes inside the file are still expanded.
  */
 
-import { existsSync, readFileSync, writeFileSync } from "node:fs"
+import { existsSync, readFileSync, writeFileSync, mkdirSync } from "node:fs"
 import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path"
 import { homedir } from "node:os"
 import { parseCriteriaList, type CriterionEntry } from "./criteria.ts"
 import { parseFrontmatter } from "./frontmatter.ts"
 import { runCommandLive } from "../../services/command-runner.ts"
 import { logWarningSync } from "../../services/diagnostics.ts"
+import { withFileLock } from "../../services/file-lock.ts"
 
 /** the classifier — git command timeout. */
 export const GIT_TIMEOUT_MS = 5000
@@ -118,6 +119,33 @@ export const saveState = (stateFile: string, state: CheckpointState): void => {
   } catch (err) {
     logWarningSync(`[checkpoint] failed to write state ${stateFile}: ${String(err)}`)
   }
+}
+
+/**
+ * P0-1 — concurrency-safe load → mutate → save on the checkpoint state
+ * sidecar. Wraps the read-modify-write in `withFileLock` so two parallel
+ * checkpoint runs against the same ISA cannot race and lose an ISC
+ * idempotency record (where the audit's "silent data loss" lived).
+ *
+ * The mutate callback may be sync OR async (git commits are async).
+ * Returns the post-mutate state for callers that need it.
+ */
+export const updateCheckpointState = (
+  stateFile: string,
+  mutate: (prev: CheckpointState) => CheckpointState | Promise<CheckpointState>,
+): Promise<CheckpointState> => {
+  // Ensure the parent dir exists so the lock file's open() can succeed.
+  try {
+    mkdirSync(dirname(stateFile), { recursive: true })
+  } catch {
+    // best-effort
+  }
+  return withFileLock(stateFile, async () => {
+    const prev = loadState(stateFile)
+    const next = await mutate(prev)
+    saveState(stateFile, next)
+    return next
+  })
 }
 
 /** the classifier — git invocation through the shared scoped command runner. */
@@ -293,6 +321,11 @@ const runCheckpointEffect = async (
     skipped,
   })
 
+  // P0-1: result is captured inside the locked mutate callback (which
+  // is the only place where we know the outcome). Declared here so the
+  // closure can write it and the outer `.then` can return it.
+  let checkpointResult: CheckpointResult | null = null
+
   if (!existsSync(isaFilePath)) return empty("missing-file")
 
   const slugDir = dirname(isaFilePath)
@@ -313,60 +346,71 @@ const runCheckpointEffect = async (
   const criteria = parseCriteriaList(content)
   if (criteria.length === 0) return empty("no-criteria")
 
-  const state = loadState(stateFile)
-  const newly = newlyCompletedISCs(criteria, state)
-  if (newly.length === 0) {
-    return { iscIds: [], commits: [], skipped: null }
-  }
-
-  const allowlist = loadAllowlist(root)
-  if (allowlist.length === 0) {
-    logWarningSync("[checkpoint] no repos configured, skipping")
-    return empty("no-allowlist")
-  }
-
-  const commits: Array<{ iscId: string; repo: string; sha: string }> = []
-  const committedIds: string[] = [...state.committed_iscs]
-  const lastCommitSha: Record<string, string> = { ...state.last_commit_sha }
-
-  for (const isc of newly) {
-    let committedThisIsc = false
-    for (const repo of allowlist) {
-      if (!existsSync(repo)) {
-        logWarningSync(`[checkpoint] repo not found: ${repo}`)
-        continue
-      }
-      if (!(await isGitRepo(repo))) {
-        logWarningSync(`[checkpoint] not a git repo: ${repo}`)
-        continue
-      }
-      if (!isPathInside(repo, isaFilePath)) {
-        logWarningSync(`[checkpoint] ISA ${isaFilePath} not inside repo ${repo}, skipping`)
-        continue
-      }
-      if (!(await hasChangesForFile(repo, isaFilePath))) continue
-      const sha = await commitInRepoEffect(repo, isc.id, slug, isc.description, isaFilePath)
-      if (sha !== null) {
-        lastCommitSha[repo] = sha
-        commits.push({ iscId: isc.id, repo, sha })
-        committedThisIsc = true
-      }
+  // P0-1: serialize the entire load → commit → save section under the
+  // per-ISA file lock. Two parallel checkpoint runs against the same
+  // ISA used to race here — both would loadState the same prior
+  // committed_iscs[], each independently commit a different ISC, and
+  // the last saveState would overwrite the other's idempotency record.
+  // The lock retry timeout (lockRetryTimeoutMs from runtime config) is
+  // sized to accommodate git commit duration (default 30s); contention
+  // beyond that surfaces as a LockFailure rather than silent data loss.
+  return updateCheckpointState(stateFile, async (state) => {
+    const newly = newlyCompletedISCs(criteria, state)
+    if (newly.length === 0) {
+      // No-op: return prior state unchanged.
+      checkpointResult = { iscIds: [], commits: [], skipped: null }
+      return state
     }
-    // T1.2 — only mark an ISC as committed when ≥1 repo actually committed.
-    // Previously this push happened unconditionally, so a missing repo or
-    // empty allowlist would brand the ISC "done" in the sidecar and prevent
-    // any later retry.
-    if (committedThisIsc) committedIds.push(isc.id)
-  }
 
-  saveState(stateFile, {
-    committed_iscs: committedIds,
-    last_commit_sha: lastCommitSha,
-  })
+    const allowlist = loadAllowlist(root)
+    if (allowlist.length === 0) {
+      logWarningSync("[checkpoint] no repos configured, skipping")
+      checkpointResult = empty("no-allowlist")
+      return state
+    }
 
-  return {
-    iscIds: newly.map((c) => c.id),
-    commits,
-    skipped: null,
-  }
+    const commits: Array<{ iscId: string; repo: string; sha: string }> = []
+    const committedIds: string[] = [...state.committed_iscs]
+    const lastCommitSha: Record<string, string> = { ...state.last_commit_sha }
+
+    for (const isc of newly) {
+      let committedThisIsc = false
+      for (const repo of allowlist) {
+        if (!existsSync(repo)) {
+          logWarningSync(`[checkpoint] repo not found: ${repo}`)
+          continue
+        }
+        if (!(await isGitRepo(repo))) {
+          logWarningSync(`[checkpoint] not a git repo: ${repo}`)
+          continue
+        }
+        if (!isPathInside(repo, isaFilePath)) {
+          logWarningSync(`[checkpoint] ISA ${isaFilePath} not inside repo ${repo}, skipping`)
+          continue
+        }
+        if (!(await hasChangesForFile(repo, isaFilePath))) continue
+        const sha = await commitInRepoEffect(repo, isc.id, slug, isc.description, isaFilePath)
+        if (sha !== null) {
+          lastCommitSha[repo] = sha
+          commits.push({ iscId: isc.id, repo, sha })
+          committedThisIsc = true
+        }
+      }
+      // T1.2 — only mark an ISC as committed when ≥1 repo actually committed.
+      // Previously this push happened unconditionally, so a missing repo or
+      // empty allowlist would brand the ISC "done" in the sidecar and prevent
+      // any later retry.
+      if (committedThisIsc) committedIds.push(isc.id)
+    }
+
+    checkpointResult = {
+      iscIds: newly.map((c) => c.id),
+      commits,
+      skipped: null,
+    }
+    return {
+      committed_iscs: committedIds,
+      last_commit_sha: lastCommitSha,
+    }
+  }).then(() => checkpointResult ?? empty("missing-file"))
 }
