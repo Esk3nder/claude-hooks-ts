@@ -677,6 +677,36 @@ A researcher's audit of the classifier pipeline surfaced two correctness/securit
 
 ---
 
+### US-23 — CommandRunner env-scrub completeness vs. Bun parent-process injection (P1) 🔴
+
+> **As** a security-conscious operator,
+> **I want** `scrubClaudeEnv` to actually keep `ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN`, and `CLAUDECODE` out of every child process,
+> **So that** spawning a subprocess from inside a Claude Code session cannot leak the parent's Claude env to a third-party tool.
+
+**Why this exists**
+- The pre-existing failing test `test/services/command-runner.test.ts:59 "applies Claude env scrubbing at the runner boundary"` is failing locally and silently passing in CI for the wrong reason: when `bun test` runs inside a Claude Code session, `process.env.CLAUDECODE` is `"1"`. The pipeline in `src/services/command-runner.ts:55-61` (`mergeEnv`) correctly drops `CLAUDECODE` via `scrubClaudeEnv` (`src/services/claude-subprocess.ts:70-82`), but Bun's spawn layer re-injects `CLAUDECODE=1` into the child anyway — observed as `stdout = "::1:oauth-token"` where the test expects `":::oauth-token"`.
+- CI passes because `CLAUDECODE` is absent in the GitHub Actions runner env, so the test happens to pass without proving the security claim. This is a **silent-pass false-negative** — the test is gating against the wrong cause.
+- Production impact: any subprocess spawned by `runCommandLive` inside a Claude Code session (the dispatcher, the doctor, the worker classifier) inherits `CLAUDECODE=1`, potentially `ANTHROPIC_API_KEY` if it survives the same path. The Anthropic env keys ARE scrubbed correctly by our code; `CLAUDECODE` is the leak point.
+
+**Acceptance criteria**
+1. New investigation note in `docs/SECURITY.md` (filed under P0-3) describing the exact Bun behavior — whether `Bun.spawn` ignores explicit `env` for certain keys, or whether `@effect/platform-bun`'s `Command.env` merges rather than replaces.
+2. Fix in `src/services/command-runner.ts` `mergeEnv` (or below) so the child receives **only** the scrubbed env, not a merge-on-top from `process.env`. Likely path: pass `env` to the spawn layer with a wholesale replacement flag, or pre-blank `CLAUDECODE` via `unsetenv` semantics if Bun supports it.
+3. The pre-existing test passes locally even when launched from inside a Claude Code session (`CLAUDECODE=1 bun test`).
+4. Add a positive test that asserts `CLAUDECODE` is absent in the child's `process.env` when the parent has `CLAUDECODE=1` set.
+
+**Implementation notes**
+- Reproduce: `CLAUDECODE=1 bun test test/services/command-runner.test.ts` shows `::1:oauth-token`.
+- Investigation start: check if `@effect/platform-bun`'s `BunCommand` exposes a "clear inherited env" option, or call `Bun.spawn` directly with `env: scrubbed` and verify behavior in isolation.
+- If Bun's behavior is genuinely "always inherit CLAUDECODE", file an upstream issue and ship a Node-runtime fallback for the runner.
+
+**LOC estimate**: ~50 (one-line fix in `mergeEnv` + 2 tests).
+
+**Risk**: medium. The fix may need an upstream Bun PR or a runner-runtime fork — investigate before estimating.
+
+**Dependency**: surfaced during P0-1 verification; should land before P0-3 (SECURITY.md) so the threat model can reference the closure.
+
+---
+
 ## Suggested ship order
 
 1. ✅ **US-3** (classifier guard) — shipped (PR #50)

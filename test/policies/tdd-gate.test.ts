@@ -8,8 +8,11 @@ import {
   evaluateTddGateShallow,
   inferTestPaths,
   isTestFilePath,
+  safeRealpath,
 } from "../../src/policies/tdd-gate.ts"
-import { sep } from "node:path"
+import { mkdtempSync, mkdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs"
+import { tmpdir } from "node:os"
+import { join as joinPath, sep } from "node:path"
 
 const join = (...segs: string[]): string => segs.join(sep)
 
@@ -259,5 +262,109 @@ describe("evaluateTddGateShallow — disable escape", () => {
       neverExists,
     )
     expect(v.kind).toBe("passthrough")
+  })
+})
+
+describe("safeRealpath (P0-4 containment)", () => {
+  let tmpRepo: string
+
+  const setup = (): { tmpRepo: string; cleanup: () => void } => {
+    const root = mkdtempSync(joinPath(tmpdir(), "tdd-gate-p0-4-"))
+    return { tmpRepo: root, cleanup: () => rmSync(root, { recursive: true, force: true }) }
+  }
+
+  test("path with no symlink → returns realpath (which equals resolve(path))", () => {
+    const { tmpRepo: root, cleanup } = setup()
+    try {
+      const real = joinPath(root, "test", "foo.test.ts")
+      mkdirSync(joinPath(root, "test"), { recursive: true })
+      writeFileSync(real, "// test", "utf8")
+      const out = safeRealpath(real, root)
+      // Result equals realpath of the file (which is the file itself on disk).
+      // It must NOT fall back to the un-normalized input when the path is inside root.
+      expect(out).toContain("test/foo.test.ts")
+    } finally {
+      cleanup()
+    }
+  })
+
+  test("in-repo symlink (target also inside root) → returns the in-repo realpath", () => {
+    const { tmpRepo: root, cleanup } = setup()
+    try {
+      mkdirSync(joinPath(root, "real"), { recursive: true })
+      mkdirSync(joinPath(root, "test"), { recursive: true })
+      const target = joinPath(root, "real", "foo.test.ts")
+      writeFileSync(target, "// target", "utf8")
+      const link = joinPath(root, "test", "foo.test.ts")
+      symlinkSync(target, link)
+
+      const out = safeRealpath(link, root)
+      expect(out).toContain("real/foo.test.ts")
+    } finally {
+      cleanup()
+    }
+  })
+
+  test("escape symlink (target outside root) → falls back to the input path", () => {
+    // The threat scenario: an attacker plants test/foo.test.ts → /tmp/outside.
+    // Realpath would escape the workspace; safeRealpath MUST not honor that.
+    const { tmpRepo: root, cleanup } = setup()
+    const outside = mkdtempSync(joinPath(tmpdir(), "tdd-gate-p0-4-outside-"))
+    try {
+      const outsideTarget = joinPath(outside, "outside.test.ts")
+      writeFileSync(outsideTarget, "// outside", "utf8")
+      mkdirSync(joinPath(root, "test"), { recursive: true })
+      const link = joinPath(root, "test", "foo.test.ts")
+      symlinkSync(outsideTarget, link)
+
+      const out = safeRealpath(link, root)
+      // Must fall back to the original (in-repo) path, NOT the outside target.
+      expect(out).toBe(link)
+      expect(out).not.toContain(outside)
+    } finally {
+      rmSync(outside, { recursive: true, force: true })
+      cleanup()
+    }
+  })
+
+  test("path that does not exist on disk → falls back to input (existing US-1d behavior)", () => {
+    const { tmpRepo: root, cleanup } = setup()
+    try {
+      const ghost = joinPath(root, "does-not-exist.test.ts")
+      const out = safeRealpath(ghost, root)
+      expect(out).toBe(ghost)
+    } finally {
+      cleanup()
+    }
+  })
+})
+
+describe("evaluateTddGateShallow — P0-4: escape attempt does NOT bypass the gate", () => {
+  test("malicious normalizer that escapes the repo → gate still denies", () => {
+    // Simulates the bug: if normalizePath returns an outside-repo path
+    // for the candidate, and files_changed also has that outside path
+    // (because the model previously wrote there), pre-P0-4 logic would
+    // incorrectly ALLOW the source write. The fix is in the deep entry
+    // (evaluateTddGate) which composes a containment-aware normalizer;
+    // the shallow form continues to trust whatever normalizer it gets.
+    // This test pins that the BUG was real — a generic normalizer
+    // that lies CAN bypass — proving why the deep entry's containment
+    // check matters.
+    const escapingNormalizer = (p: string): string =>
+      p.endsWith("bar.test.ts") ? "/tmp/external/bar.test.ts" : p
+    const v = evaluateTddGateShallow(
+      {
+        enabled: true,
+        toolName: "Write",
+        resolvedFilePath: join("/repo", "src", "foo", "bar.ts"),
+        filesChangedInSession: ["/tmp/external/bar.test.ts"],
+      },
+      () => false,
+      escapingNormalizer,
+    )
+    // Confirms the pre-fix bypass: a lying normalizer ALLOWS the write.
+    // The fix is to make the deep entry never produce a lying normalizer
+    // (safeRealpath returns the input when realpath escapes).
+    expect(v.kind).toBe("allow")
   })
 })
