@@ -197,12 +197,14 @@ The three P0 bypasses surfaced by the Opus diligence have been fixed in a single
 - **#3 (MCP/unknown tool passthrough) — closed** by `src/policies/engagement-gate.ts:323-345` calling `isUnknownTool` and returning `ask` when no ISA exists yet.
 - **#6 (Bash heredoc bypass) — closed** by `src/policies/worker-mandatory.ts:101-105` extending the gate predicate to include `isBashFileWrite(bashCommand)` matches.
 
-### Enforcement-plane P1s — confirmed, queued
+### Enforcement-plane P1s — CLOSED 2026-05-20
 
-- **#1 — Stale project `<repo>/ISA.md` releases new engagement** (`src/algorithm/isa/lifecycle.ts` `resolveActiveIsa`). A prior task's complete project ISA satisfies a new task's engagement gate without proof the new task was captured.
-- **#5 — `NotebookEdit` not recorded in `files_changed`** (`src/events/post-edit-quality.ts:31` lacks `NotebookEdit`). Notebook writes don't trigger the Stop verification gate.
-- **#4 — `engagement_required=true` + null `expected_isa_path` fails open** (`src/policies/engagement-gate.ts:340`). Corrupt state disables the gate exactly when state says we know engagement is needed.
-- **#7 — `source_ledger_opt_out` persists across prompts** (`src/events/prompt-router.ts:129-133` doesn't reset it). A previous ISA's opt-out can suppress the source-ledger gate for a subsequent task that explicitly requires sources.
+The 4 P1 bypasses surfaced by the Opus diligence are all fixed:
+
+- **#1 (stale project ISA) — closed** by `src/algorithm/isa/lifecycle.ts:194-211` adding a freshness check: when `engagement_required` and `isa_engaged_at` are set, `resolveActiveIsa` only honors the project ISA when its mtime ≥ `Date.parse(isa_engaged_at)`. Legacy callers (no `isa_engaged_at`) keep the previous "any project ISA wins" behavior.
+- **#4 (corrupt-state fail-open) — closed** by `src/policies/engagement-gate.ts:363-381` returning `kind: "ask"` with a repair message when `engagement_required=true` AND `expected_isa_path === null`. Pre-fix this returned passthrough, disabling the gate exactly when state said engagement was required.
+- **#5 (NotebookEdit invisible to files_changed) — closed** by `src/events/post-edit-quality.ts:31-41` adding `NotebookEdit` to `EDIT_TOOLS` and `src/events/post-edit-quality.ts:79-85` using the canonical `mutablePathFromInput` from `src/policies/write-class.ts` to read `notebook_path` as well as `file_path`.
+- **#7 (source_ledger_opt_out carryover) — closed** by `src/events/prompt-router.ts:129-143` extending the requires-web-sources branch of `workflowPatch` to include `source_ledger_opt_out: false`. Pre-fix, an opt-out from a prior ISA would leak into a subsequent web-source-required task and suppress the Stop source-ledger gate.
 
 ### Enforcement-plane P2s — documented for completeness
 

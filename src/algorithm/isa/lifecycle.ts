@@ -19,7 +19,7 @@
  * Stop/PostToolUse semantics match the prior in-handler logic byte-for-byte.
  */
 import { Effect } from "effect"
-import { existsSync, readFileSync, writeFileSync } from "node:fs"
+import { existsSync, readFileSync, statSync, writeFileSync } from "node:fs"
 import type { Classification, Tier } from "../../services/inference.ts"
 import type { SessionStateRecord } from "../../services/session-state.ts"
 import { runCheckpoint } from "./checkpoint.ts"
@@ -144,6 +144,16 @@ export type ResolveActiveIsaRecord = Pick<
   | "last_tier"
 > & {
   /**
+   * Enforcement-plane P1 #1 — when present, `resolveActiveIsa` uses
+   * this as the freshness threshold for the project-ISA shortcut: a
+   * `<repo>/ISA.md` only satisfies the engagement gate when its
+   * mtime ≥ `Date.parse(isa_engaged_at)`. Legacy callers without
+   * engagement bookkeeping keep the previous "any project ISA wins"
+   * behavior.
+   */
+  readonly isa_engaged_at?: string | null
+} & {
+  /**
    * Optional — only the Stop completeness gate (US-14) reads this; other
    * consumers don't need to populate it.
    *
@@ -183,7 +193,45 @@ export interface ResolveActiveIsaInput {
 export const resolveActiveIsa = (input: ResolveActiveIsaInput): string | null => {
   const { sessionRoot, record } = input
   const projectIsa = findProjectIsa(sessionRoot)
-  if (projectIsa !== null && existsSync(projectIsa)) return projectIsa
+  if (projectIsa !== null) {
+    // Enforcement-plane P1 #1 — stale-project-ISA freshness check.
+    // A pre-existing <repo>/ISA.md from a prior task must NOT
+    // satisfy a new engaged session's gate without proof it was
+    // touched in the current engagement. We approximate "touched in
+    // this engagement" by mtime ≥ isa_engaged_at.
+    //
+    // Single statSync replaces existsSync + statSync — `statSync`
+    // throws ENOENT when the file is missing; the try/catch handles
+    // that as the existence check (review #1 follow-up).
+    let stat: ReturnType<typeof statSync> | null = null
+    try {
+      stat = statSync(projectIsa)
+    } catch {
+      // Project ISA not on disk — fall through to expected/null.
+      stat = null
+    }
+    if (stat !== null) {
+      if (!record.engagement_required) return projectIsa
+      // Legacy callers may omit isa_engaged_at; preserve prior
+      // "project ISA wins" behavior in that case.
+      if (record.isa_engaged_at === null || record.isa_engaged_at === undefined) {
+        return projectIsa
+      }
+      const engagedAt = Date.parse(record.isa_engaged_at)
+      // Permissive NaN handling (review #2 — intentional): when
+      // `isa_engaged_at` is set but unparseable (corrupt frontmatter,
+      // unexpected format), we treat it as "no engagement bookkeeping"
+      // and honor the project ISA, matching the explicit-null branch
+      // above. Strict-fail to null on NaN would deny the project ISA
+      // shortcut even for sessions whose engagement metadata happens
+      // to be malformed in a non-security-relevant way; the
+      // engagement-gate corrupt-state ask (P1 #4) already catches
+      // the dangerous case at the gate level.
+      if (!Number.isFinite(engagedAt)) return projectIsa
+      if (stat.mtimeMs >= engagedAt) return projectIsa
+      // Stale — fall through to expected ISA / null.
+    }
+  }
 
   const expected = resolveExpectedIsaAbsolute(sessionRoot, record)
   if (expected !== null && existsSync(expected)) return expected

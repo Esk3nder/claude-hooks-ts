@@ -8,6 +8,7 @@ import { SessionState, type VerificationStatus } from "../services/session-state
 import { makeShellCommand } from "../schema/branded.ts"
 import { isIsaFilePath } from "../algorithm/isa/locate.ts"
 import { runCheckpoint } from "../algorithm/isa/checkpoint.ts"
+import { mutablePathFromInput } from "../policies/write-class.ts"
 import { handlePostToolUseIsaEffects } from "../algorithm/isa/lifecycle.ts"
 import { parseFrontmatter } from "../algorithm/isa/frontmatter.ts"
 import { readFileSync } from "node:fs"
@@ -28,7 +29,17 @@ import {
   urlsFromToolResponse,
 } from "../policies/tool-evidence.ts"
 
-const EDIT_TOOLS = new Set(["Edit", "Write", "MultiEdit", "Update"])
+// Enforcement-plane P1 #5: NotebookEdit added so notebook writes
+// also set files_changed and trigger Stop verification. Pre-fix,
+// a notebook-only session never tripped the "files changed but no
+// verification" gate. Matches WRITE_CLASS_TOOLS in write-class.ts.
+const EDIT_TOOLS = new Set([
+  "Edit",
+  "Write",
+  "MultiEdit",
+  "Update",
+  "NotebookEdit",
+])
 
 interface FormatterSpec {
   readonly probe: { cmd: string; args: ReadonlyArray<string> }
@@ -73,9 +84,11 @@ const FORMATTERS: ReadonlyArray<{
 ]
 
 const filePathFromInput = (input: unknown): string | null => {
-  if (typeof input !== "object" || input === null) return null
-  const fp = (input as { file_path?: unknown }).file_path
-  return typeof fp === "string" ? fp : null
+  // Enforcement-plane P1 #5: also read `notebook_path` for
+  // NotebookEdit. Uses the canonical `mutablePathFromInput` helper
+  // from `src/policies/write-class.ts` to stay in sync with the
+  // pretool-policy write-path reducer.
+  return mutablePathFromInput(input)
 }
 
 const commandFromInput = (input: unknown): string | null => {
