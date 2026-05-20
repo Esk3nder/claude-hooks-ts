@@ -27,6 +27,7 @@
  */
 
 import type { PolicyDecision } from "./types.ts"
+import { isBashFileWrite } from "./write-class.ts"
 
 export type WorkerMandatoryMode = "off" | "recommend" | "strict"
 
@@ -41,6 +42,18 @@ export interface WorkerMandatoryInput {
    * NEVER block a worker's own writes; the worker IS the delegation
    * target. Defaults to false (parent session). */
   readonly isWorkerSession?: boolean
+  /**
+   * Enforcement-plane P0 #6: when `toolName === "Bash"`, the bash command
+   * string. Used to detect heredoc-style file writes (`cat > x <<EOF`,
+   * `tee`, `sed -i`, etc.) that bypassed worker-mandatory strict mode
+   * before this field existed. Pre-P0 fix, the gate trusted
+   * `destructive-commands` to handle Bash, but that policy only catches
+   * CATASTROPHIC patterns, not arbitrary file writes.
+   *
+   * Optional for back-compat: callers that don't supply it preserve
+   * the prior toolName-only behavior (Bash always passes through).
+   */
+  readonly bashCommand?: string
 }
 
 /** Tool names that are subject to the gate when above E4.
@@ -95,7 +108,14 @@ export const evaluateWorkerMandatoryGate = (
   if (input.lastTier === null || input.lastTier < 4) {
     return { kind: "passthrough" }
   }
-  if (!WRITE_TOOLS.has(input.toolName)) {
+  // Enforcement-plane P0 #6: Bash with a write-class command is treated
+  // exactly like a direct write tool. Without this, the model could
+  // bypass strict mode via `cat > src/x.ts <<EOF\n...\nEOF`.
+  const isBashWriteClass =
+    input.toolName === "Bash" &&
+    typeof input.bashCommand === "string" &&
+    isBashFileWrite(input.bashCommand)
+  if (!WRITE_TOOLS.has(input.toolName) && !isBashWriteClass) {
     return { kind: "passthrough" }
   }
   if (input.activeWorkerCount > 0) {

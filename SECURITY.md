@@ -144,7 +144,13 @@ Each entry below names the mitigation, what it defends against, where it lives, 
 
 - **Where:** `src/policies/engagement-gate.ts:233` (pure shallow) + `:331` (deep entry).
 - **What:** When the classifier flags ALGORITHM tier ≥3, non-ISA writes are denied until the expected ISA file exists. Forces the model to scaffold the ISA artifact before doing implementation work.
-- **Known limitations:** See "Known gaps" — the Opus enforcement-plane diligence confirmed several bypasses (#1 stale project ISA, #2 `Update`/`NotebookEdit` skip the write-path policies, #3 unknown MCP tools pass through, #4 corrupt state fails open).
+- **Unknown / MCP tool ask during pre-ISA engagement** (enforcement-plane P0 #3, closed): `src/policies/engagement-gate.ts:323` — pre-fix this fell through to passthrough, letting an MCP write-shaped tool (`mcp__filesystem__write_file`, `mcp__repo__apply_patch`) bypass the no-implementation-before-ISA invariant. Now: `evaluateEngagementGateShallow` calls `isUnknownTool(toolName)` from `src/policies/write-class.ts:120` and returns `ask` when engagement is required and no ISA exists yet, so the user explicitly confirms read-only intent or scaffolds the ISA first.
+- **Known limitations:** See "Known gaps" — the Opus enforcement-plane diligence on 2026-05-20 confirmed several remaining bypasses (#1 stale project ISA, #4 corrupt state fails open).
+
+### Unified write-class tool surface (P0 #2 + #6 closed)
+
+- **Where:** `src/policies/write-class.ts:22` (WRITE_CLASS_TOOLS) + `:39` (mutablePathFromInput) + `:92` (isBashFileWrite) + `:120` (isUnknownTool).
+- **What:** Single source of truth for "is this tool a file-writing operation?". Before this module, each enforcement gate rolled its own definition; `Update` / `NotebookEdit` skipped the write-path policies (`src/events/pretool-policy.ts:148` switch routed only Edit/Write/MultiEdit), and Bash heredoc writes bypassed worker-mandatory strict (`src/policies/worker-mandatory.ts:99` checked toolName only, not Bash commands). Both closed: `pretool-policy.ts` now routes Update + NotebookEdit through the same write-path reducer (extracting `notebook_path` for the latter via `mutablePathFromInput`), and `worker-mandatory.ts` accepts an optional `bashCommand` field that triggers `isBashFileWrite` detection on `cat > x <<EOF`, `tee`, `sed -i`, `python -c open().write`, `node -e writeFileSync`, `cp`, `mv`, `touch`, `git apply`, and `dd of=`.
 
 ### Worker capability bounds
 
@@ -183,13 +189,13 @@ These are the things we have NOT closed yet. Each is filed in the backlog with a
 
 `src/services/command-runner.ts:55-61` `mergeEnv` correctly drops `CLAUDECODE` from the merged env via `scrubClaudeEnv`. But Bun's spawn layer re-injects `CLAUDECODE=1` into the child when the parent is a Claude Code session, observable via the failing test at `test/services/command-runner.test.ts:78`. Net effect: the `CLAUDECODE` marker DOES leak to subprocesses despite the documented scrub. `ANTHROPIC_API_KEY` and `ANTHROPIC_AUTH_TOKEN` appear to be scrubbed correctly — they are not re-injected by Bun — but the test we'd use to prove it is undermined by the `CLAUDECODE` leak. Fix is filed; PR pending investigation of whether `@effect/platform-bun`'s `Command.env` merges-on-top or replaces wholesale.
 
-### Enforcement-plane P0s — confirmed by external review + Opus diligence
+### Enforcement-plane P0s — CLOSED 2026-05-20
 
-The following bypasses were independently confirmed against `main` on 2026-05-20 and filed for fix:
+The three P0 bypasses surfaced by the Opus diligence have been fixed in a single unified-write-class refactor (see Mitigations above). The fixes:
 
-- **#2 — `Update` / `NotebookEdit` skip the write-path policies.** `src/events/pretool-policy.ts:146-151` only routes `Edit` / `Write` / `MultiEdit` through `evaluateEditOrWrite`. `Update` and `NotebookEdit` fall through to passthrough. Net effect: an `Update` tool with `file_path=.env` is NOT denied by secret-path checks, settings-self-protection, generated-files, lockfile-paths, or protected-paths.
-- **#3 — Unknown / MCP write tools pass through during pre-ISA engagement.** `src/policies/engagement-gate.ts:323` defaults unknown tools to passthrough. An MCP tool like `mcp__filesystem__write_file` can write before the ISA is scaffolded, violating the methodology invariant.
-- **#6 — Bash heredoc writes bypass worker-mandatory strict mode.** `src/policies/worker-mandatory.ts:56-62` lists only direct write tools; Bash is intentionally omitted on the assumption that `destructive-commands.ts` handles it — but `destructive-commands.ts:7-30` has no heredoc / `>` redirect patterns. Net effect: at ALGORITHM tier ≥E4 strict, `Bash → cat > src/foo.ts <<EOF` writes the file without a worker.
+- **#2 (`Update`/`NotebookEdit` bypass) — closed** by `src/events/pretool-policy.ts:148-152` extending the switch to route Update + NotebookEdit through `evaluateUpdateOrNotebookEdit`, which uses `mutablePathFromInput` to read `notebook_path` for NotebookEdit.
+- **#3 (MCP/unknown tool passthrough) — closed** by `src/policies/engagement-gate.ts:323-345` calling `isUnknownTool` and returning `ask` when no ISA exists yet.
+- **#6 (Bash heredoc bypass) — closed** by `src/policies/worker-mandatory.ts:101-105` extending the gate predicate to include `isBashFileWrite(bashCommand)` matches.
 
 ### Enforcement-plane P1s — confirmed, queued
 

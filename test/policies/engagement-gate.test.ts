@@ -167,9 +167,26 @@ describe("evaluateEngagementGate — passthrough cases", () => {
     expect(v.kind).toBe("passthrough")
   })
 
-  test("Unknown tool name (e.g. MCP tool) → passthrough", () => {
+  test("Unknown tool name (e.g. MCP tool) during pre-ISA engagement → ask (enforcement-plane P0 #3)", () => {
+    // Pre-P0-fix this returned passthrough — Opus diligence on
+    // 2026-05-20 confirmed that an MCP write-shaped tool could
+    // therefore bypass the "no implementation before ISA" invariant.
+    // Now: unknown tools `ask` until the user confirms or the ISA
+    // is scaffolded. Read-only MCP tools (`mcp__docs__search` etc.)
+    // are unaffected when invoked AFTER the ISA exists; see the
+    // engaged-released test in enforcement-plane-p0s.test.ts.
     const v = evaluateEngagementGate({
       ...baseCtx,
+      toolName: "mcp__weather__get_forecast",
+      toolInput: {},
+    })
+    expect(v.kind).toBe("ask")
+  })
+
+  test("Unknown tool name after ISA exists → passthrough (engagement released)", () => {
+    const v = evaluateEngagementGate({
+      ...baseCtx,
+      anyAcceptedIsaExists: true,
       toolName: "mcp__weather__get_forecast",
       toolInput: {},
     })

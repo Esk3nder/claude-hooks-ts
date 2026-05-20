@@ -50,6 +50,7 @@ import { resolveExpectedIsaAbsolute } from "../algorithm/isa/path-contract.ts"
 import {
   normalizeExpectedIsaPath,
 } from "../algorithm/isa/tier-policy.ts"
+import { isUnknownTool } from "./write-class.ts"
 
 export interface EngagementGateInput {
   readonly currentCwd: string
@@ -317,6 +318,28 @@ export const evaluateEngagementGateShallow = (
         ctx.displayMkdirDir,
         ctx.displayIsaAbsolutePath ?? null,
       ),
+    }
+  }
+
+  // Enforcement-plane P0 #3: unknown / MCP tools during pre-ISA
+  // engagement. Without this branch, any tool not in
+  // ALLOWED_TOOLS_DURING_ENGAGEMENT (and not in our known write/Bash
+  // branches above) silently passed through. An MCP filesystem-write
+  // tool could therefore bypass the "no implementation before ISA"
+  // invariant entirely.
+  //
+  // Decision: `ask`, not `deny`. Real users have read-only MCP servers
+  // (`mcp__docs__search`, `mcp__linear__get_issue`); blocking outright
+  // would force a config file. Ask lets the user confirm once. A
+  // future story can add an explicit read-only allowlist.
+  if (isUnknownTool(ctx.toolName)) {
+    return {
+      kind: "ask",
+      reason:
+        `Unknown tool \`${ctx.toolName}\` invoked during pre-ISA engagement. ` +
+        `Confirm this tool does not mutate files before the ISA is scaffolded. ` +
+        `If you are sure it's read-only, you may approve; otherwise create the ISA first ` +
+        `at ${ctx.displayIsaPath ?? "the expected ISA path"} and then retry.`,
     }
   }
 
