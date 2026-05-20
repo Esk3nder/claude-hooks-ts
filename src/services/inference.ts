@@ -180,12 +180,40 @@ export const parseClassifierResponse = (
     return { _tag: "fail", message: "ALGORITHM mode requires a tier" }
   }
   if (mode !== "ALGORITHM") tier = null
-  // B6: whitespace-only mode_reason was passing the length check, leaking
-  // useless " " strings into additionalContext. Trim before length check.
-  const trimmedReason =
-    typeof r.mode_reason === "string" ? r.mode_reason.trim() : ""
-  const reason = trimmedReason.length > 0 ? trimmedReason : "(no reason given)"
+  // B6 + US-21: sanitize the model-supplied mode_reason before it is
+  // interpolated into `additionalContext`. Strips control characters and
+  // newlines (defends against fake `ENGAGE:` line injection), collapses
+  // whitespace, caps length. See sanitizeClassifierReason.
+  const rawReason = typeof r.mode_reason === "string" ? r.mode_reason : ""
+  const reason = sanitizeClassifierReason(rawReason)
   return { _tag: "ok", mode, tier, reason }
+}
+
+/**
+ * US-21 — sanitize Sonnet's `mode_reason` before it lands in
+ * `additionalContext`. Sonnet's output is influenced by user prompt
+ * content; a crafted prompt could plausibly nudge the model to emit a
+ * `mode_reason` containing newlines and a fake `ENGAGE:` directive line.
+ * The downstream renderer interpolates the reason directly into a single
+ * additionalContext line, so any newline becomes a new context line the
+ * model reads as authoritative.
+ *
+ * Defense-in-depth (the rubric is strict JSON; this is the second wall):
+ *   • strip ASCII control characters (\x00-\x1f, \x7f) — replace with space
+ *   • collapse runs of whitespace
+ *   • trim
+ *   • cap at 180 chars (one screen line; ample for a Sonnet reason)
+ *   • empty after sanitize → "(no reason given)"
+ *
+ * Pure function. Exported so tests and any future consumers (e.g.,
+ * classifier-telemetry) can share the contract.
+ */
+export const sanitizeClassifierReason = (raw: string): string => {
+  // Control char range \x00-\x1f plus \x7f (DEL). Replace with space so
+  // adjacent legitimate words don't smush together.
+  const noCtrl = raw.replace(/[\x00-\x1f\x7f]+/g, " ")
+  const collapsed = noCtrl.replace(/\s+/g, " ").trim().slice(0, 180)
+  return collapsed.length > 0 ? collapsed : "(no reason given)"
 }
 
 export interface ClassifyOptions {
