@@ -1,4 +1,4 @@
-import { Effect, Schema } from "effect"
+import { Effect, Option, Schema } from "effect"
 import type { HookPayload } from "../schema/payloads.ts"
 import type { HookDecision } from "../schema/decisions.ts"
 import { NO_DECISION } from "../schema/decisions.ts"
@@ -20,6 +20,10 @@ import { evaluateLockfile } from "../policies/lockfile-paths.ts"
 import { shouldRewrite, rewriteTestCommand } from "../policies/test-output-rewrite.ts"
 import { evaluateEngagementGate } from "../policies/engagement-gate.ts"
 import { evaluateTddGate } from "../policies/tdd-gate.ts"
+import {
+  activeWorkerCount,
+  evaluateWorkerMandatoryGate,
+} from "../policies/worker-mandatory.ts"
 import { safeResolvePath } from "../services/path-resolution.ts"
 import { evaluateWorkerTaskPrompt } from "../policies/worker-contract.ts"
 import { evaluateWorkerToolPermission } from "../policies/worker-permissions.ts"
@@ -258,6 +262,30 @@ export const handlePreToolUse = (
           })
           if (tddVerdict.kind !== "passthrough") {
             return toHookDecision(tddVerdict)
+          }
+        }
+        // US-2: mandatory worker delegation. Off by default. When the
+        // session is ALGORITHM tier ≥ E4 and the model attempts a direct
+        // Write/Edit/etc. with NO active worker (subagent_starts ===
+        // subagent_stops), the gate either asks ("recommend") or denies
+        // ("strict"). A live worker grants passthrough. Worker sessions
+        // (CLAUDE_HOOKS_WORKER_ID set) are always passthrough.
+        if (config.workerMandatoryMode !== "off") {
+          const verdict = evaluateWorkerMandatoryGate({
+            mode: config.workerMandatoryMode,
+            toolName: payload.tool_name,
+            lastTier: record.last_tier,
+            activeWorkerCount: activeWorkerCount({
+              starts: record.subagent_starts.length,
+              stops: record.subagent_stops.length,
+            }),
+            // CLAUDE_HOOKS_WORKER_ID is set by the harness on subagent
+            // processes; when present, this PreToolUse is happening
+            // inside a worker session and the gate must short-circuit.
+            isWorkerSession: Option.isSome(config.workerIdOverride),
+          })
+          if (verdict.kind !== "passthrough") {
+            return toHookDecision(verdict)
           }
         }
       }

@@ -26,7 +26,17 @@ export interface RuntimeConfig {
   readonly workerEnforceReadOnlyRoles: boolean
   readonly workerWriteIsolation: WorkerWriteIsolation
   readonly workerIdOverride: Option.Option<string>
+  /** US-2: mandatory-worker-delegation gate mode. When ALGORITHM tier ≥ 4
+   * and the model attempts a direct Write/Edit/etc. with no active worker,
+   * the gate either:
+   *  - "off"        : passthrough (default)
+   *  - "recommend"  : ask, with a remediation hint
+   *  - "strict"     : deny, with a remediation hint
+   * Env: CLAUDE_HOOKS_WORKER_MANDATORY_MODE. */
+  readonly workerMandatoryMode: WorkerMandatoryMode
 }
+
+export type WorkerMandatoryMode = "off" | "recommend" | "strict"
 
 export interface RuntimeConfigApi {
   readonly load: () => Effect.Effect<RuntimeConfig>
@@ -62,6 +72,21 @@ export const DEFAULT_RUNTIME_CONFIG: RuntimeConfig = {
   workerEnforceReadOnlyRoles: true,
   workerWriteIsolation: "serial",
   workerIdOverride: Option.none(),
+  workerMandatoryMode: "off",
+}
+
+const envWorkerMandatoryMode = (
+  value: string | undefined,
+  fallback: WorkerMandatoryMode,
+): WorkerMandatoryMode => {
+  switch (value) {
+    case "off":
+    case "recommend":
+    case "strict":
+      return value
+    default:
+      return fallback
+  }
 }
 
 const envFlag = (value: string | undefined): boolean =>
@@ -147,6 +172,10 @@ export const runtimeConfigFromEnv = (
     base.workerWriteIsolation,
   ),
   workerIdOverride: nonEmpty(env["CLAUDE_HOOKS_WORKER_ID"]),
+  workerMandatoryMode: envWorkerMandatoryMode(
+    env["CLAUDE_HOOKS_WORKER_MANDATORY_MODE"],
+    base.workerMandatoryMode,
+  ),
 })
 
 export const loadRuntimeConfig: Effect.Effect<RuntimeConfig> = Effect.gen(function* () {
@@ -178,6 +207,7 @@ export interface RuntimeConfigSummary {
   readonly workerRequireStructuredResult: boolean
   readonly workerEnforceReadOnlyRoles: boolean
   readonly workerWriteIsolation: WorkerWriteIsolation
+  readonly workerMandatoryMode: WorkerMandatoryMode
 }
 
 export const summarizeRuntimeConfig = (
@@ -202,6 +232,7 @@ export const summarizeRuntimeConfig = (
   workerRequireStructuredResult: cfg.workerRequireStructuredResult,
   workerEnforceReadOnlyRoles: cfg.workerEnforceReadOnlyRoles,
   workerWriteIsolation: cfg.workerWriteIsolation,
+  workerMandatoryMode: cfg.workerMandatoryMode,
 })
 
 const makeLive = Effect.sync(() => {
