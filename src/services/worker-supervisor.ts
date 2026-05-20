@@ -174,13 +174,37 @@ const runGitText = (
       ),
     )
 
-const workerPatchPath = (repoRoot: string, workerId: string): string =>
-  path.join(repoRoot, ".claude-hooks", "state", "workers", "patches", `${sanitizedPathPart(workerId)}.patch`)
+/**
+ * P1-2: patch files are named with the attempt number so each retry
+ * lands at its own path on disk. Before this change, every attempt
+ * wrote `<workerId>.patch`; a second attempt overwrote the first, and
+ * if attempt 1 had partially captured an edit that diagnosing the
+ * failure would have needed, that evidence was gone. Aggregation and
+ * integration still read `run.patch_path` directly, which always holds
+ * the latest attempt's path — older attempts remain on disk for audit.
+ *
+ * Attempts are 1-indexed (`runs.markRunning` increments from 0 → 1
+ * on first run, → 2 on retry, etc.).
+ */
+const workerPatchPath = (
+  repoRoot: string,
+  workerId: string,
+  attempt: number,
+): string =>
+  path.join(
+    repoRoot,
+    ".claude-hooks",
+    "state",
+    "workers",
+    "patches",
+    `${sanitizedPathPart(workerId)}.${Math.max(1, Math.trunc(attempt))}.patch`,
+  )
 
 const writeWorkerPatch = (
   repoRoot: string,
   workerId: string,
   diff: string,
+  attempt: number,
 ): Effect.Effect<string | undefined, WorkerRunError> => {
   if (diff.trim().length === 0) return Effect.succeed(undefined)
   if (Buffer.byteLength(diff, "utf8") >= MAX_WORKER_PATCH_BYTES) {
@@ -192,7 +216,7 @@ const writeWorkerPatch = (
       ),
     )
   }
-  const patchPath = workerPatchPath(repoRoot, workerId)
+  const patchPath = workerPatchPath(repoRoot, workerId, attempt)
   return Effect.tryPromise({
     try: async () => {
       await fs.mkdir(path.dirname(patchPath), { recursive: true })
@@ -317,6 +341,7 @@ const runWithWorktreeIsolation = (
   executor: WorkerExecutor["Type"],
   job: WorkerExecutionJob,
   isolation: WorkerIsolation,
+  attempt: number,
 ): Effect.Effect<WorkerExecutionOutcome, WorkerRunError> => {
   const sourceCwd = job.cwd ?? process.cwd()
   return Effect.acquireUseRelease(
@@ -349,7 +374,7 @@ const runWithWorktreeIsolation = (
             { stdoutMaxBytes: 200_000 },
           ),
         )
-        const patchPath = yield* writeWorkerPatch(repoRoot, job.worker_id, diff)
+        const patchPath = yield* writeWorkerPatch(repoRoot, job.worker_id, diff, attempt)
         return {
           result,
           metadata: {
@@ -551,10 +576,24 @@ export const WorkerSupervisorLiveBase = (
             worker_id: workerId,
             timeout_ms: timeoutMs,
           }
-          const execute: Effect.Effect<WorkerExecutionOutcome, WorkerRunError> =
+          // P1-2: `execute` is a function of the attempt index rather
+          // than a fixed Effect, so each retry can stamp the captured
+          // patch with its attempt number. The attempt counter is
+          // sourced from `runs.markRunning`, which is the canonical
+          // increment point — the run record's `attempts` field is the
+          // source of truth (1-indexed after the first markRunning).
+          const execute = (
+            attemptIndex: number,
+          ): Effect.Effect<WorkerExecutionOutcome, WorkerRunError> =>
             payload.mode === "write-allowed" &&
               config.workerWriteIsolation === "worktree"
-              ? runWithWorktreeIsolation(runner, executor, executionJob, config.workerWriteIsolation)
+              ? runWithWorktreeIsolation(
+                  runner,
+                  executor,
+                  executionJob,
+                  config.workerWriteIsolation,
+                  attemptIndex,
+                )
               : executor.run(executionJob).pipe(
                   Effect.map((result) => ({
                     result,
@@ -565,23 +604,23 @@ export const WorkerSupervisorLiveBase = (
                 )
           const attempt: Effect.Effect<WorkerRunType, WorkerRunError | EventStoreError> =
             runs.markRunning(workerId).pipe(
-            Effect.zipRight(
-              execute.pipe(
-                Effect.timeoutFail({
-                  duration: `${timeoutMs} millis`,
-                  onTimeout: () =>
-                    workerError(
-                      "worker-supervisor.timeout",
-                      `worker timed out after ${timeoutMs}ms`,
-                      workerId,
-                    ),
-                }),
+              Effect.flatMap((running) =>
+                execute(running.attempts).pipe(
+                  Effect.timeoutFail({
+                    duration: `${timeoutMs} millis`,
+                    onTimeout: () =>
+                      workerError(
+                        "worker-supervisor.timeout",
+                        `worker timed out after ${timeoutMs}ms`,
+                        workerId,
+                      ),
+                  }),
+                ),
               ),
-            ),
-            Effect.flatMap(({ result, metadata }) =>
-              runs.complete(workerId, result, undefined, metadata),
-            ),
-          )
+              Effect.flatMap(({ result, metadata }) =>
+                runs.complete(workerId, result, undefined, metadata),
+              ),
+            )
           const isolatedAttempt =
             payload.mode === "write-allowed" && config.workerWriteIsolation === "serial"
               ? writeGate.withPermits(1)(attempt)
