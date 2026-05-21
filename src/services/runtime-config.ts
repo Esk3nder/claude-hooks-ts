@@ -72,7 +72,17 @@ export const DEFAULT_RUNTIME_CONFIG: RuntimeConfig = {
   workerEnforceReadOnlyRoles: true,
   workerWriteIsolation: "serial",
   workerIdOverride: Option.none(),
-  workerMandatoryMode: "off",
+  // P1-1: default flipped from "off" → "recommend". Pre-fix, the
+  // mandatory-delegation gate was opt-in and the methodology's
+  // "deep work should be delegated to workers" promise was
+  // documentation rather than enforcement. "recommend" is the
+  // non-blocking variant — it returns `ask` (not `deny`) when an
+  // E4+ session attempts a direct Write/Edit with no active worker,
+  // so the user is prompted but never silently overridden. Operators
+  // who genuinely don't want the prompt can set
+  // CLAUDE_HOOKS_WORKER_MANDATORY_MODE=off to restore the prior
+  // behavior.
+  workerMandatoryMode: "recommend",
 }
 
 const envWorkerMandatoryMode = (
