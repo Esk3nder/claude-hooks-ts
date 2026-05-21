@@ -19,6 +19,7 @@ const failingWorkerRuns = Layer.succeed(
   WorkerRuns.of({
     createQueued: () => Effect.die("unused"),
     markRunning: () => Effect.die("unused"),
+    recordBaselineRef: () => Effect.die("unused"),
     markBlocked: () => Effect.die("unused"),
     complete: () => Effect.die("unused"),
     markIntegrated: () => Effect.die("unused"),
@@ -54,6 +55,7 @@ const workerRunsWith = (runs: ReadonlyArray<WorkerRun>) =>
     WorkerRuns.of({
       createQueued: () => Effect.die("unused"),
       markRunning: () => Effect.die("unused"),
+      recordBaselineRef: () => Effect.die("unused"),
       markBlocked: () => Effect.die("unused"),
       complete: () => Effect.die("unused"),
       markIntegrated: () => Effect.die("unused"),

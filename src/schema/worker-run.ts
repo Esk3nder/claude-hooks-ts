@@ -91,6 +91,16 @@ export const WorkerRun = Schema.Struct({
   workspace_path: Schema.optional(Schema.String),
   patch_path: Schema.optional(Schema.String),
   patch_changed_files: Schema.optional(Schema.Array(Schema.String)),
+  /**
+   * P0-2: parent-cwd tracked-tree ref captured at SubagentStart for
+   * read-only workers (via `git stash create` — falls back to "HEAD"
+   * when the tree is clean). Compared against an end-of-run snapshot
+   * at SubagentStop to detect mutations the worker did not declare in
+   * `changes_made`. Optional: absent when the parent cwd wasn't a git
+   * repo at start, when CommandRunner wasn't in context, or for write
+   * workers (which use the patch-capture path instead).
+   */
+  baseline_ref: Schema.optional(Schema.String),
   output: Schema.optional(WorkerResult),
   result: Schema.optional(WorkerResult),
   failure_reason: Schema.optional(Schema.String),

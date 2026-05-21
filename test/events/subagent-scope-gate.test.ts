@@ -16,6 +16,7 @@ import { EventStoreLive } from "../../src/services/event-store.ts"
 import { RuntimeConfigTest } from "../../src/services/runtime-config.ts"
 import { WorkerRuns, WorkerRunsLive, scopedWorkerRunId } from "../../src/services/worker-runs.ts"
 import { appendWorkerContract } from "../../src/policies/worker-contract.ts"
+import { CommandRunnerTest, type CommandRunResult } from "../../src/services/command-runner.ts"
 
 const decode = (raw: unknown) => Schema.decodeUnknownSync(NormalizedHookEvent)(raw)
 const decodeStart = (raw: unknown): NormalizedSubagentStart =>
@@ -247,6 +248,176 @@ describe("VAL-M4-003 subagent-scope-gate", () => {
     const d = await Effect.runPromise(runContractedStop("architect", "ok"))
     expect("decision" in d).toBe(true)
     if ("decision" in d) expect(d.decision).toBe("block")
+  })
+
+  // P0-2: read-only worker silent mutation detection. Pre-fix, a
+  // read-only worker that mutated a parent-cwd tracked file while
+  // reporting `changes_made: []` completed cleanly — only the
+  // self-report flagged it, and a worker could simply omit. After
+  // the fix, `recordWorkerStart` snapshots the parent cwd's tracked
+  // tree via `git stash create` (recorded as `baseline_ref` on the
+  // run), and `recordWorkerStop` re-snapshots + diffs. Any drift not
+  // also in `changes_made` blocks the SubagentStop.
+  test("read-only worker mutating tracked files outside changes_made → block (P0-2)", async () => {
+    const root = mkdtempSync(join(tmpdir(), "chts-p0-2-drift-"))
+    const beforeStash = "1111111111111111111111111111111111111111"
+    const afterStash = "2222222222222222222222222222222222222222"
+    let stashCalls = 0
+    try {
+      const cmdRunnerLayer = CommandRunnerTest((command, args) => {
+        const baseResult = (stdout = ""): CommandRunResult => ({
+          stdout,
+          stderr: "",
+          exitCode: 0,
+          timedOut: false,
+          durationMs: 0,
+          commandPreview: [command, ...args].join(" "),
+        })
+        if (command !== "git") return baseResult()
+        if (args.join(" ") === "stash create") {
+          stashCalls += 1
+          return baseResult(stashCalls === 1 ? `${beforeStash}\n` : `${afterStash}\n`)
+        }
+        if (args[0] === "diff" && args.includes("--name-only")) {
+          // The parent cwd's tracked tree diverged: a file the worker
+          // didn't declare in `changes_made`.
+          return baseResult("src/secret.ts\n")
+        }
+        return { ...baseResult(), exitCode: 1, stderr: `unexpected git ${args.join(" ")}` }
+      })
+      const output = JSON.stringify({
+        summary: "explored the codebase",
+        files_relevant: [{ path: "src/secret.ts", reason: "looked at it" }],
+        // Worker reports no changes — but the snapshots will reveal
+        // src/secret.ts was modified.
+        changes_made: [],
+        commands_run: [],
+        verification: [],
+        risks: [],
+        blockers: [],
+        confidence: "high",
+      })
+      const layer = Layer.mergeAll(
+        SessionStateTest(),
+        Layer.provide(WorkerRunsLive(root), EventStoreLive),
+        RuntimeConfigTest(),
+        cmdRunnerLayer,
+      )
+      const result = await Effect.runPromise(
+        Effect.gen(function* () {
+          // Start triggers recordWorkerStart → captures baseline_ref.
+          yield* handleSubagentStart(startPayload("Explore"))
+          // Stop triggers drift detection.
+          const decision = yield* handleSubagentStop(
+            decode({
+              _tag: "SubagentStop",
+              session_id: "s",
+              hook_event_name: "SubagentStop",
+              agent_type: "Explore",
+              agent_id: "a1",
+              cwd: root,
+              output,
+            }),
+          )
+          const runs = yield* WorkerRuns
+          return {
+            decision,
+            latest: yield* runs.get(scopedWorkerRunId("s", "a1")),
+          }
+        }).pipe(Effect.provide(layer)),
+      )
+
+      expect("decision" in result.decision).toBe(true)
+      if ("decision" in result.decision) {
+        expect(result.decision.decision).toBe("block")
+        expect(result.decision.reason).toContain(
+          "read-only worker mutated tracked files outside changes_made",
+        )
+        expect(result.decision.reason).toContain("src/secret.ts")
+      }
+      expect(result.latest?.status).toBe("blocked")
+      // baseline_ref captured at start — sanity check.
+      expect(result.latest?.baseline_ref).toBe(beforeStash)
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  // P0-2 negative: same setup but the worker DECLARES the change in
+  // `changes_made`. Drift exists, but it's accounted for, so the
+  // stop is not blocked by the new check. (It's still subject to the
+  // pre-existing "read-only worker reported changes_made" guard,
+  // which fires unconditionally when changes_made is non-empty.
+  // That's the older defense — proving here that the new check
+  // doesn't ADD a block when declarations match.)
+  test("read-only worker that declares its mutation hits the pre-existing changes_made guard, not the new drift check", async () => {
+    const root = mkdtempSync(join(tmpdir(), "chts-p0-2-declared-"))
+    let stashCalls = 0
+    try {
+      const cmdRunnerLayer = CommandRunnerTest((command, args) => {
+        const baseResult = (stdout = ""): CommandRunResult => ({
+          stdout,
+          stderr: "",
+          exitCode: 0,
+          timedOut: false,
+          durationMs: 0,
+          commandPreview: [command, ...args].join(" "),
+        })
+        if (command !== "git") return baseResult()
+        if (args.join(" ") === "stash create") {
+          stashCalls += 1
+          return baseResult(stashCalls === 1 ? "1111\n" : "2222\n")
+        }
+        return baseResult()
+      })
+      const output = JSON.stringify({
+        summary: "edited a file (declared)",
+        files_relevant: [],
+        changes_made: [
+          { path: "src/declared.ts", summary: "an edit" },
+        ],
+        commands_run: [],
+        verification: [],
+        risks: [],
+        blockers: [],
+        confidence: "high",
+      })
+      const layer = Layer.mergeAll(
+        SessionStateTest(),
+        Layer.provide(WorkerRunsLive(root), EventStoreLive),
+        RuntimeConfigTest(),
+        cmdRunnerLayer,
+      )
+      const result = await Effect.runPromise(
+        Effect.gen(function* () {
+          yield* handleSubagentStart(startPayload("Explore"))
+          return yield* handleSubagentStop(
+            decode({
+              _tag: "SubagentStop",
+              session_id: "s",
+              hook_event_name: "SubagentStop",
+              agent_type: "Explore",
+              agent_id: "a1",
+              cwd: root,
+              output,
+            }),
+          )
+        }).pipe(Effect.provide(layer)),
+      )
+      // Blocked by the OLDER guard (`changes_made.length > 0` for
+      // read-only is forbidden), not by the new drift check.
+      expect("decision" in result).toBe(true)
+      if ("decision" in result) {
+        expect(result.decision).toBe("block")
+        expect(result.reason).toContain(
+          "read-only worker reported changes_made",
+        )
+        // Not the new check.
+        expect(result.reason).not.toContain("outside changes_made")
+      }
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
   })
 })
 
