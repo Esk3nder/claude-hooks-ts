@@ -860,6 +860,270 @@ describe("WorkerSupervisorLive", () => {
     }
   })
 
+  // P0-4: write-allowed + serial isolation now captures a parent-cwd
+  // patch via `git stash create` before/after the worker. Pre-fix,
+  // this branch produced no `patch_path` for the default-install
+  // deployment, leaving worker writes unaudited.
+  test("serial isolation captures a patch via stash-create snapshots", async () => {
+    const root = mkdtempSync(join(tmpdir(), "chts-worker-serial-"))
+    const afterStash = "2222222222222222222222222222222222222222"
+    const gitCommands: string[] = []
+    let stashCreateCalls = 0
+    let executorRanAt: "before-after-snapshots" | undefined
+    try {
+      const commandLayer = CommandRunnerTest((command, args) => {
+        if (command !== "git") return commandResult(command, args)
+        gitCommands.push(args.join(" "))
+        if (args.join(" ") === "rev-parse --show-toplevel") {
+          return commandResult(command, args, `${root}\n`)
+        }
+        if (args.join(" ") === "stash create") {
+          stashCreateCalls += 1
+          if (stashCreateCalls === 1) return commandResult(command, args, "")
+          return commandResult(command, args, `${afterStash}\n`)
+        }
+        if (args[0] === "diff" && args.includes("--binary")) {
+          return commandResult(command, args, "diff --git a/src/a.ts b/src/a.ts\n")
+        }
+        if (args[0] === "diff" && args.includes("--name-only")) {
+          return commandResult(command, args, "src/a.ts\n")
+        }
+        return { ...commandResult(command, args), exitCode: 1, stderr: `unexpected git ${args.join(" ")}` }
+      })
+      const executorLayer: Layer.Layer<WorkerExecutor> = Layer.succeed(
+        WorkerExecutor,
+        WorkerExecutor.of({
+          run: (_job) =>
+            Effect.sync(() => {
+              if (stashCreateCalls === 1) {
+                executorRanAt = "before-after-snapshots"
+              }
+              return result("serial-isolated")
+            }),
+        }),
+      )
+      const layer = Layer.provideMerge(
+        WorkerSupervisorLive,
+        Layer.mergeAll(
+          Layer.provideMerge(
+            Layer.mergeAll(WorkerQueueLive(), WorkerRunsLive()),
+            Layer.mergeAll(
+              EventStoreTest(),
+              RuntimeConfigTest({
+                workerRetryLimit: 0,
+                workerWriteIsolation: "serial",
+              }),
+            ),
+          ),
+          executorLayer,
+          commandLayer,
+          RuntimeConfigTest({
+            workerRetryLimit: 0,
+            workerWriteIsolation: "serial",
+          }),
+        ),
+      )
+
+      const completed = await Effect.runPromise(
+        Effect.gen(function* () {
+          const supervisor = yield* WorkerSupervisor
+          yield* supervisor.enqueue({
+            worker_id: "worker-serial",
+            session_id: "session-1",
+            agent_type: "executor",
+            mode: "write-allowed",
+            prompt: "edit in parent cwd",
+            scope: "src/**",
+            cwd: root,
+          })
+          return yield* supervisor.runOne
+        }).pipe(Effect.provide(layer)),
+      )
+
+      expect(completed.status).toBe("completed")
+      expect(completed.isolation).toBe("serial")
+      expect(completed.patch_path).toBe(
+        join(
+          root,
+          ".claude-hooks",
+          "state",
+          "workers",
+          "patches",
+          "worker-serial.1.patch",
+        ),
+      )
+      expect(existsSync(completed.patch_path!)).toBe(true)
+      expect(readFileSync(completed.patch_path!, "utf8")).toContain("diff --git")
+      expect(completed.patch_changed_files).toEqual(["src/a.ts"])
+      expect(executorRanAt).toBe("before-after-snapshots")
+      expect(stashCreateCalls).toBe(2)
+      // BEFORE returned empty → baseline falls back to HEAD.
+      expect(gitCommands).toContain(
+        `diff --no-renames --binary HEAD ${afterStash}`,
+      )
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  // P0-4 complement: when the BEFORE snapshot also returns a stash
+  // sha (the parent cwd had pre-existing tracked changes), the diff
+  // is between the two stash refs — not against HEAD — so the
+  // captured patch is the worker's net contribution rather than the
+  // parent's accumulated dirt.
+  test("serial isolation diffs between stash refs when the tree was dirty before the worker", async () => {
+    const root = mkdtempSync(join(tmpdir(), "chts-worker-serial-dirty-"))
+    const beforeStash = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    const afterStash = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+    const gitCommands: string[] = []
+    let stashCreateCalls = 0
+    try {
+      const commandLayer = CommandRunnerTest((command, args) => {
+        if (command !== "git") return commandResult(command, args)
+        gitCommands.push(args.join(" "))
+        if (args.join(" ") === "rev-parse --show-toplevel") {
+          return commandResult(command, args, `${root}\n`)
+        }
+        if (args.join(" ") === "stash create") {
+          stashCreateCalls += 1
+          return commandResult(
+            command,
+            args,
+            stashCreateCalls === 1 ? `${beforeStash}\n` : `${afterStash}\n`,
+          )
+        }
+        if (args[0] === "diff" && args.includes("--binary")) {
+          return commandResult(command, args, "diff --git a/src/b.ts b/src/b.ts\n")
+        }
+        if (args[0] === "diff" && args.includes("--name-only")) {
+          return commandResult(command, args, "src/b.ts\n")
+        }
+        return { ...commandResult(command, args), exitCode: 1, stderr: `unexpected git ${args.join(" ")}` }
+      })
+      const executorLayer: Layer.Layer<WorkerExecutor> = Layer.succeed(
+        WorkerExecutor,
+        WorkerExecutor.of({
+          run: (_job) => Effect.sync(() => result("serial-dirty")),
+        }),
+      )
+      const layer = Layer.provideMerge(
+        WorkerSupervisorLive,
+        Layer.mergeAll(
+          Layer.provideMerge(
+            Layer.mergeAll(WorkerQueueLive(), WorkerRunsLive()),
+            Layer.mergeAll(
+              EventStoreTest(),
+              RuntimeConfigTest({
+                workerRetryLimit: 0,
+                workerWriteIsolation: "serial",
+              }),
+            ),
+          ),
+          executorLayer,
+          commandLayer,
+          RuntimeConfigTest({
+            workerRetryLimit: 0,
+            workerWriteIsolation: "serial",
+          }),
+        ),
+      )
+
+      const completed = await Effect.runPromise(
+        Effect.gen(function* () {
+          const supervisor = yield* WorkerSupervisor
+          yield* supervisor.enqueue({
+            worker_id: "worker-serial-dirty",
+            session_id: "session-1",
+            agent_type: "executor",
+            mode: "write-allowed",
+            prompt: "edit in dirty parent cwd",
+            scope: "src/**",
+            cwd: root,
+          })
+          return yield* supervisor.runOne
+        }).pipe(Effect.provide(layer)),
+      )
+
+      expect(completed.status).toBe("completed")
+      expect(gitCommands).toContain(
+        `diff --no-renames --binary ${beforeStash} ${afterStash}`,
+      )
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  // P0-4 negative case: when both stash-creates return empty (tree
+  // unchanged), no diff command runs and no patch_path is set.
+  test("serial isolation produces no patch when the tree was untouched", async () => {
+    const root = mkdtempSync(join(tmpdir(), "chts-worker-serial-clean-"))
+    const gitCommands: string[] = []
+    try {
+      const commandLayer = CommandRunnerTest((command, args) => {
+        if (command !== "git") return commandResult(command, args)
+        gitCommands.push(args.join(" "))
+        if (args.join(" ") === "rev-parse --show-toplevel") {
+          return commandResult(command, args, `${root}\n`)
+        }
+        if (args.join(" ") === "stash create") {
+          return commandResult(command, args, "")
+        }
+        return { ...commandResult(command, args), exitCode: 1, stderr: `unexpected git ${args.join(" ")}` }
+      })
+      const executorLayer: Layer.Layer<WorkerExecutor> = Layer.succeed(
+        WorkerExecutor,
+        WorkerExecutor.of({
+          run: (_job) => Effect.sync(() => result("serial-noop")),
+        }),
+      )
+      const layer = Layer.provideMerge(
+        WorkerSupervisorLive,
+        Layer.mergeAll(
+          Layer.provideMerge(
+            Layer.mergeAll(WorkerQueueLive(), WorkerRunsLive()),
+            Layer.mergeAll(
+              EventStoreTest(),
+              RuntimeConfigTest({
+                workerRetryLimit: 0,
+                workerWriteIsolation: "serial",
+              }),
+            ),
+          ),
+          executorLayer,
+          commandLayer,
+          RuntimeConfigTest({
+            workerRetryLimit: 0,
+            workerWriteIsolation: "serial",
+          }),
+        ),
+      )
+
+      const completed = await Effect.runPromise(
+        Effect.gen(function* () {
+          const supervisor = yield* WorkerSupervisor
+          yield* supervisor.enqueue({
+            worker_id: "worker-serial-clean",
+            session_id: "session-1",
+            agent_type: "executor",
+            mode: "write-allowed",
+            prompt: "no edits",
+            scope: "src/**",
+            cwd: root,
+          })
+          return yield* supervisor.runOne
+        }).pipe(Effect.provide(layer)),
+      )
+
+      expect(completed.status).toBe("completed")
+      expect(completed.isolation).toBe("serial")
+      expect(completed.patch_path).toBeUndefined()
+      expect(completed.patch_changed_files).toBeUndefined()
+      expect(gitCommands.some((c) => c.startsWith("diff "))).toBe(false)
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
   test("worktree isolation fails explicitly when the source worktree is dirty", async () => {
     const root = mkdtempSync(join(tmpdir(), "chts-worker-dirty-"))
     const commandLayer = CommandRunnerTest((command, args) => {

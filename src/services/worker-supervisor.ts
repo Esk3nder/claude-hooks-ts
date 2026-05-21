@@ -336,6 +336,137 @@ interface WorkerExecutionOutcome {
   }
 }
 
+/**
+ * P0-4: capture the worker's net working-tree changes under `serial`
+ * isolation without dirtying the user's git index.
+ *
+ * `git stash create` produces a stash *commit object* that records the
+ * current working-tree state, but does NOT touch the working tree or
+ * the index (unlike `git stash push`). It returns:
+ *   - the empty string when the tree is clean (nothing to stash).
+ *   - a commit SHA otherwise.
+ *
+ * We snapshot once before the worker runs and once after; the net
+ * diff between the two stash commits is the worker's contribution. If
+ * the "before" snapshot is empty (clean tree), we use HEAD as the
+ * baseline. If the "after" snapshot is empty or matches the before
+ * ref, the worker made no tracked changes — return without a patch.
+ *
+ * Known limitation: `git stash create` does NOT include untracked
+ * files. A worker that writes a brand-new file under serial isolation
+ * will not have that file in the captured patch. The aggregator's
+ * `integrationBlockers` check (`worker-aggregation.ts`) still catches
+ * write workers that reported `changes_made` without a captured
+ * patch, so untracked-only writes don't pass silently — they show up
+ * as a blocker downstream. Full untracked coverage is left for a
+ * follow-up; `worktree` isolation remains the recommended mode for
+ * full-fidelity audit.
+ */
+const snapshotSerialBeforeRef = (
+  runner: CommandRunner["Type"],
+  cwd: string,
+  workerId: string,
+): Effect.Effect<string, WorkerRunError> =>
+  runGitText(
+    runner,
+    ["stash", "create"],
+    cwd,
+    workerId,
+    "worker-supervisor.serial-patch",
+  ).pipe(
+    Effect.map((raw) => {
+      const trimmed = raw.trim()
+      return trimmed.length > 0 ? trimmed : "HEAD"
+    }),
+  )
+
+interface SerialCaptureResult {
+  readonly repoRoot: string
+  readonly patchPath: string | undefined
+  readonly changedFiles: ReadonlyArray<string>
+}
+
+const captureSerialIsolationPatch = (
+  runner: CommandRunner["Type"],
+  cwd: string,
+  workerId: string,
+  attempt: number,
+  beforeRef: string,
+): Effect.Effect<SerialCaptureResult, WorkerRunError> =>
+  Effect.gen(function* () {
+    const repoRoot = (yield* runGitText(
+      runner,
+      ["rev-parse", "--show-toplevel"],
+      cwd,
+      workerId,
+      "worker-supervisor.serial-patch",
+    )).trim()
+    const afterStashRaw = (yield* runGitText(
+      runner,
+      ["stash", "create"],
+      cwd,
+      workerId,
+      "worker-supervisor.serial-patch",
+    )).trim()
+    const afterRef = afterStashRaw.length > 0 ? afterStashRaw : "HEAD"
+    if (beforeRef === afterRef) {
+      // No tracked changes between the snapshots — the worker either
+      // wrote nothing or wrote only untracked files (which `git stash
+      // create` does not capture; see the doc above).
+      return { repoRoot, patchPath: undefined, changedFiles: [] }
+    }
+    const diff = yield* runGitText(
+      runner,
+      ["diff", "--no-renames", "--binary", beforeRef, afterRef],
+      cwd,
+      workerId,
+      "worker-supervisor.serial-patch",
+      { stdoutMaxBytes: MAX_WORKER_PATCH_BYTES },
+    )
+    const changedFiles = parseChangedFiles(
+      yield* runGitText(
+        runner,
+        ["diff", "--no-renames", "--name-only", beforeRef, afterRef],
+        cwd,
+        workerId,
+        "worker-supervisor.serial-patch",
+        { stdoutMaxBytes: 200_000 },
+      ),
+    )
+    const patchPath = yield* writeWorkerPatch(repoRoot, workerId, diff, attempt)
+    return { repoRoot, patchPath, changedFiles }
+  })
+
+const runWithSerialIsolation = (
+  runner: CommandRunner["Type"],
+  executor: WorkerExecutor["Type"],
+  job: WorkerExecutionJob,
+  attempt: number,
+): Effect.Effect<WorkerExecutionOutcome, WorkerRunError> =>
+  Effect.gen(function* () {
+    const cwd = job.cwd ?? process.cwd()
+    const beforeRef = yield* snapshotSerialBeforeRef(runner, cwd, job.worker_id)
+    const result = yield* executor.run(job)
+    const capture = yield* captureSerialIsolationPatch(
+      runner,
+      cwd,
+      job.worker_id,
+      attempt,
+      beforeRef,
+    )
+    return {
+      result,
+      metadata: {
+        isolation: "serial" as const,
+        workspace_path: cwd,
+        ...(capture.patchPath === undefined ? {} : { patch_path: capture.patchPath }),
+        ...(capture.changedFiles.length === 0
+          ? {}
+          : { patch_changed_files: capture.changedFiles }),
+      },
+    }
+  })
+
 const runWithWorktreeIsolation = (
   runner: CommandRunner["Type"],
   executor: WorkerExecutor["Type"],
@@ -584,24 +715,49 @@ export const WorkerSupervisorLiveBase = (
           // source of truth (1-indexed after the first markRunning).
           const execute = (
             attemptIndex: number,
-          ): Effect.Effect<WorkerExecutionOutcome, WorkerRunError> =>
-            payload.mode === "write-allowed" &&
+          ): Effect.Effect<WorkerExecutionOutcome, WorkerRunError> => {
+            if (
+              payload.mode === "write-allowed" &&
               config.workerWriteIsolation === "worktree"
-              ? runWithWorktreeIsolation(
-                  runner,
-                  executor,
-                  executionJob,
-                  config.workerWriteIsolation,
-                  attemptIndex,
-                )
-              : executor.run(executionJob).pipe(
-                  Effect.map((result) => ({
-                    result,
-                    metadata: {
-                      isolation: config.workerWriteIsolation,
-                    },
-                  })),
-                )
+            ) {
+              return runWithWorktreeIsolation(
+                runner,
+                executor,
+                executionJob,
+                config.workerWriteIsolation,
+                attemptIndex,
+              )
+            }
+            // P0-4: write-allowed workers under `serial` isolation
+            // now capture a parent-cwd patch using `git stash create`
+            // before/after the worker, so their writes are audited.
+            // Pre-fix, this branch fell through to the plain
+            // executor.run path and produced no `patch_path`, leaving
+            // every default-install deployment without a write audit
+            // trail. The writeGate semaphore (acquired further down)
+            // ensures only one write-allowed worker runs in this mode
+            // at a time, so the stash snapshots cannot interleave
+            // between concurrent workers.
+            if (
+              payload.mode === "write-allowed" &&
+              config.workerWriteIsolation === "serial"
+            ) {
+              return runWithSerialIsolation(
+                runner,
+                executor,
+                executionJob,
+                attemptIndex,
+              )
+            }
+            return executor.run(executionJob).pipe(
+              Effect.map((result) => ({
+                result,
+                metadata: {
+                  isolation: config.workerWriteIsolation,
+                },
+              })),
+            )
+          }
           const attempt: Effect.Effect<WorkerRunType, WorkerRunError | EventStoreError> =
             runs.markRunning(workerId).pipe(
               Effect.flatMap((running) =>
