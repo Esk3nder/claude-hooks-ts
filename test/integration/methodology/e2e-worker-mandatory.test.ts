@@ -12,6 +12,7 @@ import * as path from "node:path"
 import { handlePreToolUse } from "../../../src/events/pretool-policy.ts"
 import { RuntimeConfigTest } from "../../../src/services/runtime-config.ts"
 import { EventStoreLive } from "../../../src/services/event-store.ts"
+import { EventStoreError } from "../../../src/schema/errors.ts"
 import {
   WorkerRuns,
   WorkerRunsLive,
@@ -185,6 +186,84 @@ describe("methodology e2e: mandatory worker delegation at E4+", () => {
         }).pipe(Effect.provide(layer)),
       )
       expect(preToolDecisionOutput(decision)?.permissionDecision).not.toBe("deny")
+    } finally {
+      project.cleanup()
+    }
+  })
+
+  // A-FU1 (review follow-up): ledger-read failure must fall back to
+  // the legacy starts-stops signal, not zero the count. Zeroing would
+  // deny *all* direct writes during a transient ledger outage; falling
+  // back keeps the gate operational on the same signal the codebase
+  // ran on for months. The hook-failure record is also expected (not
+  // asserted directly here — observability is covered by the
+  // reportHookFailure path's own tests; this asserts the decision
+  // outcome that the fallback produces).
+  test("strict + E5 + WorkerRuns.forSession errors → falls back to starts-stops", async () => {
+    const project = withTmpProject("wm-ledger-fail")
+    try {
+      const sessionId = "wm-fail"
+      writeIsaFixture(project.root, `.claude-hooks/work/${sessionId}/ISA.md`)
+      // Stub WorkerRuns whose forSession returns Left. Other methods
+      // are intentionally unimplemented — handlePreToolUse only calls
+      // forSession when worker-mandatory mode is non-off.
+      const failingRuns: Layer.Layer<WorkerRuns> = Layer.succeed(
+        WorkerRuns,
+        WorkerRuns.of({
+          forSession: () =>
+            Effect.fail(
+              new EventStoreError({
+                op: "tail",
+                stream: "worker-runs",
+                path: "/dev/null",
+                message: "simulated ledger read failure for A-FU1 test",
+              }),
+            ),
+          // Methods below should not be reached by the gate's
+          // active-count derivation. Effect.die signals a test bug if
+          // they ever are.
+          createQueued: () => Effect.die("createQueued not stubbed"),
+          markRunning: () => Effect.die("markRunning not stubbed"),
+          markBlocked: () => Effect.die("markBlocked not stubbed"),
+          complete: () => Effect.die("complete not stubbed"),
+          markIntegrated: () => Effect.die("markIntegrated not stubbed"),
+          markIntegrationRejected: () =>
+            Effect.die("markIntegrationRejected not stubbed"),
+          fail: () => Effect.die("fail not stubbed"),
+          cancel: () => Effect.die("cancel not stubbed"),
+          get: () => Effect.die("get not stubbed"),
+          findByAgent: () => Effect.die("findByAgent not stubbed"),
+          forParent: () => Effect.die("forParent not stubbed"),
+          list: () => Effect.die("list not stubbed"),
+          stream: () => Effect.die("stream not stubbed") as never,
+        }),
+      )
+      const layer = Layer.mergeAll(
+        seedSessionRecord(sessionId, {
+          ...engagedPatch(project.root, sessionId, 5),
+          // Starts-stops would say count=1 (1 active) → allow. The
+          // failing ledger read MUST fall back to this signal, not
+          // zero it out.
+          subagent_starts: ["w1:starts-stops-fallback"],
+          subagent_stops: [],
+        }),
+        RuntimeConfigTest({ workerMandatoryMode: "strict" }),
+        failingRuns,
+      )
+      const decision = await Effect.runPromise(
+        handlePreToolUse(
+          writePayload(
+            sessionId,
+            project.root,
+            path.join(project.root, "src", "foo.ts"),
+          ),
+        ).pipe(Effect.provide(layer)),
+      )
+      // Fallback path → starts-stops count is 1 → allow (NOT deny).
+      // If the code had zeroed the count on error, this would deny.
+      expect(preToolDecisionOutput(decision)?.permissionDecision).not.toBe(
+        "deny",
+      )
     } finally {
       project.cleanup()
     }
