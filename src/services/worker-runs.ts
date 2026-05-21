@@ -39,6 +39,17 @@ export interface WorkerRunCompletionMetadata {
 export interface WorkerRunsApi {
   readonly createQueued: (input: WorkerRunCreate) => Effect.Effect<WorkerRunType, WorkerRunError | EventStoreError>
   readonly markRunning: (workerId: string, at?: string) => Effect.Effect<WorkerRunType, WorkerRunError | EventStoreError>
+  /**
+   * P0-2: stamp a parent-cwd baseline ref onto the run record at
+   * SubagentStart. Used by `recordWorkerStop` to detect read-only
+   * worker mutations that weren't declared in `changes_made`. The ref
+   * is a `git stash create` commit object SHA, or "HEAD" when the
+   * tree was clean at start.
+   */
+  readonly recordBaselineRef: (
+    workerId: string,
+    baselineRef: string,
+  ) => Effect.Effect<WorkerRunType, WorkerRunError | EventStoreError>
   readonly markBlocked: (workerId: string, reason: string, at?: string) => Effect.Effect<WorkerRunType, WorkerRunError | EventStoreError>
   readonly complete: (
     workerId: string,
@@ -332,6 +343,15 @@ export const WorkerRunsLive = (root: string = process.cwd()): Layer.Layer<Worker
             })
           }))
         },
+        recordBaselineRef: (workerId, baselineRef) =>
+          transition(workerId, "worker-runs.recordBaselineRef", (run) =>
+            ensureNotTerminal("worker-runs.recordBaselineRef", run).pipe(
+              Effect.as({
+                ...run,
+                baseline_ref: baselineRef,
+              }),
+            ),
+          ),
         markRunning: (workerId, at = nowIso()) =>
           transition(workerId, "worker-runs.markRunning", (run) =>
             run.status === "running"

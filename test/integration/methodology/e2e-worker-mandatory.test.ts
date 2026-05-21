@@ -224,6 +224,8 @@ describe("methodology e2e: mandatory worker delegation at E4+", () => {
           // they ever are.
           createQueued: () => Effect.die("createQueued not stubbed"),
           markRunning: () => Effect.die("markRunning not stubbed"),
+          recordBaselineRef: () =>
+            Effect.die("recordBaselineRef not stubbed"),
           markBlocked: () => Effect.die("markBlocked not stubbed"),
           complete: () => Effect.die("complete not stubbed"),
           markIntegrated: () => Effect.die("markIntegrated not stubbed"),

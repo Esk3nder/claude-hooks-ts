@@ -1,4 +1,4 @@
-import { Effect } from "effect";
+import { Effect, Option } from "effect";
 import type { NormalizedHookEvent } from "../schema/normalized.ts";
 import type { HookDecision } from "../schema/decisions.ts";
 import { NO_DECISION } from "../schema/decisions.ts";
@@ -17,6 +17,7 @@ import {
   type WorkerRunCompletionMetadata,
 } from "../services/worker-runs.ts";
 import { parseWorkerResultText } from "../services/worker-supervisor.ts";
+import { CommandRunner } from "../services/command-runner.ts";
 import type { WorkerResult } from "../schema/worker-run.ts";
 import { WORKER_CONTRACT_MARKER } from "../policies/worker-contract.ts";
 import {
@@ -82,6 +83,75 @@ const fallbackWorkerResult = (output: string): WorkerResult => ({
   confidence: "low",
 });
 
+/**
+ * P0-2 helpers — parent-cwd tracked-tree snapshot via `git stash create`.
+ *
+ * Returns:
+ *   - the trimmed stash commit SHA on success with tracked changes.
+ *   - the empty string when the tree is clean (stash create produced no output).
+ *   - null when git failed entirely (not a repo, timeout, etc.).
+ *
+ * Failures are intentionally non-fatal — we don't want a non-git cwd
+ * or a transient git error to block every subagent in the session.
+ * When this returns null we simply skip the baseline-capture or the
+ * drift-detection pass.
+ */
+const parentCwdStashCreate = (
+  runner: CommandRunner["Type"],
+  cwd: string,
+): Effect.Effect<string | null> =>
+  runner
+    .run("git", ["stash", "create"], {
+      cwd,
+      timeoutMs: 15_000,
+      stdoutMaxBytes: 200,
+      stderrMaxBytes: 1024,
+    })
+    .pipe(
+      Effect.map((r) => (r.timedOut || r.exitCode !== 0 ? null : r.stdout.trim())),
+      Effect.catchAll(() => Effect.succeed(null as string | null)),
+    );
+
+/**
+ * Compute the list of files changed between `beforeRef` and `afterRef`
+ * in `cwd`. Returns null on git failure (treated as "can't detect
+ * drift, fall back to trust"). Mirrors the parent-cwd-stash failure
+ * mode above.
+ */
+const parentCwdChangedFiles = (
+  runner: CommandRunner["Type"],
+  cwd: string,
+  beforeRef: string,
+  afterRef: string,
+): Effect.Effect<ReadonlyArray<string> | null> =>
+  runner
+    .run(
+      "git",
+      ["diff", "--no-renames", "--name-only", beforeRef, afterRef],
+      { cwd, timeoutMs: 15_000, stdoutMaxBytes: 200_000, stderrMaxBytes: 4096 },
+    )
+    .pipe(
+      Effect.map((r) => {
+        if (r.timedOut || r.exitCode !== 0) return null as ReadonlyArray<string> | null;
+        return [
+          ...new Set(
+            r.stdout
+              .split(/\r?\n/)
+              .map((line) => line.trim())
+              .filter((line) => line.length > 0),
+          ),
+        ].sort();
+      }),
+      Effect.catchAll(() => Effect.succeed(null as ReadonlyArray<string> | null)),
+    );
+
+const resolveSubagentCwd = (payload: {
+  readonly cwd?: string | undefined;
+}): string =>
+  typeof payload.cwd === "string" && payload.cwd.length > 0
+    ? payload.cwd
+    : process.cwd();
+
 const reportSessionStateAppendFailure = (
   payload: Extract<NormalizedHookEvent, { readonly _tag: "SubagentStart" | "SubagentStop" }>,
   cause: unknown,
@@ -113,21 +183,39 @@ const recordWorkerStart = (
         : hashWorkerPrompt(payload.prompt);
     const workerId = workerIdForSubagent(payload);
     const existing = yield* runs.value.get(workerId);
+    const mode = nativeSubagentModeForRun(payload.agent_type);
     if (existing === null) {
       yield* runs.value.createQueued({
         worker_id: workerId,
         session_id: payload.session_id,
         agent_id: payload.agent_id,
         agent_type: payload.agent_type,
-        mode: nativeSubagentModeForRun(payload.agent_type),
+        mode,
         prompt_hash: promptHash,
         scope: inferWorkerScope(payload.prompt),
       });
       yield* runs.value.markRunning(workerId);
-      return;
-    }
-    if (existing.status !== "running") {
+    } else if (existing.status !== "running") {
       yield* runs.value.markRunning(workerId);
+    }
+    // P0-2: capture a baseline ref for read-only workers so we can
+    // detect after-the-fact mutations they did not declare in
+    // `changes_made`. CommandRunner is accessed via serviceOption so
+    // this code path degrades silently in older targeted unit tests
+    // that don't provide a runner. If `git stash create` returns null
+    // (cwd not a repo, transient error), we skip — drift detection
+    // becomes a no-op for this worker, and the worker falls back to
+    // the pre-existing self-report trust model.
+    if (mode === "read-only") {
+      const cmdRunner = yield* Effect.serviceOption(CommandRunner);
+      if (Option.isSome(cmdRunner)) {
+        const cwd = resolveSubagentCwd(payload);
+        const raw = yield* parentCwdStashCreate(cmdRunner.value, cwd);
+        if (raw !== null) {
+          const baselineRef = raw.length > 0 ? raw : "HEAD";
+          yield* runs.value.recordBaselineRef(workerId, baselineRef);
+        }
+      }
     }
   }).pipe(
     Effect.catchAll((cause) =>
@@ -253,6 +341,51 @@ const recordWorkerStop = (
         reason,
       );
       return { active: true, cancelled: false, blockReason: reason, parsedResult: parsed.right };
+    }
+    // P0-2: read-only workers that report `changes_made: []` (the
+    // pre-fix happy path) are now compared against a `git stash
+    // create` snapshot taken at SubagentStart. Any tracked-file drift
+    // not also declared in `changes_made` is treated as a silent
+    // mutation and blocks the SubagentStop. The detection is opt-in
+    // on infrastructure availability: it only fires when the run has
+    // a `baseline_ref` (CommandRunner was provided at SubagentStart)
+    // AND CommandRunner is still in context here. Tests that don't
+    // wire up the runner keep the legacy trust-the-worker behavior.
+    if (mode === "read-only" && run.baseline_ref !== undefined) {
+      const cmdRunner = yield* Effect.serviceOption(CommandRunner);
+      if (Option.isSome(cmdRunner)) {
+        const cwd = resolveSubagentCwd(payload);
+        const afterRaw = yield* parentCwdStashCreate(cmdRunner.value, cwd);
+        if (afterRaw !== null) {
+          const afterRef = afterRaw.length > 0 ? afterRaw : "HEAD";
+          if (afterRef !== run.baseline_ref) {
+            const changed = yield* parentCwdChangedFiles(
+              cmdRunner.value,
+              cwd,
+              run.baseline_ref,
+              afterRef,
+            );
+            if (changed !== null && changed.length > 0) {
+              const declared = new Set(
+                parsed.right.changes_made.map((change) => change.path),
+              );
+              const undeclared = changed.filter((p) => !declared.has(p));
+              if (undeclared.length > 0) {
+                const reason = `read-only worker mutated tracked files outside changes_made: ${undeclared
+                  .slice(0, 5)
+                  .join(", ")}${undeclared.length > 5 ? ` (+${undeclared.length - 5} more)` : ""}`;
+                yield* runs.value.markBlocked(workerId, reason);
+                return {
+                  active: true,
+                  cancelled: false,
+                  blockReason: reason,
+                  parsedResult: parsed.right,
+                };
+              }
+            }
+          }
+        }
+      }
     }
     let completionMetadata: WorkerRunCompletionMetadata = {};
     if (mode === "write-allowed") {
