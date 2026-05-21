@@ -590,13 +590,131 @@ describe("WorkerSupervisorLive", () => {
 
     expect(completed.status).toBe("completed")
     expect(completed.isolation).toBe("worktree")
-    expect(completed.patch_path).toBe(join(root, ".claude-hooks", "state", "workers", "patches", "worker-worktree.patch"))
+    // P1-2: patches are attempt-versioned so a retry preserves the
+    // prior attempt's file. First attempt of `worker-worktree` writes
+    // to `worker-worktree.1.patch`.
+    expect(completed.patch_path).toBe(join(root, ".claude-hooks", "state", "workers", "patches", "worker-worktree.1.patch"))
     expect(existsSync(completed.patch_path!)).toBe(true)
     expect(readFileSync(completed.patch_path!, "utf8")).toContain("diff --git")
     expect(createdWorktree).toContain("worker-worktree")
     expect(executorCwd).toBe(createdWorktree)
     expect(gitCommands).toContain("add -A")
     expect(gitCommands).toContain("diff --cached --binary")
+  })
+
+  // P1-2 regression: previously the patch path was
+  // `<workerId>.patch`, so a retry overwrote attempt 1's file and the
+  // audit trail was lost. After versioning, attempt 1 lands at
+  // `<workerId>.1.patch` and attempt 2 at `<workerId>.2.patch`; both
+  // files persist after a successful retry, and the run record's
+  // `patch_path` points at the latest.
+  test("retry preserves the prior attempt's patch under versioned paths", async () => {
+    const root = mkdtempSync(join(tmpdir(), "chts-worker-retry-patch-"))
+    try {
+      const commandLayer = CommandRunnerTest((command, args) => {
+        if (command !== "git") return commandResult(command, args)
+        if (args.join(" ") === "rev-parse --show-toplevel") {
+          return commandResult(command, args, `${root}\n`)
+        }
+        if (args.join(" ") === "status --porcelain") {
+          return commandResult(command, args, "")
+        }
+        if (args.slice(0, 3).join(" ") === "worktree add --detach") {
+          return commandResult(command, args, "")
+        }
+        if (args.join(" ") === "add -A") {
+          return commandResult(command, args, "")
+        }
+        if (args.join(" ") === "diff --cached --binary") {
+          // Distinct patch content per attempt — proves attempt 1's
+          // file is not overwritten by attempt 2.
+          return commandResult(command, args, "diff --git a/src/a.ts b/src/a.ts\n")
+        }
+        if (args.join(" ") === "diff --cached --name-only") {
+          return commandResult(command, args, "src/a.ts\n")
+        }
+        if (args.slice(0, 3).join(" ") === "worktree remove --force") {
+          return commandResult(command, args, "")
+        }
+        return { ...commandResult(command, args), exitCode: 1, stderr: `unexpected git ${args.join(" ")}` }
+      })
+      // Executor succeeds both times, but attempt 1 returns a payload
+      // that fails `decodeWorkerResult` inside `runs.complete`, forcing
+      // a real retry after patch capture has already written to
+      // `<workerId>.1.patch`. Attempt 2 returns a valid result.
+      let attempts = 0
+      const flakyExecutor: Layer.Layer<WorkerExecutor> = Layer.succeed(
+        WorkerExecutor,
+        WorkerExecutor.of({
+          run: (_job) =>
+            Effect.sync(() => {
+              attempts++
+              return attempts === 1
+                ? ({ summary: "missing fields" } as unknown as WorkerResult)
+                : result("retry-success")
+            }),
+        }),
+      )
+      const layer = Layer.provideMerge(
+        WorkerSupervisorLive,
+        Layer.mergeAll(
+          Layer.provideMerge(
+            Layer.mergeAll(WorkerQueueLive(), WorkerRunsLive()),
+            Layer.mergeAll(
+              EventStoreTest(),
+              RuntimeConfigTest({
+                workerRetryLimit: 1,
+                workerWriteIsolation: "worktree",
+              }),
+            ),
+          ),
+          flakyExecutor,
+          commandLayer,
+          RuntimeConfigTest({
+            workerRetryLimit: 1,
+            workerWriteIsolation: "worktree",
+          }),
+        ),
+      )
+
+      const completed = await Effect.runPromise(
+        Effect.gen(function* () {
+          const supervisor = yield* WorkerSupervisor
+          yield* supervisor.enqueue({
+            worker_id: "worker-retry",
+            session_id: "session-1",
+            agent_type: "executor",
+            mode: "write-allowed",
+            prompt: "edit in isolation",
+            scope: "src/**",
+            cwd: root,
+          })
+          return yield* supervisor.runOne
+        }).pipe(Effect.provide(layer)),
+      )
+
+      expect(attempts).toBe(2)
+      expect(completed.status).toBe("completed")
+      // Latest attempt's path is exposed on the run record.
+      expect(completed.patch_path).toBe(
+        join(root, ".claude-hooks", "state", "workers", "patches", "worker-retry.2.patch"),
+      )
+      // Attempt 1's file is preserved on disk — the regression
+      // guarantee. Before the fix, both attempts wrote to the same
+      // `worker-retry.patch` path and attempt 1's bytes were lost.
+      expect(
+        existsSync(
+          join(root, ".claude-hooks", "state", "workers", "patches", "worker-retry.1.patch"),
+        ),
+      ).toBe(true)
+      expect(
+        existsSync(
+          join(root, ".claude-hooks", "state", "workers", "patches", "worker-retry.2.patch"),
+        ),
+      ).toBe(true)
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
   })
 
   test("worktree isolation fails explicitly when the source worktree is dirty", async () => {

@@ -66,17 +66,46 @@ export class ClaudeSubprocess extends Context.Tag("ClaudeSubprocess")<
 /**
  * Pure env-scrubbing function. Exported for direct test coverage —
  * the assertion that scrubbing happens is the security-critical invariant.
+ *
+ * US-23 (2026-05-20): scrubbed keys are now MASKED with an empty string
+ * rather than DROPPED from the record. Reason: Effect's
+ * `Command.env(cmd, scrubbed)` merges `scrubbed` into the parent
+ * `process.env` at spawn time (it doesn't replace wholesale). If we
+ * dropped `CLAUDECODE` from the scrubbed record, the executor would
+ * still inject `CLAUDECODE=1` from the parent shell. Emitting an
+ * explicit empty string overrides the parent's value in the merge,
+ * giving the child a defined-empty value the security claim depends on.
+ *
+ * Verified locally: with `CLAUDECODE=1` in the parent (the typical
+ * Claude Code session env), spawn(child) without masking produces
+ * `CLAUDECODE=1` in the child; with masking, the child sees
+ * `CLAUDECODE=` (empty). The Anthropic key vars are masked the same
+ * way — explicitly empty rather than possibly inherited.
  */
+const SCRUB_TARGETS: ReadonlySet<string> = new Set([
+  "ANTHROPIC_API_KEY",
+  "ANTHROPIC_AUTH_TOKEN",
+  "CLAUDECODE",
+])
+
 export const scrubClaudeEnv = (
   source: NodeJS.ProcessEnv,
 ): NodeJS.ProcessEnv => {
   const out: NodeJS.ProcessEnv = {}
   for (const [k, v] of Object.entries(source)) {
     if (typeof v !== "string") continue
-    if (k === "ANTHROPIC_API_KEY") continue
-    if (k === "ANTHROPIC_AUTH_TOKEN") continue
-    if (k === "CLAUDECODE") continue
+    if (SCRUB_TARGETS.has(k)) {
+      out[k] = "" // mask to override parent's value at spawn merge
+      continue
+    }
     out[k] = v
+  }
+  // Even if the source env didn't contain a scrub target, mask it
+  // explicitly so the executor's parent-env merge can't introduce it
+  // post-scrub. This is the actual security boundary — the source
+  // env is whatever the caller passed; the parent env is the threat.
+  for (const k of SCRUB_TARGETS) {
+    if (!(k in out)) out[k] = ""
   }
   return out
 }

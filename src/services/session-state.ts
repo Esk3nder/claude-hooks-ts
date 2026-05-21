@@ -53,6 +53,21 @@ export interface VerificationLedger {
   readonly verification_status: VerificationStatus;
   readonly verification_at: string | null;
   readonly next_required_action: string | null;
+  /**
+   * EP P2 #8 — the command string that flipped `verification_status`
+   * to `"passed"`. Recorded for audit so a reviewer can see WHICH run
+   * of bun test / tsc / pytest etc. counted as verification. Optional
+   * for back-compat with legacy records.
+   */
+  readonly verification_command?: string | null;
+  /**
+   * EP P2 #8 — subset of `files_changed` heuristically covered by the
+   * verification command. Match heuristic: a path is "covered" when
+   * its basename appears anywhere in the command string. False
+   * positives are cheap (over-recording is benign); false negatives
+   * are minor. NOT consulted by any gate yet — record-only at P2.
+   */
+  readonly verification_files?: ReadonlyArray<string>;
   readonly subagent_starts: ReadonlyArray<string>;
   readonly subagent_stops: ReadonlyArray<string>;
   /**
@@ -138,6 +153,8 @@ export const EMPTY_SESSION_STATE: SessionStateRecord = {
   verification_status: "none",
   verification_at: null,
   next_required_action: null,
+  verification_command: null,
+  verification_files: [],
   stop_blocked_once: false,
   source_urls: [],
   subagent_starts: [],

@@ -294,13 +294,25 @@ describe("handleStop (definition of done)", () => {
 
   // D2 — verify-gate "no rule matched" block reason carries diagnostics.
   test("D2: no-verify-rule block reason includes changed paths and a YAML stanza", async () => {
+    // EP P2 #9 update: paths chosen to NOT match this repo's
+    // .claude-hooks/verify-map.yaml rules (which cover src/**/*.ts,
+    // test/**/*.ts, .claude-hooks/work/**). Pre-fix `**` was treated
+    // naively so the test could use src/foo.ts and still hit the
+    // "no rule" branch by coincidence. Post-fix `**` correctly
+    // matches zero-or-more path segments, so we use paths under
+    // a directory none of those rules cover.
     const layer = SessionStateTest(
       new Map([
         [
           "sid-d2",
           {
             ...EMPTY_SESSION_STATE,
-            files_changed: ["src/foo.ts", "src/bar.ts", "src/baz.ts", "src/qux.ts"],
+            files_changed: [
+              "uncovered/foo.md",
+              "uncovered/bar.md",
+              "uncovered/baz.md",
+              "uncovered/qux.md",
+            ],
             verification_status: "none" as const,
           },
         ],
@@ -313,7 +325,7 @@ describe("handleStop (definition of done)", () => {
     expect(out.decision).toBe("block")
     const reason = out.reason ?? ""
     expect(reason).toContain("verify-map.yaml")
-    expect(reason).toContain("src/foo.ts")
+    expect(reason).toContain("uncovered/foo.md")
     // Should also surface the templated rules: block.
     expect(reason).toContain("rules:")
     expect(reason).toContain("source:")

@@ -123,11 +123,39 @@ describe("matchVerifyRules", () => {
     expect(matched).toEqual([])
   })
 
-  test("returns all rules whose source matches (matcher is `*`=`.*`, crosses `/`)", () => {
-    // The matcher mirrors regenerate.ts: `*` compiles to `.*`, so `src/*.ts`
-    // also matches `src/algorithm/foo.ts`. Both rules a and c match here.
+  test("single `*` is single-segment — `src/*.ts` does NOT cross `/` (EP P2 #9 fix)", () => {
+    // Pre-fix `*` compiled to `.*`, so `src/*.ts` matched
+    // `src/algorithm/foo.ts` — broader than the documented semantic
+    // and contrary to standard glob convention. Now `*` is `[^/]*`
+    // (single-segment); only `src/algorithm/*.ts` matches nested
+    // paths.
     const matched = matchVerifyRules(["src/algorithm/foo.ts"], rules)
-    expect(matched.map((r) => r.command).sort()).toEqual(["a", "c"])
+    expect(matched.map((r) => r.command).sort()).toEqual(["c"])
+  })
+
+  test("double `**` matches across `/` (EP P2 #9 recursive)", () => {
+    const recursive = [
+      { source: "src/**/*.ts", command: "rec", timeoutMs: 1000, priority: 100 },
+    ]
+    expect(
+      matchVerifyRules(["src/foo.ts"], recursive).map((r) => r.command),
+    ).toEqual(["rec"])
+    expect(
+      matchVerifyRules(["src/algorithm/isa/lifecycle.ts"], recursive).map(
+        (r) => r.command,
+      ),
+    ).toEqual(["rec"])
+  })
+
+  test("`**`-only matches everything", () => {
+    const wildcard = [
+      { source: "**", command: "all", timeoutMs: 1000, priority: 100 },
+    ]
+    expect(
+      matchVerifyRules(["src/deep/nested/path/foo.ts"], wildcard).map(
+        (r) => r.command,
+      ),
+    ).toEqual(["all"])
   })
 
   test("./-prefixed source patterns match normalized repo-relative paths", () => {

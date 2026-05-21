@@ -7,10 +7,15 @@
  * (default) is passthrough.
  */
 import { describe, expect, test } from "bun:test"
-import { Effect } from "effect"
+import { Effect, Layer } from "effect"
 import * as path from "node:path"
 import { handlePreToolUse } from "../../../src/events/pretool-policy.ts"
 import { RuntimeConfigTest } from "../../../src/services/runtime-config.ts"
+import { EventStoreLive } from "../../../src/services/event-store.ts"
+import {
+  WorkerRuns,
+  WorkerRunsLive,
+} from "../../../src/services/worker-runs.ts"
 import {
   decodePayload,
   engagedPatch,
@@ -93,6 +98,91 @@ describe("methodology e2e: mandatory worker delegation at E4+", () => {
           ),
           Effect.provide(RuntimeConfigTest({ workerMandatoryMode: "strict" })),
         ),
+      )
+      expect(preToolDecisionOutput(decision)?.permissionDecision).not.toBe("deny")
+    } finally {
+      project.cleanup()
+    }
+  })
+
+  // P0-1 regression: previously, `subagent_starts.length >
+  // subagent_stops.length` was treated as proof a worker was active and
+  // the gate returned `allow`. A dropped SubagentStop append (the
+  // catch-all in subagent-scope-gate just reports and swallows the
+  // error) left this delta permanently positive, so the parent silently
+  // regained direct-write ability for the rest of the session. Fix:
+  // derive the active count from the worker-runs ledger when the
+  // service is in context. Test asserts the two layers disagree
+  // (subagent_starts seeded as if a worker had started but the runs
+  // ledger holds no active record) and the gate denies, proving the
+  // runs ledger is now authoritative.
+  test("strict + E5 + stale subagent_starts but no active runs → DENY", async () => {
+    const project = withTmpProject("wm-stale-stop")
+    try {
+      const sessionId = "wm-stale"
+      writeIsaFixture(project.root, `.claude-hooks/work/${sessionId}/ISA.md`)
+      const layer = Layer.mergeAll(
+        seedSessionRecord(sessionId, {
+          ...engagedPatch(project.root, sessionId, 5),
+          // Pre-fix: this alone made activeWorkerCount = 1 → allow.
+          subagent_starts: ["w1:dropped-stop"],
+          subagent_stops: [],
+        }),
+        RuntimeConfigTest({ workerMandatoryMode: "strict" }),
+        // Provide WorkerRuns with an empty ledger — no runs were ever
+        // created, mirroring a state where the start event was recorded
+        // but the runs.createQueued / markRunning chain never ran (or
+        // the run already reached a terminal status and the stop append
+        // failed to land).
+        Layer.provide(WorkerRunsLive(project.root), EventStoreLive),
+      )
+      const decision = await Effect.runPromise(
+        handlePreToolUse(
+          writePayload(sessionId, project.root, path.join(project.root, "src", "foo.ts")),
+        ).pipe(Effect.provide(layer)),
+      )
+      const out = preToolDecisionOutput(decision)
+      expect(out?.permissionDecision).toBe("deny")
+      expect(out?.permissionDecisionReason).toContain("worker-mandatory")
+    } finally {
+      project.cleanup()
+    }
+  })
+
+  // P0-1 complement: same wiring, but a `running` worker run exists in
+  // the ledger. Even with `subagent_starts` empty (the legacy signal
+  // would say 0), the ledger-derived count is 1 and the gate allows.
+  test("strict + E5 + empty subagent_starts but a running run → passthrough", async () => {
+    const project = withTmpProject("wm-ledger-active")
+    try {
+      const sessionId = "wm-ledger"
+      writeIsaFixture(project.root, `.claude-hooks/work/${sessionId}/ISA.md`)
+      const layer = Layer.mergeAll(
+        seedSessionRecord(sessionId, {
+          ...engagedPatch(project.root, sessionId, 5),
+          subagent_starts: [],
+          subagent_stops: [],
+        }),
+        RuntimeConfigTest({ workerMandatoryMode: "strict" }),
+        Layer.provide(WorkerRunsLive(project.root), EventStoreLive),
+      )
+      const decision = await Effect.runPromise(
+        Effect.gen(function* () {
+          const runs = yield* WorkerRuns
+          yield* runs.createQueued({
+            worker_id: "w-ledger-active",
+            session_id: sessionId,
+            agent_id: "a1",
+            agent_type: "general-purpose",
+            mode: "write-allowed",
+            prompt_hash: "h",
+            scope: "src/**",
+          })
+          yield* runs.markRunning("w-ledger-active")
+          return yield* handlePreToolUse(
+            writePayload(sessionId, project.root, path.join(project.root, "src", "foo.ts")),
+          )
+        }).pipe(Effect.provide(layer)),
       )
       expect(preToolDecisionOutput(decision)?.permissionDecision).not.toBe("deny")
     } finally {

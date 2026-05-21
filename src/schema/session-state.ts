@@ -27,6 +27,12 @@ export const SessionStateRecordSchema = Schema.Struct({
   verification_status: Schema.Literal("passed", "failed", "none"),
   verification_at: Schema.NullOr(Schema.String),
   next_required_action: Schema.NullOr(Schema.String),
+  /**
+   * EP P2 #8 — verification metadata for audit. Both optional for
+   * back-compat with records written before this field existed.
+   */
+  verification_command: Schema.optional(Schema.NullOr(Schema.String)),
+  verification_files: Schema.optional(Schema.Array(Schema.String)),
   stop_blocked_once: Schema.Boolean,
   source_urls: Schema.Array(Schema.String),
   subagent_starts: Schema.Array(Schema.String),

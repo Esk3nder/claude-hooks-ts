@@ -31,7 +31,6 @@ import {
   type Probe,
 } from "../algorithm/isa/probes.ts";
 import type { CriterionEntry } from "../algorithm/isa/criteria.ts";
-import { logWarning } from "../services/diagnostics.ts";
 
 export const invocationKey = (payload: {
   readonly session_id: string;
@@ -151,6 +150,16 @@ interface WorkerStopRecord {
   readonly active: boolean;
   readonly cancelled: boolean;
   readonly blockReason: string | null;
+  /**
+   * P0-3: the WorkerResult parsed from `payload.output` when the parse
+   * succeeded, otherwise null. Returned alongside the other fields so
+   * `handleSubagentStop` can drive verification replay off this value
+   * directly rather than re-parsing the same string a second time. The
+   * old re-parse path could fail (the surrounding code anticipated it
+   * with a warning + skip) and silently bypass replay for write
+   * workers — closed by threading the parsed result through here.
+   */
+  readonly parsedResult: WorkerResult | null;
 }
 
 /**
@@ -209,14 +218,14 @@ const recordWorkerStop = (
 ): Effect.Effect<WorkerStopRecord> =>
   Effect.gen(function* () {
     const runs = yield* Effect.serviceOption(WorkerRuns);
-    if (runs._tag === "None") return { active: false, cancelled: false, blockReason: null };
+    if (runs._tag === "None") return { active: false, cancelled: false, blockReason: null, parsedResult: null };
     const run = yield* runs.value.findByAgent(payload.session_id, payload.agent_id);
-    if (run === null) return { active: false, cancelled: false, blockReason: null };
+    if (run === null) return { active: false, cancelled: false, blockReason: null, parsedResult: null };
     const workerId = run.worker_id;
     if (payload.output === undefined || payload.output.trim().length === 0) {
       const reason = "worker stopped without output; treating as cancelled";
       yield* runs.value.cancel(workerId, reason);
-      return { active: true, cancelled: true, blockReason: null };
+      return { active: true, cancelled: true, blockReason: null, parsedResult: null };
     }
     const config = yield* loadRuntimeConfig;
     const mode = run?.mode ?? nativeSubagentModeForRun(payload.agent_type);
@@ -227,15 +236,15 @@ const recordWorkerStop = (
       const reason = "worker output did not decode as WorkerResult";
       if (config.workerRequireStructuredResult) {
         yield* runs.value.markBlocked(workerId, reason);
-        return { active: true, cancelled: false, blockReason: reason };
+        return { active: true, cancelled: false, blockReason: reason, parsedResult: null };
       }
       if (mode === "write-allowed") {
         const writeReason = "write worker output did not decode as WorkerResult; structured output is required to verify changes";
         yield* runs.value.markBlocked(workerId, writeReason);
-        return { active: true, cancelled: false, blockReason: writeReason };
+        return { active: true, cancelled: false, blockReason: writeReason, parsedResult: null };
       }
       yield* runs.value.complete(workerId, fallbackWorkerResult(payload.output));
-      return { active: true, cancelled: false, blockReason: null };
+      return { active: true, cancelled: false, blockReason: null, parsedResult: null };
     }
     if (mode === "read-only" && parsed.right.changes_made.length > 0) {
       const reason = "read-only worker reported changes_made; inspect-only workers must not change files";
@@ -243,7 +252,7 @@ const recordWorkerStop = (
         workerId,
         reason,
       );
-      return { active: true, cancelled: false, blockReason: reason };
+      return { active: true, cancelled: false, blockReason: reason, parsedResult: parsed.right };
     }
     let completionMetadata: WorkerRunCompletionMetadata = {};
     if (mode === "write-allowed") {
@@ -258,20 +267,20 @@ const recordWorkerStop = (
           if (sessionState._tag === "Left") {
             const reason = "write worker completed without a captured patch and session changes could not be verified";
             yield* runs.value.markBlocked(workerId, reason);
-            return { active: true, cancelled: false, blockReason: reason };
+            return { active: true, cancelled: false, blockReason: reason, parsedResult: parsed.right };
           }
           if (sessionState.right.files_changed.length > 0) {
             const reason =
               "write worker reported no changes_made while the session has changed files; structured output must account for worker changes";
             yield* runs.value.markBlocked(workerId, reason);
-            return { active: true, cancelled: false, blockReason: reason };
+            return { active: true, cancelled: false, blockReason: reason, parsedResult: parsed.right };
           }
         }
       }
       if (parsed.right.blockers.length > 0) {
         const reason = `write worker reported blockers: ${parsed.right.blockers.slice(0, 3).join("; ")}`;
         yield* runs.value.markBlocked(workerId, reason);
-        return { active: true, cancelled: false, blockReason: reason };
+        return { active: true, cancelled: false, blockReason: reason, parsedResult: parsed.right };
       }
       if (hasCapturedOrReportedChanges) {
         const failedVerification = parsed.right.verification.find((check) => check.status !== "passed");
@@ -281,12 +290,12 @@ const recordWorkerStop = (
               ? "write worker changed files without verification evidence"
               : `write worker verification not passed: ${failedVerification.check}=${failedVerification.status}`;
           yield* runs.value.markBlocked(workerId, reason);
-          return { active: true, cancelled: false, blockReason: reason };
+          return { active: true, cancelled: false, blockReason: reason, parsedResult: parsed.right };
         }
         if (run?.patch_path === undefined) {
           const reason = "write worker reported changes without a captured isolated patch";
           yield* runs.value.markBlocked(workerId, reason);
-          return { active: true, cancelled: false, blockReason: reason };
+          return { active: true, cancelled: false, blockReason: reason, parsedResult: parsed.right };
         }
         completionMetadata = {
           ...(run.isolation === undefined ? {} : { isolation: run.isolation }),
@@ -297,7 +306,7 @@ const recordWorkerStop = (
       }
     }
     yield* runs.value.complete(workerId, parsed.right, undefined, completionMetadata);
-    return { active: true, cancelled: false, blockReason: null };
+    return { active: true, cancelled: false, blockReason: null, parsedResult: parsed.right };
   }).pipe(
     Effect.catchAll((cause) =>
       reportHookFailure({
@@ -316,6 +325,7 @@ const recordWorkerStop = (
           active: true,
           cancelled: false,
           blockReason: "worker stop state update failed; retry after the worker ledger is readable",
+          parsedResult: null,
         }),
       ),
     ),
@@ -397,36 +407,30 @@ export const handleSubagentStop = (
     }
     if (workerStop.cancelled) return NO_DECISION;
 
-    // US-1c: replay the worker's claimed verification probes in the parent
-    // process. Disagreements block the SubagentStop. Missing probes are
-    // unverifiable, not unverified — they pass through. We parse the
-    // payload output a second time here rather than threading the WorkerResult
-    // out of recordWorkerStop to keep that function's signature unchanged.
-    if (payload.output !== undefined && payload.output.trim().length > 0) {
-      const reparsed = yield* parseWorkerResultText(
-        workerIdForSubagent(payload),
-        payload.output,
-      ).pipe(Effect.either);
-      // Observability: recordWorkerStop already parsed once successfully.
-      // If the second parse disagrees, log so a parser/race issue doesn't
-      // silently skip the verification replay.
-      if (reparsed._tag === "Left") {
-        yield* logWarning(
-          `[verification-replay] re-parse of worker output failed after recordWorkerStop succeeded; skipping replay for session ${payload.session_id}`,
-        );
-      }
-      if (reparsed._tag === "Right" && reparsed.right.verification.length > 0) {
-        const cwd =
-          typeof payload.cwd === "string" && payload.cwd.length > 0
-            ? payload.cwd
-            : process.cwd();
-        const claims: ReadonlyArray<WorkerVerificationClaim> =
-          reparsed.right.verification;
-        const replays = yield* replayWorkerVerification(claims, cwd);
-        const verdict = evaluateVerificationReplay({ claims, replays });
-        if (verdict.kind === "block") {
-          return { decision: "block", reason: verdict.reason };
-        }
+    // US-1c: replay the worker's claimed verification probes in the
+    // parent process. Disagreements block the SubagentStop. Missing
+    // probes are unverifiable, not unverified — they pass through.
+    //
+    // P0-3: use the WorkerResult that `recordWorkerStop` already parsed
+    // rather than re-parsing the same string a second time. The old
+    // re-parse path had a logged-and-skipped branch on parse failure
+    // that silently bypassed verification replay (for write workers
+    // too); threading the result through `WorkerStopRecord` makes that
+    // branch unreachable.
+    if (
+      workerStop.parsedResult !== null &&
+      workerStop.parsedResult.verification.length > 0
+    ) {
+      const cwd =
+        typeof payload.cwd === "string" && payload.cwd.length > 0
+          ? payload.cwd
+          : process.cwd();
+      const claims: ReadonlyArray<WorkerVerificationClaim> =
+        workerStop.parsedResult.verification;
+      const replays = yield* replayWorkerVerification(claims, cwd);
+      const verdict = evaluateVerificationReplay({ claims, replays });
+      if (verdict.kind === "block") {
+        return { decision: "block", reason: verdict.reason };
       }
     }
 
