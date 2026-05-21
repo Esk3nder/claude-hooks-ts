@@ -101,6 +101,17 @@ export const WorkerRun = Schema.Struct({
    * workers (which use the patch-capture path instead).
    */
   baseline_ref: Schema.optional(Schema.String),
+  /**
+   * P1-3: true when the run completed with a synthesized
+   * `fallbackWorkerResult` because the worker's output failed to
+   * decode as a structured `WorkerResult` AND the config tolerated
+   * it (`workerRequireStructuredResult=false`, mode=read-only). The
+   * flag exists so audits can distinguish runs that completed on
+   * real worker output from runs that completed on a truncated
+   * 500-char fallback stub. Default is false / absent; only the
+   * fallback path sets it.
+   */
+  result_unstructured: Schema.optional(Schema.Boolean),
   output: Schema.optional(WorkerResult),
   result: Schema.optional(WorkerResult),
   failure_reason: Schema.optional(Schema.String),

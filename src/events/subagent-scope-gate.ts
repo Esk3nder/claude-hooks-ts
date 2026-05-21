@@ -331,7 +331,16 @@ const recordWorkerStop = (
         yield* runs.value.markBlocked(workerId, writeReason);
         return { active: true, cancelled: false, blockReason: writeReason, parsedResult: null };
       }
-      yield* runs.value.complete(workerId, fallbackWorkerResult(payload.output));
+      // P1-3: stamp `result_unstructured: true` on the run record
+      // so audits can distinguish runs that completed on real
+      // worker output from those that completed on the synthesized
+      // fallback stub. Only this branch sets the flag.
+      yield* runs.value.complete(
+        workerId,
+        fallbackWorkerResult(payload.output),
+        undefined,
+        { result_unstructured: true },
+      );
       return { active: true, cancelled: false, blockReason: null, parsedResult: null };
     }
     if (mode === "read-only" && parsed.right.changes_made.length > 0) {

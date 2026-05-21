@@ -50,8 +50,15 @@ export class WorkerSupervisor extends Context.Tag("WorkerSupervisor")<
   WorkerSupervisorApi
 >() {}
 
-const generatedWorkerId = (): string =>
-  `worker-${Date.now()}-${crypto.randomBytes(4).toString("hex")}`
+/**
+ * P2-1: switched from `${Date.now()}-${randomBytes(4)}` to UUIDv4.
+ * The old format depended on clock monotonicity for uniqueness and
+ * had only 32 bits of entropy per millisecond, so adversarial clock
+ * resets across sessions could plausibly produce a collision. UUIDv4
+ * is ~122 bits of entropy from the system CSPRNG and is the
+ * recommended cross-process unique identifier in Node.
+ */
+const generatedWorkerId = (): string => `worker-${crypto.randomUUID()}`
 
 const MAX_WORKER_PATCH_BYTES = 5_000_000
 
@@ -217,10 +224,22 @@ const writeWorkerPatch = (
     )
   }
   const patchPath = workerPatchPath(repoRoot, workerId, attempt)
+  // P2-2: write to a sibling temp file first and rename onto the
+  // final path. On POSIX `rename` is atomic within the same
+  // directory, so a process killed mid-write either leaves the prior
+  // patch intact (or no file) — readers never observe a half-written
+  // patch.
+  const tempPath = `${patchPath}.tmp-${crypto.randomUUID()}`
   return Effect.tryPromise({
     try: async () => {
       await fs.mkdir(path.dirname(patchPath), { recursive: true })
-      await fs.writeFile(patchPath, diff, "utf8")
+      await fs.writeFile(tempPath, diff, "utf8")
+      try {
+        await fs.rename(tempPath, patchPath)
+      } catch (renameCause) {
+        await fs.rm(tempPath, { force: true }).catch(() => undefined)
+        throw renameCause
+      }
       return patchPath
     },
     catch: (cause) =>

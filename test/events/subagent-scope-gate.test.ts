@@ -419,6 +419,57 @@ describe("VAL-M4-003 subagent-scope-gate", () => {
       rmSync(root, { recursive: true, force: true })
     }
   })
+
+  // P1-3: when a read-only worker's output fails to decode as a
+  // structured WorkerResult AND `workerRequireStructuredResult` is
+  // off, recordWorkerStop falls back to a synthesized stub and
+  // completes the run. The run record should carry
+  // `result_unstructured: true` so audits can distinguish fallback
+  // completions from real ones.
+  test("read-only fallback-result path stamps result_unstructured on the run (P1-3)", async () => {
+    const root = mkdtempSync(join(tmpdir(), "chts-p1-3-fallback-"))
+    try {
+      const layer = Layer.mergeAll(
+        SessionStateTest(),
+        Layer.provide(WorkerRunsLive(root), EventStoreLive),
+        // Permissive config so the fallback branch is reachable.
+        RuntimeConfigTest({ workerRequireStructuredResult: false }),
+      )
+      const result = await Effect.runPromise(
+        Effect.gen(function* () {
+          // Start without a CommandRunner — baseline-ref capture is
+          // skipped, but that's irrelevant for this test (we're
+          // exercising the parse-failure path, not drift).
+          yield* handleSubagentStart(startPayload("Explore"))
+          yield* handleSubagentStop(
+            decode({
+              _tag: "SubagentStop",
+              session_id: "s",
+              hook_event_name: "SubagentStop",
+              agent_type: "Explore",
+              agent_id: "a1",
+              cwd: root,
+              // Plain text, not valid JSON — parser fails. Mode is
+              // read-only, `workerRequireStructuredResult` is false,
+              // so the fallback branch fires.
+              output: "I looked at the code and it seems fine.",
+            }),
+          )
+          const runs = yield* WorkerRuns
+          return yield* runs.get(scopedWorkerRunId("s", "a1"))
+        }).pipe(Effect.provide(layer)),
+      )
+
+      expect(result?.status).toBe("completed")
+      expect(result?.result_unstructured).toBe(true)
+      // The fallback result carries the canonical risk note.
+      expect(result?.output?.risks).toContain(
+        "worker output did not decode as structured WorkerResult",
+      )
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
 })
 
 describe("M11 invocation key — agent_id is canonical", () => {
