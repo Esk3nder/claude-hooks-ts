@@ -18,7 +18,7 @@ import {
   normalizePathPattern,
 } from "./path-utils.ts"
 import { lookupRole } from "./subagent-roles.ts"
-import { loadRuntimeConfig } from "../services/runtime-config.ts"
+import { durationMillis, loadRuntimeConfig } from "../services/runtime-config.ts"
 import { splitShellWords } from "../services/shell-words.ts"
 import { WorkerRuns, scopedWorkerRunId, type WorkerRunsApi } from "../services/worker-runs.ts"
 import type { WorkerRun } from "../schema/worker-run.ts"
@@ -55,6 +55,42 @@ const MISSING_OUTPUT_BLOCK_RE = /\bworker output was missing\b/i
 
 const isRecoverableMissingOutputShrapnel = (run: WorkerRun): boolean =>
   run.status === "blocked" && MISSING_OUTPUT_BLOCK_RE.test(run.blocked_reason ?? "")
+
+/**
+ * P1-4: a run is considered stale-by-TTL when it's still in an
+ * active status (queued/running/blocked) AND its most relevant
+ * timestamp is older than `staleAfterMs`. Workers that never emit
+ * SubagentStop would otherwise age indefinitely — the supervisor's
+ * `attempt` Effect has its own `Effect.timeoutFail`, but that
+ * timeout only catches workers spawned via the supervisor path.
+ * SubagentStart-tracked workers (claude-launched subagents) have no
+ * internal timeout; without this sweep a dropped stop event leaves
+ * the run record `running` for the rest of the session.
+ *
+ * The relevant timestamp:
+ *   - `running` / `blocked` → started_at (when the worker began its
+ *     attempt). The most precise upper bound on "should be done by
+ *     now."
+ *   - `queued` → created_at (queued workers have no `started_at`;
+ *     a perma-queued worker is also stale-by-TTL because the queue
+ *     should have picked it up long ago).
+ *
+ * Both timestamps are stringly-typed ISO-8601; we parse with `Date`
+ * and treat NaN as "not stale" so a malformed record doesn't get
+ * wrongly cancelled.
+ */
+const isStaleByTtl = (
+  run: WorkerRun,
+  nowMs: number,
+  staleAfterMs: number,
+): boolean => {
+  if (!isActiveWorker(run)) return false
+  const tsString =
+    run.status === "queued" ? run.created_at : (run.started_at ?? run.created_at)
+  const ts = Date.parse(tsString)
+  if (!Number.isFinite(ts)) return false
+  return nowMs - ts > staleAfterMs
+}
 
 const hasShellControlOperator = (command: string): boolean =>
   /(?:&&|\|\||;|\||>|<|`|\$\(|\n|\r)/.test(command)
@@ -179,24 +215,51 @@ const bashMutationDecision = (command: string): PolicyDecision => {
   return PASSTHROUGH
 }
 
+/**
+ * P1-4: extended to also cancel stale-by-TTL runs (in addition to
+ * the original "worker output was missing" recoverable shrapnel).
+ * Each candidate carries the cancel reason it should receive so the
+ * ledger preserves *why* the sweep fired.
+ */
+interface SweepCandidate {
+  readonly run: WorkerRun
+  readonly reason: string
+}
+
+const STALE_BY_TTL_GRACE_MS = 60_000
+
 const cancelRecoverableWorkerShrapnel = (
   runs: WorkerRunsApi,
   activeRuns: ReadonlyArray<WorkerRun>,
+  ttl: { readonly nowMs: number; readonly staleAfterMs: number } | undefined = undefined,
 ): Effect.Effect<ReadonlyArray<WorkerRun>> =>
   Effect.gen(function* () {
-    const staleRuns = activeRuns.filter(isRecoverableMissingOutputShrapnel)
-    if (staleRuns.length === 0) return activeRuns
+    const candidates: SweepCandidate[] = []
+    for (const run of activeRuns) {
+      if (isRecoverableMissingOutputShrapnel(run)) {
+        candidates.push({
+          run,
+          reason: "worker stopped without output; treating as cancelled",
+        })
+        continue
+      }
+      if (ttl !== undefined && isStaleByTtl(run, ttl.nowMs, ttl.staleAfterMs)) {
+        candidates.push({
+          run,
+          reason: `worker exceeded stale-by-TTL threshold (${ttl.staleAfterMs}ms) in status=${run.status}; treating as cancelled`,
+        })
+      }
+    }
+    if (candidates.length === 0) return activeRuns
     const outcomes = yield* Effect.forEach(
-      staleRuns,
-      (run) =>
-        runs
-          .cancel(run.worker_id, "worker stopped without output; treating as cancelled")
-          .pipe(Effect.either),
+      candidates,
+      (candidate) =>
+        runs.cancel(candidate.run.worker_id, candidate.reason).pipe(Effect.either),
       { concurrency: "unbounded" },
     )
     const cancelledIds = new Set<string>()
-    for (let index = 0; index < staleRuns.length; index += 1) {
-      if (outcomes[index]?._tag === "Right") cancelledIds.add(staleRuns[index]!.worker_id)
+    for (let index = 0; index < candidates.length; index += 1) {
+      if (outcomes[index]?._tag === "Right") cancelledIds.add(candidates[index]!.run.worker_id)
     }
     return activeRuns.filter((run) => !cancelledIds.has(run.worker_id))
   })
@@ -587,7 +650,21 @@ export const evaluateWorkerToolPermission = (
       if (activeRunsResult._tag === "Left") {
         return failClosedForStateUnavailable(payload)
       }
-      const activeRuns = yield* cancelRecoverableWorkerShrapnel(runs.value, activeRunsResult.right)
+      // P1-4: broaden the sweep to also cancel stale-by-TTL runs.
+      // The grace term protects workers that legitimately need close
+      // to their full `workerDefaultTimeoutMs` window — sweep fires
+      // only once the run has been active for longer than its
+      // configured timeout *plus* a one-minute cushion.
+      const activeRuns = yield* cancelRecoverableWorkerShrapnel(
+        runs.value,
+        activeRunsResult.right,
+        {
+          nowMs: Date.now(),
+          staleAfterMs:
+            durationMillis(config.workerDefaultTimeoutMs) +
+            STALE_BY_TTL_GRACE_MS,
+        },
+      )
       return failClosedForUncorrelatedWrite(payload, activeRuns)
     }
     const scopedResult = yield* runs.value
