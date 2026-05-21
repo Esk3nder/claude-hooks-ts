@@ -34,6 +34,15 @@ export interface WorkerRunCompletionMetadata {
   readonly workspace_path?: string
   readonly patch_path?: string
   readonly patch_changed_files?: ReadonlyArray<string>
+  /**
+   * P1-3: set to true when the result being recorded is the
+   * synthesized `fallbackWorkerResult` from subagent-scope-gate
+   * (worker output did not decode as a structured `WorkerResult`
+   * but the config tolerated it). Persisted on the run record as
+   * `result_unstructured` so audits can distinguish real vs.
+   * fallback completions.
+   */
+  readonly result_unstructured?: boolean
 }
 
 export interface WorkerRunsApi {
@@ -98,7 +107,10 @@ export const hashWorkerPrompt = (prompt: string): string =>
 
 const nowIso = (): string => new Date().toISOString()
 
-const generatedWorkerId = (): string => `worker-${Date.now()}-${crypto.randomBytes(4).toString("hex")}`
+// P2-1: switched from `${Date.now()}-${randomBytes(4)}` to UUIDv4. See
+// the matching note in worker-supervisor.ts for rationale (entropy +
+// clock-independence).
+const generatedWorkerId = (): string => `worker-${crypto.randomUUID()}`
 
 const stableJson = (value: unknown): string => {
   if (Array.isArray(value)) return `[${value.map(stableJson).join(",")}]`
@@ -166,6 +178,9 @@ const clearRunTerminalFields = (run: WorkerRunType): WorkerRunType => {
     patch_changed_files: _patchChangedFiles,
     integration_status: _integrationStatus,
     integrated_at: _integratedAt,
+    // P1-3: cleared so a retry that ultimately succeeds normally
+    // doesn't carry the prior attempt's fallback marker.
+    result_unstructured: _resultUnstructured,
     ...base
   } = run
   return base
@@ -188,6 +203,7 @@ const clearRunCompletionFields = (run: WorkerRunType): WorkerRunType => {
     patch_changed_files: _patchChangedFiles,
     integration_status: _integrationStatus,
     integrated_at: _integratedAt,
+    result_unstructured: _resultUnstructured,
     ...base
   } = run
   return base
@@ -408,6 +424,10 @@ export const WorkerRunsLive = (root: string = process.cwd()): Layer.Layer<Worker
                         ...(metadata.patch_changed_files === undefined
                           ? {}
                           : { patch_changed_files: [...metadata.patch_changed_files] }),
+                        // P1-3: persist the unstructured-fallback marker.
+                        ...(metadata.result_unstructured
+                          ? { result_unstructured: true as const }
+                          : {}),
                         output,
                         result: output,
                         ...(metadata.patch_path === undefined

@@ -75,6 +75,47 @@ describe("WorkerRunsLive", () => {
     }
   })
 
+  // P2-1: createQueued without an explicit worker_id should generate
+  // a UUIDv4-shaped ID. Pre-fix the format was
+  // `worker-${Date.now()}-${randomBytes(4).hex}` which is clock-
+  // dependent and only 32 bits of entropy per ms.
+  test("createQueued generates UUIDv4-shaped worker IDs (P2-1)", async () => {
+    const root = mkdtempSync(join(tmpdir(), "chts-worker-runs-uuid-"))
+    try {
+      const ids = await Effect.runPromise(
+        Effect.gen(function* () {
+          const runs = yield* WorkerRuns
+          const a = yield* runs.createQueued({
+            session_id: "session-1",
+            agent_type: "Explore",
+            mode: "read-only",
+            prompt: "p1",
+            scope: "src/**",
+            created_at: "2026-05-13T00:00:00.000Z",
+          })
+          const b = yield* runs.createQueued({
+            session_id: "session-1",
+            agent_type: "Explore",
+            mode: "read-only",
+            prompt: "p2",
+            scope: "src/**",
+            created_at: "2026-05-13T00:00:00.000Z",
+          })
+          return [a.worker_id, b.worker_id]
+        }).pipe(Effect.provide(WorkerRunsLive(root)), Effect.provide(EventStoreLive)),
+      )
+      const uuidPattern =
+        /^worker-[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
+      expect(ids[0]).toMatch(uuidPattern)
+      expect(ids[1]).toMatch(uuidPattern)
+      // Distinct across two calls — sanity check that the generator
+      // is not returning a stable value.
+      expect(ids[0]).not.toBe(ids[1])
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
   test("records running and completed snapshots with typed output aliases and integration state", async () => {
     const root = mkdtempSync(join(tmpdir(), "chts-worker-runs-"))
     try {

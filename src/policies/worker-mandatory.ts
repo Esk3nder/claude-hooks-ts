@@ -46,9 +46,20 @@ export interface WorkerMandatoryInput {
    * Enforcement-plane P0 #6: when `toolName === "Bash"`, the bash command
    * string. Used to detect heredoc-style file writes (`cat > x <<EOF`,
    * `tee`, `sed -i`, etc.) that bypassed worker-mandatory strict mode
-   * before this field existed. Pre-P0 fix, the gate trusted
-   * `destructive-commands` to handle Bash, but that policy only catches
-   * CATASTROPHIC patterns, not arbitrary file writes.
+   * before this field existed.
+   *
+   * Note on policy boundaries (P2-3 doc clarification): the
+   * `destructive-commands` policy in `src/policies/destructive-commands.ts`
+   * remains responsible for catching CATASTROPHIC Bash patterns
+   * (`rm -rf /`, `git reset --hard`, `DROP DATABASE`, etc.) — it is
+   * called independently from `pretool-policy.ts` and is NOT wired
+   * through this gate. The two policies have complementary scopes:
+   * `destructive-commands` answers "is this command obviously
+   * destructive?"; this gate answers "should this write be delegated
+   * to a worker at tier ≥ E4?". A Bash command that writes a file
+   * non-destructively (e.g., `tee out.txt`) wouldn't trip
+   * `destructive-commands` but would trip this gate via
+   * `isBashFileWrite(bashCommand)`.
    *
    * Optional for back-compat: callers that don't supply it preserve
    * the prior toolName-only behavior (Bash always passes through).
