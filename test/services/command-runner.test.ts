@@ -91,4 +91,29 @@ describe("CommandRunner", () => {
     expect(result.exitCode).toBe(0)
     expect(result.stdout).toBe("missing")
   })
+
+  test("US-23: parent CLAUDECODE=1 is masked even when not in opts.env", async () => {
+    // Regression for US-23. Without the fix, a Claude Code parent
+    // session leaks CLAUDECODE=1 into child subprocesses despite
+    // `scrubClaudeEnv` removing it from the merged env. Effect's
+    // `Command.env` is additive, so the BunCommandExecutor merges
+    // our scrubbed env with parent's process.env at spawn time.
+    // The fix is in scrubClaudeEnv: scrubbed keys are masked with
+    // an empty string instead of dropped, so the explicit empty
+    // overrides parent's value in the executor's merge. This test
+    // pins the security boundary regardless of whether the caller
+    // also passes CLAUDECODE in opts.env.
+    const result = await runCommandLive(
+      "sh",
+      ["-c", 'printf "CLAUDECODE=%s" "$CLAUDECODE"'],
+      {
+        // intentionally do NOT pass CLAUDECODE in opts.env — we're
+        // testing that the parent's value gets masked
+        env: { CLAUDE_CODE_OAUTH_TOKEN: "ok" },
+        scrubEnv: scrubClaudeEnv,
+      },
+    )
+    expect(result.exitCode).toBe(0)
+    expect(result.stdout).toBe("CLAUDECODE=")
+  })
 })

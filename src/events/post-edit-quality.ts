@@ -136,6 +136,9 @@ const recordSingleToolUseEvidence = (
     }> = []
     let verification: VerificationStatus = "none"
     let nextRequiredAction: string | null = null
+    // EP P2 #8: record the literal command that flipped verification
+    // to passed/failed so a reviewer can audit which run counted.
+    let verificationCommand: string | null = null
 
     if (isEdit && file !== null && success) {
       entries.push({ key: "files_changed", value: file })
@@ -149,6 +152,7 @@ const recordSingleToolUseEvidence = (
         if (isVerificationCommand(cmd)) {
           entries.push({ key: "tests_run", value: cmd })
           verification = success && hasResponse ? "passed" : "failed"
+          verificationCommand = cmd
           if (!success || !hasResponse) {
             if (success) entries.push({ key: "commands_failed", value: cmd })
             nextRequiredAction = "Read the failure output and fix the failing assertion."
@@ -182,10 +186,48 @@ const recordSingleToolUseEvidence = (
     }
 
     if (verification !== "none" || nextRequiredAction !== null) {
+      // EP P2 #8: when verification flipped, compute the audit
+      // metadata. verification_files is the intersection of
+      // `files_changed` and entries the command mentions, where
+      // "mentions" is a stem-match: strip the extension from the
+      // changed file's basename and look for it surrounded by
+      // word boundaries (path separator, dot, or whitespace) in the
+      // command string. This catches the common companion-test
+      // shape `src/foo.ts` <-> `test/foo.test.ts` (where the test
+      // file's basename "foo.test.ts" doesn't contain "foo.ts" as
+      // a literal substring). False-positive cost is low; the
+      // field is record-only at P2.
+      const matchesCommand = (path: string, cmd: string): boolean => {
+        const basename = path.split("/").pop() ?? path
+        // Match the full basename literally (catches `bun test path/to/file.ts`).
+        if (cmd.includes(basename)) return true
+        // Stem match: foo.ts -> foo; look for /foo. or \bfoo\b or .foo. etc.
+        const stem = basename.replace(/\.[^./]+$/, "")
+        if (stem.length === 0) return false
+        const stemRe = new RegExp(
+          `(?:^|[/\\s.])${stem.replace(/[.+?^${}()|[\]\\]/g, "\\$&")}(?:[/\\s.]|$)`,
+        )
+        return stemRe.test(cmd)
+      }
+      const verificationFiles =
+        verification === "passed" && verificationCommand !== null
+          ? yield* state.get(payload.session_id).pipe(
+              Effect.map((r) =>
+                r.files_changed.filter((p) => matchesCommand(p, verificationCommand!)),
+              ),
+              Effect.catchAll(() => Effect.succeed([] as ReadonlyArray<string>)),
+            )
+          : ([] as ReadonlyArray<string>)
       yield* state
         .update(payload.session_id, {
           verification_status: verification,
           next_required_action: nextRequiredAction,
+          ...(verificationCommand !== null
+            ? {
+                verification_command: verificationCommand,
+                verification_files: verificationFiles,
+              }
+            : {}),
         })
         .pipe(
           Effect.catchAll((cause) =>

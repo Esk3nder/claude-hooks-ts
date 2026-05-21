@@ -185,9 +185,9 @@ Each entry below names the mitigation, what it defends against, where it lives, 
 
 These are the things we have NOT closed yet. Each is filed in the backlog with a US-* id and (where applicable) a verified `file:line` of the offending behavior. The honest disclosure is part of the security posture: a `SECURITY.md` that pretended these were closed would be lying.
 
-### US-23 — CommandRunner env-scrub vs. Bun parent-process injection (P1, queued)
+### US-23 — CommandRunner env-scrub vs. Bun parent-process injection (CLOSED 2026-05-20)
 
-`src/services/command-runner.ts:55-61` `mergeEnv` correctly drops `CLAUDECODE` from the merged env via `scrubClaudeEnv`. But Bun's spawn layer re-injects `CLAUDECODE=1` into the child when the parent is a Claude Code session, observable via the failing test at `test/services/command-runner.test.ts:78`. Net effect: the `CLAUDECODE` marker DOES leak to subprocesses despite the documented scrub. `ANTHROPIC_API_KEY` and `ANTHROPIC_AUTH_TOKEN` appear to be scrubbed correctly — they are not re-injected by Bun — but the test we'd use to prove it is undermined by the `CLAUDECODE` leak. Fix is filed; PR pending investigation of whether `@effect/platform-bun`'s `Command.env` merges-on-top or replaces wholesale.
+Investigation result: Effect's `Command.env(cmd, scrubbed)` is **additive** — the BunCommandExecutor merges our scrubbed env with the parent `process.env` at spawn time (verified directly via the Effect platform-bun API). Dropping `CLAUDECODE` from the scrubbed record let the parent's value re-inject in the merge. Fix: `src/services/claude-subprocess.ts:70-100` `scrubClaudeEnv` now MASKS scrubbed keys with an empty string instead of DROPPING them, AND unconditionally adds them to the output (even when absent from the source) — so the explicit `""` overrides the parent's value in the executor's merge. The previously-failing `test/services/command-runner.test.ts:78` is now green, and a new positive test (`:96-119`) asserts `CLAUDECODE` is absent from the child env even when only the parent shell sets it.
 
 ### Enforcement-plane P0s — CLOSED 2026-05-20
 
@@ -206,10 +206,10 @@ The 4 P1 bypasses surfaced by the Opus diligence are all fixed:
 - **#5 (NotebookEdit invisible to files_changed) — closed** by `src/events/post-edit-quality.ts:31-41` adding `NotebookEdit` to `EDIT_TOOLS` and `src/events/post-edit-quality.ts:79-85` using the canonical `mutablePathFromInput` from `src/policies/write-class.ts` to read `notebook_path` as well as `file_path`.
 - **#7 (source_ledger_opt_out carryover) — closed** by `src/events/prompt-router.ts:129-143` extending the requires-web-sources branch of `workflowPatch` to include `source_ledger_opt_out: false`. Pre-fix, an opt-out from a prior ISA would leak into a subsequent web-source-required task and suppress the Stop source-ledger gate.
 
-### Enforcement-plane P2s — documented for completeness
+### Enforcement-plane P2s — CLOSED 2026-05-20
 
-- **#8 — Verification is command-shape based, not changed-files based.** Any matching `bun test ...` command can flip `verification_status=passed` regardless of whether it covered the actual changes (`src/policies/tool-evidence.ts` + `src/events/post-edit-quality.ts:136-138`).
-- **#9 — Verify-map glob `*` matches `/`.** Single-star compiles to `.*` rather than `[^/]*` (`src/policies/verify-map.ts:186-189`), so `src/*.ts` matches nested paths.
+- **#8 (verification relevance) — closed** by `src/services/session-state.ts:60-77` adding optional `verification_command` and `verification_files` fields (back-compat: both optional), `src/events/post-edit-quality.ts:198-222` recording the literal command + intersection of `files_changed` and command-mentioned basenames (stem-match heuristic) when verification flips to `"passed"`. Record-only at P2 — no new blocking behavior, but a reviewer can now see WHICH run counted and which paths it covered.
+- **#9 (glob `*` matches `/`) — closed** by `src/policies/verify-map.ts:181-219` rewriting the glob compiler: single `*` is single-segment (`[^/]*`), double `**` is multi-segment (handled by tokenizing and special-casing `/`-adjacent positions so `src/**/foo.ts` matches `src/foo.ts`, `src/a/foo.ts`, `src/a/b/foo.ts`). Standard glob semantics now hold.
 
 ### Supply chain
 

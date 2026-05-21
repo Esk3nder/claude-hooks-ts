@@ -179,13 +179,55 @@ export const parseVerifyMapYaml = (raw: string): ParseSuccess | ParseFailure => 
 }
 
 /**
- * Compile a `*`-only glob to a RegExp anchored start-to-end.
- *   `*`        → `.*`
- *   `**` `?` … → unsupported; treated literally after escape.
+ * Compile a glob to a RegExp anchored start-to-end. EP P2 #9 — single
+ * star is single-segment (no `/`); double star is multi-segment.
+ *   single star  -> `[^/]*` — matches one path segment, no separators
+ *   double star  -> `.*`    — matches any depth
+ *
+ * Other regex metacharacters are escaped. Pre-fix single star
+ * compiled to `.*`, so `src` + star + `.ts` matched
+ * `src/algorithm/isa/lifecycle.ts` (broader than the documented
+ * semantic). The Opus diligence on 2026-05-20 flagged this as a
+ * low-impact drift.
+ *
+ * Implementation: tokenize on double star first to capture the
+ * recursive marker, then replace remaining single stars with
+ * single-segment. The sentinel prevents the substitution result
+ * from being re-processed by the single-star pass.
  */
+const escapeRegex = (s: string): string =>
+  s.replace(/[.+?^${}()|[\]\\]/g, "\\$&")
+
 const globToRegex = (glob: string): RegExp => {
-  const escaped = glob.replace(/[.+?^${}()|[\]\\]/g, "\\$&").replace(/\*/g, ".*")
-  return new RegExp(`^${escaped}$`)
+  // Tokenize on path separator; treat standalone `**` segments
+  // as "zero or more directory segments" so `src/**/foo.ts`
+  // matches `src/foo.ts` (zero) AND `src/a/b/foo.ts` (multiple).
+  const segments = glob.split("/")
+  const parts: string[] = []
+  const DOUBLE_STAR = "\x00DOUBLE_STAR\x00"
+  for (const seg of segments) {
+    if (seg === "**") {
+      parts.push(DOUBLE_STAR)
+    } else {
+      // Per-segment: escape regex metachars, then `*` → `[^/]*`.
+      parts.push(escapeRegex(seg).replace(/\*/g, "[^/]*"))
+    }
+  }
+  // Join then collapse `/DOUBLE_STAR/` / leading / trailing forms so
+  // a `**` segment matches zero-or-more PATH segments (not just chars):
+  //   `src/**/foo.ts` -> `src/(?:.*/)?foo.ts`
+  //   `**/foo.ts`     -> `(?:.*/)?foo.ts`
+  //   `src/**`        -> `src(?:/.*)?`
+  //   `**`            -> `.*`
+  let joined = parts.join("/")
+  joined = joined.replace(
+    new RegExp(`/${DOUBLE_STAR}/`, "g"),
+    "/(?:.*/)?",
+  )
+  joined = joined.replace(new RegExp(`^${DOUBLE_STAR}/`), "(?:.*/)?")
+  joined = joined.replace(new RegExp(`/${DOUBLE_STAR}$`), "(?:/.*)?")
+  joined = joined.replace(new RegExp(DOUBLE_STAR, "g"), ".*")
+  return new RegExp(`^${joined}$`)
 }
 
 const specificityOf = (source: string): number =>
