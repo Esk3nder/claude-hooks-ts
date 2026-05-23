@@ -31,6 +31,7 @@ describe("SessionState.appendBatch — coalesced I/O (M9 fix #5)", () => {
 
     const readSpy = spyOn(fs, "readFile")
     const writeSpy = spyOn(fs, "writeFile")
+    const renameSpy = spyOn(fs, "rename")
 
     try {
       const entries: ReadonlyArray<{
@@ -51,10 +52,17 @@ describe("SessionState.appendBatch — coalesced I/O (M9 fix #5)", () => {
       )
 
       const writesToFile = writeSpy.mock.calls.filter((c) => c[0] === file)
+      const tempWritesForFile = writeSpy.mock.calls.filter(
+        (c) => typeof c[0] === "string" && c[0].startsWith(`${file}.tmp-`),
+      )
+      const renamesToFile = renameSpy.mock.calls.filter((c) => c[1] === file)
       const readsToFile = readSpy.mock.calls.filter((c) => c[0] === file)
 
-      // File didn't exist beforehand, so impl skips read on first batch.
-      expect(writesToFile.length).toBe(1)
+      // Atomic commit writes a same-directory temp file and renames it over
+      // the target; the final JSON path must never be written in place.
+      expect(writesToFile.length).toBe(0)
+      expect(tempWritesForFile.length).toBe(1)
+      expect(renamesToFile.length).toBe(1)
       expect(readsToFile.length).toBeLessThanOrEqual(1)
 
       // Verify all entries persisted in single coalesced write.
@@ -68,10 +76,11 @@ describe("SessionState.appendBatch — coalesced I/O (M9 fix #5)", () => {
     } finally {
       readSpy.mockRestore()
       writeSpy.mockRestore()
+      renameSpy.mockRestore()
     }
   })
 
-  test("appendBatch on pre-existing session file: exactly 1 read + 1 write", async () => {
+  test("appendBatch on pre-existing session file: exactly 1 read + 1 atomic commit", async () => {
     const sessionId = "sid-batch-2"
     const file = path.join(root, ".claude-hooks", "state", `${sessionId}.json`)
 
@@ -86,6 +95,7 @@ describe("SessionState.appendBatch — coalesced I/O (M9 fix #5)", () => {
 
     const readSpy = spyOn(fs, "readFile")
     const writeSpy = spyOn(fs, "writeFile")
+    const renameSpy = spyOn(fs, "rename")
     try {
       await Effect.runPromise(
         Effect.gen(function* () {
@@ -98,12 +108,49 @@ describe("SessionState.appendBatch — coalesced I/O (M9 fix #5)", () => {
         }).pipe(Effect.provide(SessionStateLive(root))),
       )
       const writesToFile = writeSpy.mock.calls.filter((c) => c[0] === file)
+      const tempWritesForFile = writeSpy.mock.calls.filter(
+        (c) => typeof c[0] === "string" && c[0].startsWith(`${file}.tmp-`),
+      )
+      const renamesToFile = renameSpy.mock.calls.filter((c) => c[1] === file)
       const readsToFile = readSpy.mock.calls.filter((c) => c[0] === file)
       expect(readsToFile.length).toBe(1)
-      expect(writesToFile.length).toBe(1)
+      expect(writesToFile.length).toBe(0)
+      expect(tempWritesForFile.length).toBe(1)
+      expect(renamesToFile.length).toBe(1)
     } finally {
       readSpy.mockRestore()
       writeSpy.mockRestore()
+      renameSpy.mockRestore()
+    }
+  })
+
+  test("update and reset commit through temp-file rename, never in-place writes", async () => {
+    const sessionId = "sid-atomic-update"
+    const file = path.join(root, ".claude-hooks", "state", `${sessionId}.json`)
+
+    const writeSpy = spyOn(fs, "writeFile")
+    const renameSpy = spyOn(fs, "rename")
+    try {
+      await Effect.runPromise(
+        Effect.gen(function* () {
+          const api = yield* SessionState
+          yield* api.update(sessionId, { verification_status: "passed" })
+          yield* api.reset(sessionId)
+        }).pipe(Effect.provide(SessionStateLive(root))),
+      )
+
+      const writesToFile = writeSpy.mock.calls.filter((c) => c[0] === file)
+      const tempWritesForFile = writeSpy.mock.calls.filter(
+        (c) => typeof c[0] === "string" && c[0].startsWith(`${file}.tmp-`),
+      )
+      const renamesToFile = renameSpy.mock.calls.filter((c) => c[1] === file)
+
+      expect(writesToFile.length).toBe(0)
+      expect(tempWritesForFile.length).toBe(2)
+      expect(renamesToFile.length).toBe(2)
+    } finally {
+      writeSpy.mockRestore()
+      renameSpy.mockRestore()
     }
   })
 
