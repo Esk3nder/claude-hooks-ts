@@ -18,6 +18,7 @@ import { handleFileChanged } from "./events/filechanged-env-guard.ts"
 import { handleSessionStart } from "./events/session-start-brief.ts"
 import { handleUserPromptSubmit } from "./events/prompt-router.ts"
 import { handlePostToolUse } from "./events/post-edit-quality.ts"
+import { handleReadTldr } from "./events/read-tldr.ts"
 import { handlePostToolBatch } from "./events/batch-context-governor.ts"
 import { handleStop } from "./events/stop-definition-of-done.ts"
 import { handlePreCompact } from "./events/precompact-snapshot.ts"
@@ -320,6 +321,41 @@ const maybeGcApprovals = (cwd: string): Effect.Effect<void, never, Approvals | R
     )
   })
 
+const additionalContextFrom = (decision: HookDecision): string | null => {
+  if (!("hookSpecificOutput" in decision)) return null
+  const output = decision.hookSpecificOutput
+  if (
+    typeof output === "object" &&
+    output !== null &&
+    "additionalContext" in output &&
+    typeof output.additionalContext === "string"
+  ) {
+    return output.additionalContext
+  }
+  return null
+}
+
+const isNoDecision = (decision: HookDecision): boolean =>
+  Object.keys(decision).length === 0
+
+const mergePostToolUseDecisions = (
+  first: HookDecision,
+  second: HookDecision,
+): HookDecision => {
+  const contexts = [additionalContextFrom(first), additionalContextFrom(second)].filter(
+    (context): context is string => context !== null && context.length > 0,
+  )
+  if (contexts.length > 0) {
+    return {
+      hookSpecificOutput: {
+        hookEventName: "PostToolUse",
+        additionalContext: contexts.join("\n\n"),
+      },
+    }
+  }
+  return isNoDecision(first) ? second : first
+}
+
 /**
  * Total dispatch via Match.tag.exhaustive — TS will fail compile if any
  * HookPayload variant is unhandled.
@@ -334,7 +370,12 @@ const routeByTag = (
       PostToolBatch: (p) => handlePostToolBatch(p),
       SessionStart: (p) => handleSessionStart(p),
       UserPromptSubmit: (p) => handleUserPromptSubmit(p),
-      PostToolUse: (p) => handlePostToolUse(p),
+      PostToolUse: (p) =>
+        Effect.all([handlePostToolUse(p), handleReadTldr(p)]).pipe(
+          Effect.map(([postToolDecision, readTldrDecision]) =>
+            mergePostToolUseDecisions(postToolDecision, readTldrDecision),
+          ),
+        ),
       PreCompact: (p) => handlePreCompact(p),
       SessionEnd: (p) => handleSessionEnd(p),
       PostToolUseFailure: (p) => handlePostToolUseFailure(p),

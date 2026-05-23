@@ -9,6 +9,15 @@ export interface RuntimeConfig {
   readonly classifierTimeoutMs: Duration.Duration
   readonly classifierDisabled: boolean
   readonly isaPretoolGateDisabled: boolean
+  /**
+   * Stop context-budget gate threshold, in percent. `0` disables the gate.
+   * Env: CLAUDE_HOOKS_CONTEXT_BUDGET_THRESHOLD_PCT.
+   */
+  readonly contextBudgetThresholdPct: number
+  /** PostToolUse Read structural TLDR injection. Opt-in; default false. */
+  readonly readTldrEnabled: boolean
+  /** Minimum target file line count before Read TLDR injection can fire. */
+  readonly readTldrMinLines: number
   /** US-1: opt-in PreToolUse TDD gate. When true, Write/Edit on non-test
    * `src/**` files is blocked unless a companion test exists on disk or
    * was touched in this session. Default false (opt-in). */
@@ -58,6 +67,9 @@ export const DEFAULT_RUNTIME_CONFIG: RuntimeConfig = {
   classifierTimeoutMs: millis(25_000),
   classifierDisabled: false,
   isaPretoolGateDisabled: false,
+  contextBudgetThresholdPct: 85,
+  readTldrEnabled: false,
+  readTldrMinLines: 400,
   tddGateEnabled: false,
   otelEndpoint: Option.none(),
   lockRetryTimeoutMs: millis(5_000),
@@ -117,6 +129,17 @@ const envNonNegativeInt = (value: string | undefined, fallback: number): number 
   return Number.isInteger(parsed) && parsed >= 0 ? parsed : fallback
 }
 
+const envPercentThreshold = (
+  value: string | undefined,
+  fallback: number,
+): number => {
+  if (value === undefined) return fallback
+  const parsed = Number(value)
+  return Number.isInteger(parsed) && parsed >= 0 && parsed <= 100
+    ? parsed
+    : fallback
+}
+
 const envWorkerWriteIsolation = (
   value: string | undefined,
   fallback: WorkerWriteIsolation,
@@ -145,6 +168,15 @@ export const runtimeConfigFromEnv = (
   ...base,
   classifierDisabled: envFlag(env["CLAUDE_HOOKS_DISABLE_CLASSIFIER"]),
   isaPretoolGateDisabled: env["CLAUDE_HOOKS_DISABLE_ISA_PRETOOL_GATE"] === "1",
+  contextBudgetThresholdPct: envPercentThreshold(
+    env["CLAUDE_HOOKS_CONTEXT_BUDGET_THRESHOLD_PCT"],
+    base.contextBudgetThresholdPct,
+  ),
+  readTldrEnabled: envFlag(env["CLAUDE_HOOKS_READ_TLDR_ENABLED"]),
+  readTldrMinLines: envPositiveInt(
+    env["CLAUDE_HOOKS_READ_TLDR_MIN_LINES"],
+    base.readTldrMinLines,
+  ),
   tddGateEnabled: envFlag(env["CLAUDE_HOOKS_TDD_GATE_ENABLED"]),
   otelEndpoint: Option.map(nonEmpty(env["OTEL_EXPORTER_OTLP_ENDPOINT"]), (v) =>
     Redacted.make(v),
@@ -204,6 +236,9 @@ export interface RuntimeConfigSummary {
   readonly classifierTimeoutMs: number
   readonly classifierDisabled: boolean
   readonly isaPretoolGateDisabled: boolean
+  readonly contextBudgetThresholdPct: number
+  readonly readTldrEnabled: boolean
+  readonly readTldrMinLines: number
   readonly tddGateEnabled: boolean
   readonly otelEndpointConfigured: boolean
   readonly lockRetryTimeoutMs: number
@@ -229,6 +264,9 @@ export const summarizeRuntimeConfig = (
   classifierTimeoutMs: durationMillis(cfg.classifierTimeoutMs),
   classifierDisabled: cfg.classifierDisabled,
   isaPretoolGateDisabled: cfg.isaPretoolGateDisabled,
+  contextBudgetThresholdPct: cfg.contextBudgetThresholdPct,
+  readTldrEnabled: cfg.readTldrEnabled,
+  readTldrMinLines: cfg.readTldrMinLines,
   tddGateEnabled: cfg.tddGateEnabled,
   otelEndpointConfigured: Option.isSome(cfg.otelEndpoint),
   lockRetryTimeoutMs: durationMillis(cfg.lockRetryTimeoutMs),
