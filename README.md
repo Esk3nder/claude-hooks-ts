@@ -80,8 +80,8 @@ A few of the things wired into specific events:
 - **`PreToolUse`** — denies edits to `protected-paths.yaml` entries, refuses writes to `generated-files.yaml`, blocks destructive shell patterns, gates ISA-required sessions to writing the spec first. Two opt-in policy gates compose on top: the **TDD gate** denies writes to `src/**` without a companion test in the same session, and the **worker-mandatory gate** denies direct writes at classifier tier ≥ E4 unless a subagent worker is active. Both are off by default — see [Opt-in policy gates](#opt-in-policy-gates).
 - **`PreToolUse` + `SubagentStart` / `SubagentStop`** — turns marked `Task` / `Agent` launches into bounded workers by injecting scope/output contracts and requiring structured, evidenced output while leaving bare subagents alone.
 - **`UserPromptSubmit`** — classifies the prompt's cognitive mode (MINIMAL / NATIVE / ALGORITHM with tier E1–E5), records the classification, and injects it as `additionalContext` so the model enters the right depth. Two follow-on normalizations protect against classifier noise: the **tier-inflation guard** floors E4/E5 verdicts to E3 when neither the prompt nor recent context shows structural evidence (code fences, ≥3 file paths, multi-step verbs, ISA refs); the **workflow-scoped source-ledger** suppresses weak research idioms ("current best practices", "state of the art") on confidently coding/writing/ops tagged workflows so the source-ledger Stop gate only fires on explicit web-research prompts. Conservative fail-safe to ALGORITHM E3 on any error.
-- **`PostToolUse`** — runs your `.claude-hooks/probes.ts` (hot-loaded) against the active ISA; on pass, flips `[ ]` to `[x]` and auto-commits.
-- **`Stop`** — blocks when the active ISA is `phase: complete` but tier-required sections are missing or ISCs are unchecked. Runs declarative regenerate rules when source files changed.
+- **`PostToolUse`** — runs your `.claude-hooks/probes.ts` (hot-loaded) against the active ISA; on pass, flips `[ ]` to `[x]` and auto-commits. Optional Read TLDR injection can add a capped structural overview for large code-file reads.
+- **`Stop`** — blocks when the active ISA is `phase: complete` but tier-required sections are missing or ISCs are unchecked. When Claude Code exposes context usage, also blocks at the configured context-budget threshold unless the active ISA has a populated `## Handoff`. Runs declarative regenerate rules when source files changed.
 - **`SessionEnd`** — archives completed ISAs to `.claude-hooks/archive/<YYYY-MM-DD>/<slug>/ISA.md`.
 - **`PreCompact` / `PostCompact`** — snapshots active ISAs before model compaction and rehydrates them after as `additionalContext`.
 - **`PermissionRequest` / `PermissionDenied`** — caches permission decisions per pattern; auto-replays answers on repeated prompts; respects denylist.
@@ -148,11 +148,12 @@ Probes run with full Node privileges in the dispatcher process (same boundary as
 
 ### Opt-in policy gates
 
-Both of the following gates are **off by default**. Set the env vars to enable. Each runs at PreToolUse, inside the engagement-gate block, so they only fire on sessions where the engagement gate is already active.
+These optional features are **off by default**. Set the env vars to enable. The TDD and worker-mandatory gates run at PreToolUse, inside the engagement-gate block, so they only fire on sessions where the engagement gate is already active.
 
 ```bash
 export CLAUDE_HOOKS_TDD_GATE_ENABLED=1
 export CLAUDE_HOOKS_WORKER_MANDATORY_MODE=recommend   # or "strict" or "off"
+export CLAUDE_HOOKS_READ_TLDR_ENABLED=1
 ```
 
 **TDD gate.** When enabled, denies `Write` / `Edit` / `MultiEdit` / `NotebookEdit` on a non-test file under `src/**` unless a companion test exists on disk OR was touched in the current session. Companion candidates for `src/foo/bar.ts` are `src/foo/bar.test.ts` (inline), `src/foo/__tests__/bar.test.ts`, and `test/foo/bar.test.ts` (mirrored test/ tree). `.spec.ts` and matching-extension (`tsx`, `js`) variants also accepted. Bootstrap-batch escape: when the test file appears in this session's `files_changed`, the implementation write is allowed — so a fresh feature can ship by writing the test first, then the implementation.
@@ -166,6 +167,10 @@ export CLAUDE_HOOKS_WORKER_MANDATORY_MODE=recommend   # or "strict" or "off"
 | `strict` | `deny` with the same hint — model MUST launch a Task first |
 
 A live subagent (one or more `SubagentStart` not yet matched by `SubagentStop`) grants passthrough — workers are the delegation target. Worker sessions themselves (detected via `CLAUDE_HOOKS_WORKER_ID` set by the harness) are always passthrough so the gate never deadlocks a subagent's own writes.
+
+**Read TLDR injection.** When enabled, `PostToolUse` for `Read` injects a Markdown overview for first-slice reads of large `ts` / `tsx` / `py` / `go` files. The line threshold defaults to 400 and can be changed with `CLAUDE_HOOKS_READ_TLDR_MIN_LINES=<n>`. Summaries list imports, top-level symbols, public exports, and local call sites, are capped at 50 lines, and are cached by file mtime+size under `~/.claude-hooks/state/tldr-cache/`.
+
+**Context-budget Stop gate.** When context usage is available in Stop payload metadata or the transcript tail, Stop blocks at 85% by default unless the active ISA has a populated `## Handoff` that links every active ISC. Set `CLAUDE_HOOKS_CONTEXT_BUDGET_THRESHOLD_PCT=0` to disable it, or set another integer percentage from 1 to 100.
 
 ### Disable the classifier
 

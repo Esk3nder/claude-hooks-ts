@@ -108,6 +108,7 @@ export const Stop = variant("Stop", {
   ...Common,
   hook_event_name: Schema.Literal("Stop"),
   assistant_message: Schema.optional(Schema.String),
+  metadata: Schema.optional(Schema.Unknown),
 })
 
 export const PreCompact = variant("PreCompact", {

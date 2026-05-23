@@ -309,6 +309,34 @@ export type StopReadinessVerdict =
   | { readonly _tag: "block"; readonly reason: string }
   | { readonly _tag: "noop" }
 
+export interface IsaHandoffSection {
+  readonly body: string
+}
+
+/**
+ * Return the active ISA's optional `## Handoff` H2 body.
+ *
+ * `parseSections` intentionally tracks only canonical required ISA sections.
+ * Handoff is a Stop-compaction affordance, so it gets a narrow extractor
+ * rather than becoming required tier-completeness structure.
+ */
+export const isaHandoffSection = (
+  content: string,
+): IsaHandoffSection | null => {
+  const headingMatch = /^##\s+Handoff\b[^\n]*$/im.exec(content)
+  if (headingMatch === null) return null
+
+  const bodyStart = headingMatch.index + headingMatch[0].length
+  const rest = content.slice(bodyStart)
+  const endMatch = rest.match(/\n##\s+(?!#)|\n---\s*\n/)
+  const body =
+    endMatch === null || endMatch.index === undefined
+      ? rest
+      : rest.slice(0, endMatch.index)
+
+  return { body }
+}
+
 export interface StopReadinessInput {
   readonly cwd: string
   // When present, resolveActiveIsa scopes the ISA lookup to the session's

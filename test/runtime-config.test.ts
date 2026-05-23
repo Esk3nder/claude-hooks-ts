@@ -16,6 +16,9 @@ describe("RuntimeConfigService", () => {
     const cfg = runtimeConfigFromEnv({
       CLAUDE_HOOKS_DISABLE_CLASSIFIER: "true",
       CLAUDE_HOOKS_DISABLE_ISA_PRETOOL_GATE: "1",
+      CLAUDE_HOOKS_CONTEXT_BUDGET_THRESHOLD_PCT: "72",
+      CLAUDE_HOOKS_READ_TLDR_ENABLED: "1",
+      CLAUDE_HOOKS_READ_TLDR_MIN_LINES: "123",
       OTEL_EXPORTER_OTLP_ENDPOINT: "https://collector.example/v1/traces",
       CLAUDE_HOOKS_TEST_HANG_EVENT: "Stop",
       CLAUDE_HOOKS_WORKERS_ENABLED: "false",
@@ -30,6 +33,9 @@ describe("RuntimeConfigService", () => {
 
     expect(cfg.classifierDisabled).toBe(true)
     expect(cfg.isaPretoolGateDisabled).toBe(true)
+    expect(cfg.contextBudgetThresholdPct).toBe(72)
+    expect(cfg.readTldrEnabled).toBe(true)
+    expect(cfg.readTldrMinLines).toBe(123)
     expect(Option.isSome(cfg.otelEndpoint)).toBe(true)
     expect(Option.getOrNull(cfg.testHangEvent)).toBe("Stop")
     expect(cfg.workersEnabled).toBe(false)
@@ -43,6 +49,9 @@ describe("RuntimeConfigService", () => {
     expect(summarizeRuntimeConfig(cfg)).toMatchObject({
       classifierDisabled: true,
       isaPretoolGateDisabled: true,
+      contextBudgetThresholdPct: 72,
+      readTldrEnabled: true,
+      readTldrMinLines: 123,
       otelEndpointConfigured: true,
       testHangEvent: "Stop",
       workersEnabled: false,

@@ -1,11 +1,16 @@
 import { Effect } from "effect"
-import { existsSync } from "node:fs"
+import { existsSync, readFileSync } from "node:fs"
 import type { HookPayload } from "../schema/payloads.ts"
 import type { HookDecision } from "../schema/decisions.ts"
 import { NO_DECISION } from "../schema/decisions.ts"
 import { SessionState } from "../services/session-state.ts"
 import { checkStopReadiness, resolveActiveIsa } from "../algorithm/isa/lifecycle.ts"
 import { resolveExpectedIsaAbsolute } from "../algorithm/isa/path-contract.ts"
+import {
+  contextPercentFromPayload,
+  contextPercentFromTranscript,
+  evaluateBudget,
+} from "../policies/context-budget.ts"
 import { loadRegenerateRules, matchRules } from "../policies/regenerate.ts"
 import { expandPathMatchCandidates } from "../policies/path-utils.ts"
 import {
@@ -17,6 +22,7 @@ import {
 import { runCommandLive, runShellCommandLive } from "../services/command-runner.ts"
 import { logWarning } from "../services/diagnostics.ts"
 import { reportHookFailure } from "../services/hook-failure.ts"
+import { loadRuntimeConfig } from "../services/runtime-config.ts"
 // D5: inspection-whitelist is lazy-loaded inside handleStop only. Keeping it
 // out of the static import graph saves a small but real chunk of dispatcher
 // cold-start time, which matters for the UserPromptSubmit p50 budget.
@@ -225,6 +231,32 @@ export const handleStop = (
     const isaVerdict = checkStopReadiness({ cwd: sessionRoot, record })
     if (isaVerdict._tag === "block") {
       preflightBlockReasons.push(isaVerdict.reason)
+    }
+
+    const runtimeConfig = yield* loadRuntimeConfig
+    const contextPercent =
+      contextPercentFromPayload(payload) ??
+      contextPercentFromTranscript(payload.transcript_path)
+    if (contextPercent !== null && runtimeConfig.contextBudgetThresholdPct > 0) {
+      const activeIsaPath = resolveActiveIsa({ sessionRoot, record })
+      let activeIsa: string | null = null
+      if (activeIsaPath !== null && existsSync(activeIsaPath)) {
+        try {
+          activeIsa = readFileSync(activeIsaPath, "utf-8")
+        } catch {
+          activeIsa = null
+        }
+      }
+      if (activeIsa !== null) {
+        const budgetVerdict = evaluateBudget({
+          contextPercent,
+          threshold: runtimeConfig.contextBudgetThresholdPct,
+          isa: activeIsa,
+        })
+        if (budgetVerdict._tag === "block") {
+          preflightBlockReasons.push(budgetVerdict.reason)
+        }
+      }
     }
 
     // Source-required source-ledger gate.
