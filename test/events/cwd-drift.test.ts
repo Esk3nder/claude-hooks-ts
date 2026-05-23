@@ -347,6 +347,105 @@ describe("TaskCompleted ISA evidence — cwd drift", () => {
   })
 })
 
+describe("Stop verify-map — cwd drift", () => {
+  test("Stop loads verify-map from session_root, not drifted cwd", async () => {
+    const { root, drift, cleanup } = stage("verify-map-root")
+    try {
+      // Complete ISA at session_root so preflight passes and verify runs.
+      const isaDir = path.join(root, ".claude-hooks", "work", SID)
+      fs.mkdirSync(isaDir, { recursive: true })
+      fs.writeFileSync(
+        path.join(isaDir, "ISA.md"),
+        COMPLETE_ENGAGED_ISA,
+        "utf-8",
+      )
+      // verify-map under session_root with a rule that matches the changed
+      // file and exits 0 via `true`.
+      fs.mkdirSync(path.join(root, ".claude-hooks"), { recursive: true })
+      fs.writeFileSync(
+        path.join(root, ".claude-hooks", "verify-map.yaml"),
+        'rules:\n  - source: "**/*.md"\n    command: ["true"]\n    priority: 1000\n',
+        "utf-8",
+      )
+      const out = await runStop(drift, {
+        ...ENGAGED(root),
+        files_changed: [path.join(root, ".claude-hooks", "work", SID, "ISA.md")],
+        verification_status: "none",
+      })
+      // Under the bug, Stop loads verify-map from `drift` (empty), finds no
+      // rule, and blocks with "no verification command has run". After fix,
+      // it loads from session_root, runs `true`, and does not block.
+      expect(out.decision).not.toBe("block")
+    } finally {
+      cleanup()
+    }
+  })
+
+  test("verify-map at drift dir is ignored when session_root has none", async () => {
+    const { root, drift, cleanup } = stage("verify-map-drift")
+    try {
+      const isaDir = path.join(root, ".claude-hooks", "work", SID)
+      fs.mkdirSync(isaDir, { recursive: true })
+      fs.writeFileSync(
+        path.join(isaDir, "ISA.md"),
+        COMPLETE_ENGAGED_ISA,
+        "utf-8",
+      )
+      // Plant a permissive verify-map ONLY under the drift directory.
+      fs.mkdirSync(path.join(drift, ".claude-hooks"), { recursive: true })
+      fs.writeFileSync(
+        path.join(drift, ".claude-hooks", "verify-map.yaml"),
+        'rules:\n  - source: "**/*.md"\n    command: ["true"]\n    priority: 1000\n',
+        "utf-8",
+      )
+      const out = await runStop(drift, {
+        ...ENGAGED(root),
+        files_changed: [path.join(root, ".claude-hooks", "work", SID, "ISA.md")],
+        verification_status: "none",
+      })
+      // Drift's verify-map must not satisfy the gate.
+      expect(out.decision).toBe("block")
+      expect(out.reason ?? "").toContain("no verification command")
+    } finally {
+      cleanup()
+    }
+  })
+})
+
+describe("Stop regenerate — cwd drift", () => {
+  test("cwd-local regenerate rules match changed files relative to current cwd", async () => {
+    const { root, cleanup } = stage("regenerate-cwd-local")
+    const docs = path.join(root, "docs")
+    try {
+      fs.mkdirSync(path.join(docs, ".claude-hooks"), { recursive: true })
+      fs.writeFileSync(path.join(docs, "a.md"), "changed\n", "utf-8")
+      fs.writeFileSync(
+        path.join(docs, ".claude-hooks", "regenerate.yaml"),
+        [
+          "rules:",
+          "  - source: a.md",
+          "    derived: regen-ran.txt",
+          '    command: ["sh", "-c", "printf ran > regen-ran.txt"]',
+        ].join("\n"),
+        "utf-8",
+      )
+
+      const out = await runStop(docs, {
+        session_root: root,
+        files_changed: [path.join(docs, "a.md")],
+        verification_status: "passed",
+      })
+
+      expect(out.decision).not.toBe("block")
+      expect(
+        fs.readFileSync(path.join(docs, "regen-ran.txt"), "utf-8"),
+      ).toBe("ran")
+    } finally {
+      cleanup()
+    }
+  })
+})
+
 describe("Session-state forward-compat — legacy records without new fields", () => {
   test("old JSON missing session_root and expected_isa_path_absolute parses cleanly", async () => {
     // Simulate the on-disk path. Use SessionStateLive via a tmp root.
