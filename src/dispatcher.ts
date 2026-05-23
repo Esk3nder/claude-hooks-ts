@@ -70,8 +70,8 @@ import type { Inference } from "./services/inference.ts"
 import type { ClassifierTelemetry } from "./services/classifier-telemetry.ts"
 import type { Redact } from "./services/redact.ts"
 import type { EventStore } from "./services/event-store.ts"
-import type { CommandRunner } from "./services/command-runner.ts"
-import { currentProcessEnv } from "./bootstrap/env.ts"
+import { CommandRunnerPlatformLive, type CommandRunner } from "./services/command-runner.ts"
+import { stateRootForHook } from "./services/state-paths.ts"
 
 type AppServices =
   | FileSystem
@@ -124,13 +124,6 @@ const failureContextFor = (
     ? { tool_name: (payload as { tool_name: string }).tool_name }
     : {}),
 })
-
-const stateRootForHook = (cwd: string): string => {
-  const override = currentProcessEnv()["CLAUDE_HOOKS_STATE_ROOT"]
-  return typeof override === "string" && override.trim().length > 0
-    ? path.resolve(override)
-    : cwd
-}
 
 const reportFallback = (input: {
   readonly kind: Parameters<typeof reportHookFailure>[0]["kind"]
@@ -553,7 +546,9 @@ export const program = (argv: ReadonlyArray<string>): Effect.Effect<void> =>
       typeof payload.cwd === "string" && payload.cwd.length > 0
         ? payload.cwd
         : process.cwd()
-    const stateRoot = stateRootForHook(cwd)
+    const stateRoot = yield* stateRootForHook(cwd).pipe(
+      Effect.provide(CommandRunnerPlatformLive),
+    )
     const layer = Layer.mergeAll(makeAppLive(stateRoot), TracingLive)
     const decision = yield* withSession(
       payload.session_id,
@@ -568,7 +563,7 @@ export const program = (argv: ReadonlyArray<string>): Effect.Effect<void> =>
     // so a slow/failing ledger never blocks the hook response.
     yield* appendLedger(payload, decision).pipe(Effect.provide(layer))
     // Best-effort post-emit gc — never blocks or affects the response.
-    yield* maybeGcApprovals(stateRoot).pipe(
+    yield* maybeGcApprovals(cwd).pipe(
       Effect.provide(layer),
       Effect.catchAll(() => Effect.succeed(undefined)),
     )

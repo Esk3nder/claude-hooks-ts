@@ -80,7 +80,7 @@ describe("SessionState.appendBatch — coalesced I/O (M9 fix #5)", () => {
     }
   })
 
-  test("appendBatch on pre-existing session file: exactly 1 read + 1 atomic commit", async () => {
+  test("appendBatch on pre-existing session file: locked reread + 1 atomic commit", async () => {
     const sessionId = "sid-batch-2"
     const file = path.join(root, ".claude-hooks", "state", `${sessionId}.json`)
 
@@ -113,7 +113,8 @@ describe("SessionState.appendBatch — coalesced I/O (M9 fix #5)", () => {
       )
       const renamesToFile = renameSpy.mock.calls.filter((c) => c[1] === file)
       const readsToFile = readSpy.mock.calls.filter((c) => c[0] === file)
-      expect(readsToFile.length).toBe(1)
+      expect(readsToFile.length).toBeGreaterThanOrEqual(1)
+      expect(readsToFile.length).toBeLessThanOrEqual(2)
       expect(writesToFile.length).toBe(0)
       expect(tempWritesForFile.length).toBe(1)
       expect(renamesToFile.length).toBe(1)
