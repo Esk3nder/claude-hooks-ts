@@ -312,7 +312,7 @@ export const handleStop = (
     // `sessionRoot` — not the drifted shell cwd. Using `currentCwd` here
     // diverged from the ISA gate (which uses sessionRoot) and caused
     // a self-perpetuating Stop loop when cwd != session_root.
-    const changedPathCandidates = expandPathMatchCandidates(
+    const verifyPathCandidates = expandPathMatchCandidates(
       sessionRoot,
       record.files_changed,
     )
@@ -320,7 +320,7 @@ export const handleStop = (
     if (filesChanged > 0 && record.verification_status !== "passed") {
       const verifyRules = loadVerifyRules(sessionRoot)
       const selectedVerify = selectVerifyCommand(
-        changedPathCandidates,
+        verifyPathCandidates,
         verifyRules,
       )
       if (selectedVerify !== null) {
@@ -413,7 +413,11 @@ export const handleStop = (
     const rules = loadRegenerateRules(currentCwd)
     const regenerateSkipped: string[] = []
     if (rules.length > 0 && record.files_changed.length > 0) {
-      const matched = matchRules(changedPathCandidates, rules)
+      const regeneratePathCandidates = expandPathMatchCandidates(
+        currentCwd,
+        record.files_changed,
+      )
+      const matched = matchRules(regeneratePathCandidates, rules)
       for (const rule of matched) {
         const elapsed = Date.now() - stopStartedAt
         const remaining = STOP_BUDGET_MS - elapsed

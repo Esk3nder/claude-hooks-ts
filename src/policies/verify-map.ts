@@ -12,9 +12,11 @@
  * the same boundary as `regenerate.yaml`, `package.json` scripts, and the
  * settings.json hook entries themselves. The Stop handler will exec whatever
  * command appears here, with the privileges of the Claude Code process,
- * inside the shell's cwd. Do NOT commit a `verify-map.yaml` you wouldn't
- * trust to run at completion of every Stop. Reading the file is gated on a
- * cwd-scoped resolution that matches `regenerate.yaml`'s semantics.
+ * inside the caller-provided working directory (the Stop handler passes the
+ * frozen `session_root`). Do NOT commit a `verify-map.yaml` you wouldn't
+ * trust to run at completion of every Stop. The Stop handler loads this file
+ * from `<session_root>/.claude-hooks/verify-map.yaml`, unlike cwd-scoped
+ * `regenerate.yaml`.
  *
  * YAML shape:
  *

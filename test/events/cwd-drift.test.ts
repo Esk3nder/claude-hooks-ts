@@ -412,6 +412,40 @@ describe("Stop verify-map — cwd drift", () => {
   })
 })
 
+describe("Stop regenerate — cwd drift", () => {
+  test("cwd-local regenerate rules match changed files relative to current cwd", async () => {
+    const { root, cleanup } = stage("regenerate-cwd-local")
+    const docs = path.join(root, "docs")
+    try {
+      fs.mkdirSync(path.join(docs, ".claude-hooks"), { recursive: true })
+      fs.writeFileSync(path.join(docs, "a.md"), "changed\n", "utf-8")
+      fs.writeFileSync(
+        path.join(docs, ".claude-hooks", "regenerate.yaml"),
+        [
+          "rules:",
+          "  - source: a.md",
+          "    derived: regen-ran.txt",
+          '    command: ["sh", "-c", "printf ran > regen-ran.txt"]',
+        ].join("\n"),
+        "utf-8",
+      )
+
+      const out = await runStop(docs, {
+        session_root: root,
+        files_changed: [path.join(docs, "a.md")],
+        verification_status: "passed",
+      })
+
+      expect(out.decision).not.toBe("block")
+      expect(
+        fs.readFileSync(path.join(docs, "regen-ran.txt"), "utf-8"),
+      ).toBe("ran")
+    } finally {
+      cleanup()
+    }
+  })
+})
+
 describe("Session-state forward-compat — legacy records without new fields", () => {
   test("old JSON missing session_root and expected_isa_path_absolute parses cleanly", async () => {
     // Simulate the on-disk path. Use SessionStateLive via a tmp root.
