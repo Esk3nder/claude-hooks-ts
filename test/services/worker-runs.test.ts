@@ -1,10 +1,15 @@
 import { describe, expect, test } from "bun:test"
-import { Effect } from "effect"
+import { Effect, Schema } from "effect"
 import { mkdtempSync, readFileSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { AppTest } from "../../src/layers/test.ts"
-import { type WorkerResult } from "../../src/schema/worker-run.ts"
+import {
+  CURRENT_WORKER_CONTRACT_HASH,
+  CURRENT_WORKER_CONTRACT_VERSION,
+  appendWorkerContract,
+} from "../../src/policies/worker-contract.ts"
+import { WorkerRun, type WorkerResult } from "../../src/schema/worker-run.ts"
 import { EventStoreLive } from "../../src/services/event-store.ts"
 import { WorkerQueue } from "../../src/services/worker-queue.ts"
 import { hashWorkerPrompt, WorkerRuns, WorkerRunsLive } from "../../src/services/worker-runs.ts"
@@ -73,6 +78,133 @@ describe("WorkerRunsLive", () => {
     } finally {
       rmSync(root, { recursive: true, force: true })
     }
+  })
+
+  test("createQueued leaves worker contract metadata absent by default", async () => {
+    const root = mkdtempSync(join(tmpdir(), "chts-worker-runs-contract-"))
+    try {
+      const run = await Effect.runPromise(
+        Effect.gen(function* () {
+          const runs = yield* WorkerRuns
+          return yield* runs.createQueued({
+            worker_id: "worker-contract-default",
+            session_id: "session-1",
+            agent_type: "Explore",
+            mode: "read-only",
+            prompt_hash: "prompt-hash-1",
+            scope: "src/**",
+          })
+        }).pipe(Effect.provide(WorkerRunsLive(root)), Effect.provide(EventStoreLive)),
+      )
+
+      expect(run.contract_version).toBeUndefined()
+      expect(run.contract_hash).toBeUndefined()
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  test("createQueued persists explicitly supplied worker contract metadata", async () => {
+    const root = mkdtempSync(join(tmpdir(), "chts-worker-runs-contract-"))
+    try {
+      const run = await Effect.runPromise(
+        Effect.gen(function* () {
+          const runs = yield* WorkerRuns
+          return yield* runs.createQueued({
+            worker_id: "worker-contract-explicit",
+            session_id: "session-1",
+            agent_type: "Explore",
+            mode: "read-only",
+            prompt_hash: "prompt-hash-1",
+            scope: "src/**",
+            contract_version: "legacy-v0",
+            contract_hash: "legacy-hash",
+          })
+        }).pipe(Effect.provide(WorkerRunsLive(root)), Effect.provide(EventStoreLive)),
+      )
+
+      expect(run.contract_version).toBe("legacy-v0")
+      expect(run.contract_hash).toBe("legacy-hash")
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  test("createQueued persists worker contract metadata parsed from the prompt", async () => {
+    const root = mkdtempSync(join(tmpdir(), "chts-worker-runs-contract-"))
+    try {
+      const prompt = appendWorkerContract("inspect auth", "Explore")
+      const run = await Effect.runPromise(
+        Effect.gen(function* () {
+          const runs = yield* WorkerRuns
+          return yield* runs.createQueued({
+            worker_id: "worker-contract-parsed",
+            session_id: "session-1",
+            agent_type: "Explore",
+            mode: "read-only",
+            prompt,
+            scope: "src/**",
+          })
+        }).pipe(Effect.provide(WorkerRunsLive(root)), Effect.provide(EventStoreLive)),
+      )
+
+      expect(run.prompt_hash).toBe(hashWorkerPrompt(prompt))
+      expect(run.contract_version).toBe(CURRENT_WORKER_CONTRACT_VERSION)
+      expect(run.contract_hash).toBe(CURRENT_WORKER_CONTRACT_HASH)
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  test("worker lifecycle transitions preserve original contract metadata", async () => {
+    const root = mkdtempSync(join(tmpdir(), "chts-worker-runs-contract-"))
+    try {
+      const latest = await Effect.runPromise(
+        Effect.gen(function* () {
+          const runs = yield* WorkerRuns
+          yield* runs.createQueued({
+            worker_id: "worker-contract-lifecycle",
+            session_id: "session-1",
+            agent_type: "executor",
+            mode: "write-allowed",
+            prompt_hash: "prompt-hash-1",
+            scope: "src/**",
+            contract_version: "legacy-v0",
+            contract_hash: "legacy-hash",
+          })
+          yield* runs.markRunning("worker-contract-lifecycle")
+          yield* runs.complete("worker-contract-lifecycle", validResult(), undefined, {
+            isolation: "worktree",
+            patch_path: "/tmp/worker-contract-lifecycle.patch",
+          })
+          yield* runs.markIntegrationRejected("worker-contract-lifecycle", "not needed")
+          return yield* runs.get("worker-contract-lifecycle")
+        }).pipe(Effect.provide(WorkerRunsLive(root)), Effect.provide(EventStoreLive)),
+      )
+
+      expect(latest?.contract_version).toBe("legacy-v0")
+      expect(latest?.contract_hash).toBe("legacy-hash")
+      expect(latest?.integration_status).toBe("rejected")
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  test("old worker run records without contract metadata still decode", () => {
+    const decoded = Schema.decodeUnknownSync(WorkerRun)({
+      worker_id: "old-worker",
+      session_id: "session-1",
+      agent_type: "Explore",
+      mode: "read-only",
+      status: "queued",
+      prompt_hash: "prompt-hash-old",
+      scope: "src/**",
+      created_at: "2026-05-13T00:00:00.000Z",
+      attempts: 0,
+    })
+
+    expect(decoded.contract_version).toBeUndefined()
+    expect(decoded.contract_hash).toBeUndefined()
   })
 
   // P2-1: createQueued without an explicit worker_id should generate

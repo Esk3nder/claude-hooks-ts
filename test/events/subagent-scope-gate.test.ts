@@ -14,8 +14,13 @@ import {
 import { SessionStateTest } from "../../src/services/session-state.ts"
 import { EventStoreLive } from "../../src/services/event-store.ts"
 import { RuntimeConfigTest } from "../../src/services/runtime-config.ts"
+import { PolicyConfigTest } from "../../src/services/policy-config.ts"
 import { WorkerRuns, WorkerRunsLive, scopedWorkerRunId } from "../../src/services/worker-runs.ts"
-import { appendWorkerContract } from "../../src/policies/worker-contract.ts"
+import {
+  CURRENT_WORKER_CONTRACT_HASH,
+  CURRENT_WORKER_CONTRACT_VERSION,
+  appendWorkerContract,
+} from "../../src/policies/worker-contract.ts"
 import { CommandRunnerTest, type CommandRunResult } from "../../src/services/command-runner.ts"
 
 const decode = (raw: unknown) => Schema.decodeUnknownSync(NormalizedHookEvent)(raw)
@@ -92,6 +97,171 @@ describe("VAL-M4-003 subagent-scope-gate", () => {
     if ("hookSpecificOutput" in d) {
       const out = d.hookSpecificOutput as { additionalContext: string }
       expect(out.additionalContext).toContain("modify files")
+    }
+  })
+
+  test("contracted subagent start includes bounded derived context from matching prior worker runs", async () => {
+    const root = mkdtempSync(join(tmpdir(), "chts-derived-worker-context-"))
+    try {
+      const scope = "src/services/worker-context.ts"
+      const projectSecret = "custom-secret-ABC"
+      const prompt = appendWorkerContract(
+        `scope: ${scope}\ninspect the context helper`,
+        "Explore",
+      )
+      const payload = decodeStart({
+        _tag: "SubagentStart",
+        session_id: "s-new",
+        hook_event_name: "SubagentStart",
+        agent_type: "Explore",
+        agent_id: "a-new",
+        prompt,
+      })
+      const layer = Layer.mergeAll(
+        SessionStateTest(),
+        Layer.provide(WorkerRunsLive(root), EventStoreLive),
+        PolicyConfigTest({
+          secretValuePatterns: [/custom-secret-[A-Z]+/],
+        }),
+      )
+      const result = await Effect.runPromise(
+        Effect.gen(function* () {
+          const runs = yield* WorkerRuns
+          for (const workerId of ["worker-old-1", "worker-old-2"]) {
+            yield* runs.createQueued({
+              worker_id: workerId,
+              session_id: `s-${workerId}`,
+              agent_id: workerId,
+              agent_type: "Explore",
+              mode: "read-only",
+              prompt_hash: `prompt-${workerId}`,
+              contract_version: CURRENT_WORKER_CONTRACT_VERSION,
+              contract_hash: CURRENT_WORKER_CONTRACT_HASH,
+              scope,
+            })
+            yield* runs.markRunning(workerId)
+            yield* runs.complete(workerId, {
+              summary: "done",
+              files_relevant: [{ path: scope, reason: "same helper" }],
+              changes_made: [],
+              commands_run: [
+                {
+                  command: `bun test test/services/worker-context.test.ts --token=${projectSecret}`,
+                  exit_code: 0,
+                  result: "passed",
+                },
+              ],
+              verification: [
+                { check: "worker context tests", status: "passed", evidence: "passed" },
+              ],
+              risks: [],
+              blockers: [],
+              confidence: "high",
+            })
+          }
+          for (const workerId of ["worker-wrong-scope-1", "worker-wrong-scope-2"]) {
+            yield* runs.createQueued({
+              worker_id: workerId,
+              session_id: `s-${workerId}`,
+              agent_id: workerId,
+              agent_type: "Explore",
+              mode: "read-only",
+              prompt_hash: `prompt-${workerId}`,
+              contract_version: CURRENT_WORKER_CONTRACT_VERSION,
+              contract_hash: CURRENT_WORKER_CONTRACT_HASH,
+              scope: "src/wrong-scope.ts",
+            })
+            yield* runs.markRunning(workerId)
+            yield* runs.complete(workerId, {
+              summary: "wrong scope",
+              files_relevant: [{ path: "src/wrong-scope-only.ts", reason: "wrong scope" }],
+              changes_made: [],
+              commands_run: [
+                { command: "bun test wrong-scope-only", exit_code: 0, result: "passed" },
+              ],
+              verification: [
+                { check: "wrong scope tests", status: "passed", evidence: "passed" },
+              ],
+              risks: [],
+              blockers: [],
+              confidence: "high",
+            })
+          }
+          for (const workerId of ["worker-legacy-1", "worker-legacy-2"]) {
+            yield* runs.createQueued({
+              worker_id: workerId,
+              session_id: `s-${workerId}`,
+              agent_id: workerId,
+              agent_type: "Explore",
+              mode: "read-only",
+              prompt_hash: `prompt-${workerId}`,
+              contract_version: CURRENT_WORKER_CONTRACT_VERSION,
+              contract_hash: "legacy-contract-hash",
+              scope,
+            })
+            yield* runs.markRunning(workerId)
+            yield* runs.complete(workerId, {
+              summary: "legacy contract",
+              files_relevant: [{ path: "src/legacy-only.ts", reason: "stale contract" }],
+              changes_made: [],
+              commands_run: [
+                { command: "bun test legacy-only", exit_code: 0, result: "passed" },
+              ],
+              verification: [
+                { check: "legacy contract tests", status: "passed", evidence: "passed" },
+              ],
+              risks: [],
+              blockers: [],
+              confidence: "high",
+            })
+          }
+          for (const workerId of ["worker-wrong-agent-1", "worker-wrong-agent-2"]) {
+            yield* runs.createQueued({
+              worker_id: workerId,
+              session_id: `s-${workerId}`,
+              agent_id: workerId,
+              agent_type: "executor",
+              mode: "read-only",
+              prompt_hash: `prompt-${workerId}`,
+              contract_version: CURRENT_WORKER_CONTRACT_VERSION,
+              contract_hash: CURRENT_WORKER_CONTRACT_HASH,
+              scope,
+            })
+            yield* runs.markRunning(workerId)
+            yield* runs.complete(workerId, {
+              summary: "wrong agent",
+              files_relevant: [{ path: "src/wrong-agent-only.ts", reason: "wrong agent" }],
+              changes_made: [],
+              commands_run: [
+                { command: "bun test wrong-agent-only", exit_code: 0, result: "passed" },
+              ],
+              verification: [
+                { check: "wrong agent tests", status: "passed", evidence: "passed" },
+              ],
+              risks: [],
+              blockers: [],
+              confidence: "high",
+            })
+          }
+          return yield* handleSubagentStart(payload)
+        }).pipe(Effect.provide(layer)),
+      )
+
+      expect("hookSpecificOutput" in result).toBe(true)
+      if ("hookSpecificOutput" in result) {
+        const context = (result.hookSpecificOutput as { additionalContext: string })
+          .additionalContext
+        expect(context).toContain("<derived-worker-context>")
+        expect(context).toContain("src/services/worker-context.ts (2)")
+        expect(context).toContain("Accepted commands:")
+        expect(context).toContain("[REDACTED]")
+        expect(context).not.toContain(projectSecret)
+        expect(context).not.toContain("src/legacy-only.ts")
+        expect(context).not.toContain("src/wrong-agent-only.ts")
+        expect(context).not.toContain("src/wrong-scope-only.ts")
+      }
+    } finally {
+      rmSync(root, { recursive: true, force: true })
     }
   })
 

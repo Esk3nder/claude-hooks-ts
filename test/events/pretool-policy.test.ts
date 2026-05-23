@@ -1,10 +1,24 @@
 import { describe, expect, test } from "bun:test"
-import { Effect, Schema } from "effect"
+import { Effect, Layer, Option, Schema } from "effect"
+import { mkdtempSync, rmSync } from "node:fs"
+import { tmpdir } from "node:os"
+import { join } from "node:path"
 import { handlePreToolUse } from "../../src/events/pretool-policy.ts"
 import { HookPayload } from "../../src/schema/payloads.ts"
 import { PreToolUseDecision } from "../../src/schema/decisions.ts"
-import { SessionStateTest } from "../../src/services/session-state.ts"
-import { WORKER_CONTRACT_MARKER } from "../../src/policies/worker-contract.ts"
+import {
+  EMPTY_SESSION_STATE,
+  SessionStateTest,
+} from "../../src/services/session-state.ts"
+import { RuntimeConfigTest } from "../../src/services/runtime-config.ts"
+import { EventStoreLive } from "../../src/services/event-store.ts"
+import { WorkerRuns, WorkerRunsLive } from "../../src/services/worker-runs.ts"
+import {
+  CURRENT_WORKER_CONTRACT_HASH,
+  CURRENT_WORKER_CONTRACT_VERSION,
+  WORKER_CONTRACT_MARKER,
+  appendWorkerContract,
+} from "../../src/policies/worker-contract.ts"
 
 const payload = (toolName: string, toolInput: unknown) => {
   const raw = {
@@ -37,6 +51,17 @@ const expectDecision = (
     .hookSpecificOutput
   expect(inner.permissionDecision).toBe(kind)
 }
+
+const workerResult = {
+  summary: "worker completed",
+  files_relevant: [],
+  changes_made: [],
+  commands_run: [],
+  verification: [{ check: "worker test", status: "passed", evidence: "passed" }],
+  risks: [],
+  blockers: [],
+  confidence: "high",
+} as const
 
 describe("handlePreToolUse — red-team M2 assertions", () => {
   // VAL-M2-001
@@ -152,6 +177,184 @@ describe("handlePreToolUse — red-team M2 assertions", () => {
     expect(d).toEqual({})
   })
 
+  test("worker-mandatory configured min tier reaches pretool gate", async () => {
+    const sid = "s"
+    const seed = new Map([
+      [
+        sid,
+        {
+          ...EMPTY_SESSION_STATE,
+          last_mode: "ALGORITHM",
+          last_tier: 3,
+        },
+      ],
+    ])
+    const layer = Layer.mergeAll(
+      SessionStateTest(seed),
+      RuntimeConfigTest({
+        workerMandatoryMode: "strict",
+        workerMandatoryMinTier: 3,
+      }),
+    )
+
+    const d = await Effect.runPromise(
+      handlePreToolUse(
+        payload("Write", { file_path: "/repo/src/new.ts", content: "x" }),
+      ).pipe(Effect.provide(layer)),
+    )
+
+    expectDecision(d as Record<string, unknown>, "deny")
+    const reason = (
+      d as { hookSpecificOutput: { permissionDecisionReason: string } }
+    ).hookSpecificOutput.permissionDecisionReason
+    expect(reason).toContain("tier ≥ E3")
+  })
+
+  test("worker-mandatory configured min tier E5 lets E4 writes pass through pretool", async () => {
+    const sid = "s"
+    const seed = new Map([
+      [
+        sid,
+        {
+          ...EMPTY_SESSION_STATE,
+          last_mode: "ALGORITHM",
+          last_tier: 4,
+        },
+      ],
+    ])
+    const layer = Layer.mergeAll(
+      SessionStateTest(seed),
+      RuntimeConfigTest({
+        workerMandatoryMode: "strict",
+        workerMandatoryMinTier: 5,
+      }),
+    )
+
+    const d = await Effect.runPromise(
+      handlePreToolUse(
+        payload("Write", { file_path: "/repo/src/new.ts", content: "x" }),
+      ).pipe(Effect.provide(layer)),
+    )
+
+    expect(d).toEqual({})
+  })
+
+  test("worker-mandatory ignores stale session counters when worker ledger is terminal", async () => {
+    const root = mkdtempSync(join(tmpdir(), "chts-pretool-worker-ledger-"))
+    try {
+      const seed = new Map([
+        [
+          "s",
+          {
+            ...EMPTY_SESSION_STATE,
+            last_mode: "ALGORITHM",
+            last_tier: 4,
+            subagent_starts: ["s:Explore:a1"],
+            subagent_stops: [],
+          },
+        ],
+      ])
+      const layer = Layer.mergeAll(
+        SessionStateTest(seed),
+        RuntimeConfigTest({ workerMandatoryMode: "strict" }),
+        Layer.provide(WorkerRunsLive(root), EventStoreLive),
+      )
+
+      const d = await Effect.runPromise(
+        Effect.gen(function* () {
+          const runs = yield* WorkerRuns
+          yield* runs.createQueued({
+            worker_id: "worker-terminal",
+            session_id: "s",
+            agent_type: "Explore",
+            mode: "read-only",
+            prompt_hash: "prompt-hash",
+            scope: "src/**",
+          })
+          yield* runs.complete("worker-terminal", workerResult)
+          return yield* handlePreToolUse(
+            payload("Write", { file_path: "/repo/src/new.ts", content: "x" }),
+          )
+        }).pipe(Effect.provide(layer)),
+      )
+
+      expectDecision(d as Record<string, unknown>, "deny")
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  test("worker-mandatory allows direct writes while the worker ledger has an active run", async () => {
+    const root = mkdtempSync(join(tmpdir(), "chts-pretool-worker-ledger-"))
+    try {
+      const seed = new Map([
+        [
+          "s",
+          {
+            ...EMPTY_SESSION_STATE,
+            last_mode: "ALGORITHM",
+            last_tier: 4,
+          },
+        ],
+      ])
+      const layer = Layer.mergeAll(
+        SessionStateTest(seed),
+        RuntimeConfigTest({ workerMandatoryMode: "strict" }),
+        Layer.provide(WorkerRunsLive(root), EventStoreLive),
+      )
+
+      const d = await Effect.runPromise(
+        Effect.gen(function* () {
+          const runs = yield* WorkerRuns
+          yield* runs.createQueued({
+            worker_id: "worker-active",
+            session_id: "s",
+            agent_type: "Explore",
+            mode: "read-only",
+            prompt_hash: "prompt-hash",
+            scope: "src/**",
+          })
+          yield* runs.markRunning("worker-active")
+          return yield* handlePreToolUse(
+            payload("Write", { file_path: "/repo/src/new.ts", content: "x" }),
+          )
+        }).pipe(Effect.provide(layer)),
+      )
+
+      expectDecision(d as Record<string, unknown>, "allow")
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  test("worker-mandatory does not block writes from inside a worker session", async () => {
+    const seed = new Map([
+      [
+        "s",
+        {
+          ...EMPTY_SESSION_STATE,
+          last_mode: "ALGORITHM",
+          last_tier: 5,
+        },
+      ],
+    ])
+    const layer = Layer.mergeAll(
+      SessionStateTest(seed),
+      RuntimeConfigTest({
+        workerMandatoryMode: "strict",
+        workerIdOverride: Option.some("worker-123"),
+      }),
+    )
+
+    const d = await Effect.runPromise(
+      handlePreToolUse(
+        payload("Write", { file_path: "/repo/src/new.ts", content: "x" }),
+      ).pipe(Effect.provide(layer)),
+    )
+
+    expect(d).toEqual({})
+  })
+
   test("Task launch is rewritten with a bounded worker contract", async () => {
     const d = await run("Task", {
       description: "inspect auth",
@@ -172,13 +375,41 @@ describe("handlePreToolUse — red-team M2 assertions", () => {
     )
   })
 
-  test("Task launch with an existing worker contract is not rewritten twice", async () => {
+  test("Task launch with a current worker contract is not rewritten twice", async () => {
     const d = await run("Task", {
       description: "inspect auth",
-      prompt: `Find auth.\n\n${WORKER_CONTRACT_MARKER}\ncontract already here`,
+      prompt: appendWorkerContract("Find auth.", "Explore"),
       subagent_type: "Explore",
     })
     expect(d).toEqual({})
+  })
+
+  test("Task launch with a stale worker contract is refreshed before launch", async () => {
+    const d = await run("Task", {
+      description: "inspect auth",
+      prompt: [
+        "Find auth.",
+        "",
+        WORKER_CONTRACT_MARKER,
+        "Contract version: 0",
+        "Contract hash: stale-hash",
+        "contract already here",
+        "</claude-hooks-worker-contract>",
+      ].join("\n"),
+      subagent_type: "Explore",
+    })
+
+    expectDecision(d, "allow")
+    const out = d as {
+      hookSpecificOutput: {
+        updatedInput?: { prompt?: string }
+      }
+    }
+    const updatedPrompt = out.hookSpecificOutput.updatedInput?.prompt ?? ""
+    expect(updatedPrompt).toContain(`Contract version: ${CURRENT_WORKER_CONTRACT_VERSION}`)
+    expect(updatedPrompt).toContain(`Contract hash: ${CURRENT_WORKER_CONTRACT_HASH}`)
+    expect(updatedPrompt).not.toContain("stale-hash")
+    expect(updatedPrompt.match(new RegExp(WORKER_CONTRACT_MARKER, "g"))?.length).toBe(1)
   })
 
   test("malformed Task launch asks instead of silently dropping worker scope", async () => {

@@ -686,6 +686,7 @@ export const WorkerSupervisorLiveBase = (
                   ...(payload.agent_id === undefined ? {} : { agent_id: payload.agent_id }),
                   agent_type: payload.agent_type,
                   mode: payload.mode,
+                  prompt: payload.prompt,
                   prompt_hash: promptHashForPayload(payload),
                   scope: payload.scope,
                 })
@@ -866,6 +867,7 @@ export const WorkerSupervisorLiveBase = (
                 ...(input.agent_id === undefined ? {} : { agent_id: input.agent_id }),
                 agent_type: input.agent_type,
                 mode: input.mode,
+                prompt: input.prompt,
                 prompt_hash: promptHashForPayload(input),
                 scope: input.scope,
               }).pipe(

@@ -20,6 +20,11 @@ import {
 import { ClaudeSubprocessTest, type ClaudeSpawnOptions } from "../../src/services/claude-subprocess.ts"
 import type { WorkerResult } from "../../src/schema/worker-run.ts"
 import { WorkerRunError } from "../../src/schema/errors.ts"
+import {
+  CURRENT_WORKER_CONTRACT_HASH,
+  CURRENT_WORKER_CONTRACT_VERSION,
+  appendWorkerContract,
+} from "../../src/policies/worker-contract.ts"
 
 const result = (summary = "supervisor result"): WorkerResult => ({
   summary,
@@ -129,6 +134,69 @@ describe("WorkerSupervisorLive", () => {
     expect(completed?.attempts).toBe(1)
     expect(completed?.prompt_hash).toHaveLength(16)
     expect(completed?.output?.summary).toBe("supervisor result")
+  })
+
+  test("enqueue persists contract metadata only when parsed from the prompt", async () => {
+    const outcome = await Effect.runPromise(
+      Effect.gen(function* () {
+        const supervisor = yield* WorkerSupervisor
+        const runs = yield* WorkerRuns
+        yield* supervisor.enqueue({
+          worker_id: "worker-contracted",
+          session_id: "session-1",
+          agent_type: "executor",
+          mode: "write-allowed",
+          prompt: appendWorkerContract("Scope: src/**\nDo the worker task.", "executor"),
+          scope: "src/**",
+        })
+        yield* supervisor.enqueue({
+          worker_id: "worker-uncontracted",
+          session_id: "session-1",
+          agent_type: "executor",
+          mode: "write-allowed",
+          prompt: "Scope: test/**\nDo the worker task.",
+          scope: "test/**",
+        })
+        return {
+          contracted: yield* runs.get("worker-contracted"),
+          uncontracted: yield* runs.get("worker-uncontracted"),
+        }
+      }).pipe(Effect.provide(layerFor())),
+    )
+
+    expect(outcome.contracted?.contract_version).toBe(CURRENT_WORKER_CONTRACT_VERSION)
+    expect(outcome.contracted?.contract_hash).toBe(CURRENT_WORKER_CONTRACT_HASH)
+    expect(outcome.uncontracted?.contract_version).toBeUndefined()
+    expect(outcome.uncontracted?.contract_hash).toBeUndefined()
+  })
+
+  test("recovered queue jobs persist parsed contract metadata when ensuring a run", async () => {
+    const outcome = await Effect.runPromise(
+      Effect.gen(function* () {
+        const queue = yield* WorkerQueue
+        const supervisor = yield* WorkerSupervisor
+        const runs = yield* WorkerRuns
+        yield* queue.offer({
+          id: "worker-recovered-contract",
+          queue: "default",
+          payload: {
+            worker_id: "worker-recovered-contract",
+            session_id: "session-1",
+            agent_type: "executor",
+            mode: "write-allowed" as const,
+            prompt: appendWorkerContract("Scope: src/**\nRecovered job.", "executor"),
+            scope: "src/**",
+          },
+          enqueuedAt: Date.now(),
+          attempts: 0,
+        })
+        yield* supervisor.runOne
+        return yield* runs.get("worker-recovered-contract")
+      }).pipe(Effect.provide(layerFor())),
+    )
+
+    expect(outcome?.contract_version).toBe(CURRENT_WORKER_CONTRACT_VERSION)
+    expect(outcome?.contract_hash).toBe(CURRENT_WORKER_CONTRACT_HASH)
   })
 
   test("recovered redacted worker jobs fail without executing descriptor prompts", async () => {

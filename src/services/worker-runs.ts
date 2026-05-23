@@ -3,6 +3,7 @@ import * as crypto from "node:crypto"
 import * as path from "node:path"
 import { EventStoreError, WorkerRunError } from "../schema/errors.ts"
 import { eventStream } from "../schema/events.ts"
+import { parseWorkerContractMetadata } from "../policies/worker-contract.ts"
 import {
   WorkerResult,
   WorkerRun,
@@ -25,6 +26,8 @@ export interface WorkerRunCreate {
   readonly mode: WorkerMode
   readonly prompt?: string
   readonly prompt_hash?: string
+  readonly contract_version?: string
+  readonly contract_hash?: string
   readonly scope: string
   readonly created_at?: string
 }
@@ -111,6 +114,23 @@ const nowIso = (): string => new Date().toISOString()
 // the matching note in worker-supervisor.ts for rationale (entropy +
 // clock-independence).
 const generatedWorkerId = (): string => `worker-${crypto.randomUUID()}`
+
+const contractMetadataForCreate = (
+  input: WorkerRunCreate,
+): {
+  readonly contract_version?: string
+  readonly contract_hash?: string
+} => {
+  const parsed = input.prompt === undefined
+    ? null
+    : parseWorkerContractMetadata(input.prompt)
+  const contractVersion = input.contract_version ?? parsed?.contract_version
+  const contractHash = input.contract_hash ?? parsed?.contract_hash
+  return {
+    ...(contractVersion === undefined ? {} : { contract_version: contractVersion }),
+    ...(contractHash === undefined ? {} : { contract_hash: contractHash }),
+  }
+}
 
 const stableJson = (value: unknown): string => {
   if (Array.isArray(value)) return `[${value.map(stableJson).join(",")}]`
@@ -353,6 +373,7 @@ export const WorkerRunsLive = (root: string = process.cwd()): Layer.Layer<Worker
               mode: input.mode,
               status: "queued",
               prompt_hash: promptHash,
+              ...contractMetadataForCreate(input),
               scope: input.scope,
               created_at: input.created_at ?? nowIso(),
               attempts: 0,
