@@ -82,6 +82,8 @@ export const WorkerRun = Schema.Struct({
   mode: WorkerMode,
   status: WorkerStatus,
   prompt_hash: Schema.String,
+  contract_version: Schema.optional(Schema.String),
+  contract_hash: Schema.optional(Schema.String),
   scope: Schema.String,
   created_at: Schema.String,
   started_at: Schema.optional(Schema.String),

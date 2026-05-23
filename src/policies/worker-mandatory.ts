@@ -1,24 +1,25 @@
 /**
  * Mandatory worker delegation gate (US-2).
  *
- * For confidently deep ALGORITHM sessions (classifier tier ≥ E4), direct
- * Write/Edit/MultiEdit/NotebookEdit and write-class Bash should ideally be
- * delegated to a `Task`/`Agent` worker so parallel subagent leverage —
- * advertised in the README — actually happens. This gate codifies that
- * preference.
+ * For confidently deep ALGORITHM sessions (classifier tier ≥ configured
+ * minimum, default E4), direct Write/Edit/MultiEdit/NotebookEdit and
+ * write-class Bash should ideally be delegated to a `Task`/`Agent` worker
+ * so parallel subagent leverage — advertised in the README — actually
+ * happens. This gate codifies that preference.
  *
- * Three modes, none of which fire below tier E4:
+ * Three modes, none of which fire below the configured minimum tier:
  *
- *   - "off"       (default) — passthrough always. No behavior change.
- *   - "recommend" — when a direct write fires at tier ≥ E4 with no active
- *                   worker, return `ask` with a remediation hint. The user
- *                   (or downstream prompt) can decide whether to delegate.
+ *   - "off"       — passthrough always. No behavior change.
+ *   - "recommend" — when a direct write fires at or above the configured
+ *                   tier with no active worker, return `ask` with a
+ *                   remediation hint. The user (or downstream prompt) can
+ *                   decide whether to delegate.
  *   - "strict"    — same predicate, but `deny`. The model MUST launch a
  *                   Task before continuing.
  *
  * Release conditions:
  *   - mode === "off"
- *   - tier === null or tier < 4
+ *   - tier === null or tier < configured minimum tier
  *   - tool is not a covered write tool
  *   - at least one worker is currently active (starts > stops)
  *
@@ -35,6 +36,8 @@ export interface WorkerMandatoryInput {
   readonly mode: WorkerMandatoryMode
   readonly toolName: string
   readonly lastTier: number | null
+  /** Minimum ALGORITHM tier that triggers the gate. Defaults to E4. */
+  readonly minTier?: number
   readonly activeWorkerCount: number
   /** True when the current PreToolUse is happening inside a worker
    * (subagent) session — typically signalled by `CLAUDE_HOOKS_WORKER_ID`
@@ -56,7 +59,7 @@ export interface WorkerMandatoryInput {
    * through this gate. The two policies have complementary scopes:
    * `destructive-commands` answers "is this command obviously
    * destructive?"; this gate answers "should this write be delegated
-   * to a worker at tier ≥ E4?". A Bash command that writes a file
+   * to a worker at the configured tier?". A Bash command that writes a file
    * non-destructively (e.g., `tee out.txt`) wouldn't trip
    * `destructive-commands` but would trip this gate via
    * `isBashFileWrite(bashCommand)`.
@@ -68,7 +71,7 @@ export interface WorkerMandatoryInput {
 }
 
 /** Direct-write tool names that are always subject to the gate when
- * above E4.
+ * at or above the configured minimum tier.
  *
  * Intentionally absent:
  *   - `Task` / `Agent`: the delegation tools themselves. Gating them
@@ -99,8 +102,10 @@ export interface ActiveWorkerCounts {
 export const activeWorkerCount = (counts: ActiveWorkerCounts): number =>
   Math.max(0, counts.starts - counts.stops)
 
-const remediationHint =
-  "This session is tier ≥ E4 and the gate is set to require delegation. " +
+const DEFAULT_MIN_TIER = 4
+
+const remediationHint = (minTier: number): string =>
+  `This session is tier ≥ E${minTier} and the gate is set to require delegation. ` +
   "Launch a Task (or Agent) with the worker contract instead of writing " +
   "inline. See src/policies/worker-contract.ts for the output schema. " +
   "Once a worker is active (a SubagentStart event has fired) direct writes " +
@@ -113,10 +118,11 @@ export const evaluateWorkerMandatoryGate = (
   // Worker sessions are excluded — the gate exists to push PARENT
   // sessions toward delegating; once inside a worker, the model IS the
   // delegation target and direct writes are exactly what it was spawned
-  // to do. Without this short-circuit, a worker classified at tier ≥ E4
-  // (e.g., a long-spec worker prompt) would be unable to write anything.
+  // to do. Without this short-circuit, a worker classified at or above the
+  // configured tier would be unable to write anything.
   if (input.isWorkerSession === true) return { kind: "passthrough" }
-  if (input.lastTier === null || input.lastTier < 4) {
+  const minTier = input.minTier ?? DEFAULT_MIN_TIER
+  if (input.lastTier === null || input.lastTier < minTier) {
     return { kind: "passthrough" }
   }
   // Enforcement-plane P0 #6: Bash with a write-class command is treated
@@ -138,12 +144,12 @@ export const evaluateWorkerMandatoryGate = (
   if (input.mode === "recommend") {
     return {
       kind: "ask",
-      reason: `worker-mandatory (recommend mode): ${remediationHint}`,
+      reason: `worker-mandatory (recommend mode): ${remediationHint(minTier)}`,
     }
   }
   // strict
   return {
     kind: "deny",
-    reason: `worker-mandatory (strict mode): ${remediationHint}`,
+    reason: `worker-mandatory (strict mode): ${remediationHint(minTier)}`,
   }
 }

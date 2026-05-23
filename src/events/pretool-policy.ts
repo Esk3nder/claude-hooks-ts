@@ -316,12 +316,13 @@ export const handlePreToolUse = (
             return toHookDecision(tddVerdict)
           }
         }
-        // US-2: mandatory worker delegation. Off by default. When the
-        // session is ALGORITHM tier ≥ E4 and the model attempts a direct
-        // Write/Edit/etc. with NO active worker (subagent_starts ===
-        // subagent_stops), the gate either asks ("recommend") or denies
-        // ("strict"). A live worker grants passthrough. Worker sessions
-        // (CLAUDE_HOOKS_WORKER_ID set) are always passthrough.
+        // US-2: mandatory worker delegation. Runtime mode controls whether
+        // the gate is off, asks ("recommend"), or denies ("strict"). When
+        // the session is ALGORITHM tier ≥ configured minimum (default E4)
+        // and the model attempts a direct Write/Edit/etc. with NO active
+        // worker, the configured mode is applied. A live worker grants
+        // passthrough. Worker sessions (CLAUDE_HOOKS_WORKER_ID set) are
+        // always passthrough.
         if (config.workerMandatoryMode !== "off") {
           // Enforcement-plane P0 #6: extract the Bash command (when the
           // tool is Bash) and pass it so worker-mandatory can detect
@@ -383,6 +384,7 @@ export const handlePreToolUse = (
           }
           const verdict = evaluateWorkerMandatoryGate({
             mode: config.workerMandatoryMode,
+            minTier: config.workerMandatoryMinTier,
             toolName: payload.tool_name,
             lastTier: record.last_tier,
             activeWorkerCount: derivedActiveCount,

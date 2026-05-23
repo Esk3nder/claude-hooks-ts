@@ -1,8 +1,32 @@
 import { Schema } from "effect"
+import * as crypto from "node:crypto"
 import { WorkerLaunchInput } from "../schema/worker.ts"
 import { lookupRole } from "./subagent-roles.ts"
 
 export const WORKER_CONTRACT_MARKER = "<claude-hooks-worker-contract>"
+export const WORKER_CONTRACT_END_MARKER = "</claude-hooks-worker-contract>"
+export const CURRENT_WORKER_CONTRACT_VERSION = "1"
+
+// Deliberately semantic rather than a hash of raw prose: wording can be
+// clarified without invalidating historical worker runs, but changing output
+// shape or orchestration obligations must update this list/version.
+const WORKER_CONTRACT_SHAPE = [
+  `version:${CURRENT_WORKER_CONTRACT_VERSION}`,
+  "marker",
+  "worker-role-mode",
+  "scope-ownership",
+  "role-boundary",
+  "output-contract",
+  "worker-result-json-keys",
+  "change-diff-ref",
+  "blocker-scope-widening",
+]
+
+export const CURRENT_WORKER_CONTRACT_HASH = crypto
+  .createHash("sha256")
+  .update(WORKER_CONTRACT_SHAPE.join("\n"))
+  .digest("hex")
+  .slice(0, 16)
 
 export type WorkerTaskPromptDecision =
   | { readonly kind: "passthrough" }
@@ -18,6 +42,55 @@ const workerTypeFor = (subagentType: string | undefined): string =>
     ? subagentType.trim()
     : "general-purpose"
 
+export interface WorkerContractMetadata {
+  readonly contract_version?: string
+  readonly contract_hash?: string
+}
+
+const contractBlockForPrompt = (prompt: string): string | null => {
+  const start = prompt.indexOf(WORKER_CONTRACT_MARKER)
+  if (start < 0) return null
+  const end = prompt.indexOf(WORKER_CONTRACT_END_MARKER, start)
+  if (end < 0) return null
+  return prompt.slice(start, end + WORKER_CONTRACT_END_MARKER.length)
+}
+
+export const parseWorkerContractMetadata = (
+  prompt: string | undefined,
+): WorkerContractMetadata | null => {
+  if (prompt === undefined) return null
+  const block = contractBlockForPrompt(prompt)
+  if (block === null) return null
+  const version = /^\s*Contract version:\s*([^\n]+?)\s*$/im.exec(block)?.[1]
+  const hash = /^\s*Contract hash:\s*([^\n]+?)\s*$/im.exec(block)?.[1]
+  return {
+    ...(version === undefined ? {} : { contract_version: version }),
+    ...(hash === undefined ? {} : { contract_hash: hash }),
+  }
+}
+
+export const hasCurrentWorkerContract = (prompt: string | undefined): boolean => {
+  const metadata = parseWorkerContractMetadata(prompt)
+  return (
+    metadata !== null &&
+    metadata.contract_version === CURRENT_WORKER_CONTRACT_VERSION &&
+    metadata.contract_hash === CURRENT_WORKER_CONTRACT_HASH
+  )
+}
+
+const replaceWorkerContract = (
+  prompt: string,
+  subagentType: string | undefined,
+): string => {
+  const start = prompt.indexOf(WORKER_CONTRACT_MARKER)
+  if (start < 0) return `${prompt.trimEnd()}\n\n${renderWorkerContract(subagentType)}`
+  const end = prompt.indexOf(WORKER_CONTRACT_END_MARKER, start)
+  const suffix = end < 0
+    ? prompt.slice(start + WORKER_CONTRACT_MARKER.length)
+    : prompt.slice(end + WORKER_CONTRACT_END_MARKER.length)
+  return `${prompt.slice(0, start).trimEnd()}\n\n${renderWorkerContract(subagentType)}${suffix}`
+}
+
 export const renderWorkerContract = (
   subagentType: string | undefined,
 ): string => {
@@ -25,6 +98,8 @@ export const renderWorkerContract = (
   const role = lookupRole(workerType)
   return [
     WORKER_CONTRACT_MARKER,
+    `Contract version: ${CURRENT_WORKER_CONTRACT_VERSION}`,
+    `Contract hash: ${CURRENT_WORKER_CONTRACT_HASH}`,
     `Worker ${workerType} (${role.mode}) contract:`,
     "- Own only the delegated subtask; do not silently expand to the user's whole objective.",
     `- Role boundary: ${role.scopeRule}`,
@@ -32,7 +107,7 @@ export const renderWorkerContract = (
     "- Return only strict JSON matching WorkerResult: summary, files_relevant, changes_made, commands_run, verification, risks, blockers, confidence, next_action?.",
     "- For changes_made entries, include path, summary, and diff_ref when an isolated diff/patch exists.",
     "- If blocked or scope needs to widen, report that explicitly for orchestrator integration.",
-    "</claude-hooks-worker-contract>",
+    WORKER_CONTRACT_END_MARKER,
   ].join("\n")
 }
 
@@ -40,9 +115,9 @@ export const appendWorkerContract = (
   prompt: string,
   subagentType: string | undefined,
 ): string =>
-  prompt.includes(WORKER_CONTRACT_MARKER)
+  hasCurrentWorkerContract(prompt)
     ? prompt
-    : `${prompt.trimEnd()}\n\n${renderWorkerContract(subagentType)}`
+    : replaceWorkerContract(prompt, subagentType)
 
 export const evaluateWorkerTaskPrompt = (
   toolName: string,

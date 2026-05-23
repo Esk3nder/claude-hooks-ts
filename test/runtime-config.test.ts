@@ -29,6 +29,9 @@ describe("RuntimeConfigService", () => {
       CLAUDE_HOOKS_WORKER_REQUIRE_STRUCTURED_RESULT: "false",
       CLAUDE_HOOKS_WORKER_ENFORCE_READ_ONLY_ROLES: "false",
       CLAUDE_HOOKS_WORKER_WRITE_ISOLATION: "worktree",
+      CLAUDE_HOOKS_WORKER_ID: "worker-123",
+      CLAUDE_HOOKS_WORKER_MANDATORY_MODE: "strict",
+      CLAUDE_HOOKS_WORKER_MANDATORY_MIN_TIER: "3",
     })
 
     expect(cfg.classifierDisabled).toBe(true)
@@ -46,6 +49,9 @@ describe("RuntimeConfigService", () => {
     expect(cfg.workerRequireStructuredResult).toBe(false)
     expect(cfg.workerEnforceReadOnlyRoles).toBe(false)
     expect(cfg.workerWriteIsolation).toBe("worktree")
+    expect(Option.getOrNull(cfg.workerIdOverride)).toBe("worker-123")
+    expect(cfg.workerMandatoryMode).toBe("strict")
+    expect(cfg.workerMandatoryMinTier).toBe(3)
     expect(summarizeRuntimeConfig(cfg)).toMatchObject({
       classifierDisabled: true,
       isaPretoolGateDisabled: true,
@@ -62,7 +68,48 @@ describe("RuntimeConfigService", () => {
       workerRequireStructuredResult: false,
       workerEnforceReadOnlyRoles: false,
       workerWriteIsolation: "worktree",
+      workerMandatoryMode: "strict",
+      workerMandatoryMinTier: 3,
     })
+  })
+
+  test("worker mandatory min tier defaults to E4 and ignores unsafe invalid env", () => {
+    expect(runtimeConfigFromEnv({}).workerMandatoryMinTier).toBe(4)
+    expect(
+      runtimeConfigFromEnv({
+        CLAUDE_HOOKS_WORKER_MANDATORY_MIN_TIER: "2",
+      }).workerMandatoryMinTier,
+    ).toBe(4)
+    expect(
+      runtimeConfigFromEnv({
+        CLAUDE_HOOKS_WORKER_MANDATORY_MIN_TIER: "abc",
+      }).workerMandatoryMinTier,
+    ).toBe(4)
+    expect(
+      runtimeConfigFromEnv({
+        CLAUDE_HOOKS_WORKER_MANDATORY_MIN_TIER: "6",
+      }).workerMandatoryMinTier,
+    ).toBe(4)
+    expect(
+      runtimeConfigFromEnv({
+        CLAUDE_HOOKS_WORKER_MANDATORY_MIN_TIER: "5",
+      }).workerMandatoryMinTier,
+    ).toBe(5)
+  })
+
+  test("worker id override ignores empty environment values", () => {
+    expect(Option.isNone(runtimeConfigFromEnv({}).workerIdOverride)).toBe(true)
+    expect(
+      Option.isNone(
+        runtimeConfigFromEnv({ CLAUDE_HOOKS_WORKER_ID: "" }).workerIdOverride,
+      ),
+    ).toBe(true)
+    expect(
+      Option.getOrNull(
+        runtimeConfigFromEnv({ CLAUDE_HOOKS_WORKER_ID: "worker-abc" })
+          .workerIdOverride,
+      ),
+    ).toBe("worker-abc")
   })
 
   test("handler timeout table comes from typed config", () => {

@@ -14,6 +14,7 @@ const baseInput = {
   toolName: "Write",
   lastTier: 4 as number | null,
   activeWorkerCount: 0,
+  minTier: 4,
 }
 
 describe("activeWorkerCount", () => {
@@ -46,6 +47,16 @@ describe("evaluateWorkerMandatoryGate — short-circuits", () => {
     [3, "ALGORITHM E3"],
   ])("tier %p → passthrough (%s)", (tier) => {
     const v = evaluateWorkerMandatoryGate({ ...baseInput, lastTier: tier })
+    expect(v.kind).toBe("passthrough")
+  })
+
+  test("tier E3 passes through by default when minTier is omitted", () => {
+    const v = evaluateWorkerMandatoryGate({
+      mode: "strict",
+      toolName: "Write",
+      lastTier: 3,
+      activeWorkerCount: 0,
+    })
     expect(v.kind).toBe("passthrough")
   })
 
@@ -141,6 +152,50 @@ describe("evaluateWorkerMandatoryGate — strict denies, recommend asks", () => 
       activeWorkerCount: 0,
     })
     expect(v.kind).toBe("deny")
+  })
+
+  test("configured minTier=3 gates E3 writes", () => {
+    const v = evaluateWorkerMandatoryGate({
+      mode: "strict",
+      toolName: "Write",
+      lastTier: 3,
+      activeWorkerCount: 0,
+      minTier: 3,
+    })
+    expect(v.kind).toBe("deny")
+    expect(v.kind === "deny" && v.reason).toContain("tier ≥ E3")
+  })
+
+  test("E4 still gates when minTier=3", () => {
+    const v = evaluateWorkerMandatoryGate({
+      mode: "strict",
+      toolName: "Write",
+      lastTier: 4,
+      activeWorkerCount: 0,
+      minTier: 3,
+    })
+    expect(v.kind).toBe("deny")
+  })
+
+  test("configured minTier=5 lets E4 pass and gates E5 writes", () => {
+    const e4 = evaluateWorkerMandatoryGate({
+      mode: "strict",
+      toolName: "Write",
+      lastTier: 4,
+      activeWorkerCount: 0,
+      minTier: 5,
+    })
+    const e5 = evaluateWorkerMandatoryGate({
+      mode: "strict",
+      toolName: "Write",
+      lastTier: 5,
+      activeWorkerCount: 0,
+      minTier: 5,
+    })
+
+    expect(e4.kind).toBe("passthrough")
+    expect(e5.kind).toBe("deny")
+    expect(e5.kind === "deny" && e5.reason).toContain("tier ≥ E5")
   })
 })
 

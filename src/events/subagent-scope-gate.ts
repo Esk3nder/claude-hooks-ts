@@ -17,9 +17,17 @@ import {
   type WorkerRunCompletionMetadata,
 } from "../services/worker-runs.ts";
 import { parseWorkerResultText } from "../services/worker-supervisor.ts";
+import { buildWorkerContextBlock } from "../services/worker-context.ts";
 import { CommandRunner } from "../services/command-runner.ts";
-import type { WorkerResult } from "../schema/worker-run.ts";
-import { WORKER_CONTRACT_MARKER } from "../policies/worker-contract.ts";
+import { DEFAULT_POLICY, PolicyConfig } from "../services/policy-config.ts";
+import type { WorkerResult, WorkerRun } from "../schema/worker-run.ts";
+import {
+  CURRENT_WORKER_CONTRACT_HASH,
+  CURRENT_WORKER_CONTRACT_VERSION,
+  WORKER_CONTRACT_MARKER,
+  hasCurrentWorkerContract,
+  parseWorkerContractMetadata,
+} from "../policies/worker-contract.ts";
 import {
   evaluateVerificationReplay,
   type ReplayResult,
@@ -71,6 +79,48 @@ const workerIdForSubagent = (payload: {
   readonly session_id: string;
   readonly agent_id: string;
 }): string => scopedWorkerRunId(payload.session_id, payload.agent_id);
+
+const DERIVED_WORKER_CONTEXT_RUN_LIMIT = 200;
+
+const loadDerivedWorkerContext = (
+  payload: Extract<NormalizedHookEvent, { readonly _tag: "SubagentStart" }>,
+): Effect.Effect<string> =>
+  Effect.gen(function* () {
+    const scope = inferWorkerScope(payload.prompt);
+    if (scope.length === 0) return "";
+    const runs = yield* Effect.serviceOption(WorkerRuns);
+    if (Option.isNone(runs)) return "";
+    const recentRuns = yield* runs.value.list(DERIVED_WORKER_CONTEXT_RUN_LIMIT).pipe(
+      Effect.catchAll((cause) =>
+        reportHookFailure({
+          kind: "state_read_failed",
+          event: "SubagentStart",
+          sessionId: payload.session_id,
+          cause,
+          hookSafe: true,
+          context: {
+            op: "worker-runs.list",
+            stage: "derived worker context",
+            agent_id: payload.agent_id,
+            agent_type: payload.agent_type,
+          },
+        }).pipe(Effect.as([] as ReadonlyArray<WorkerRun>)),
+      ),
+    );
+    const currentWorkerId = workerIdForSubagent(payload);
+    const relevantRuns = recentRuns.filter((run) =>
+      run.worker_id !== currentWorkerId &&
+      run.agent_type === payload.agent_type &&
+      run.scope === scope &&
+      run.contract_version === CURRENT_WORKER_CONTRACT_VERSION &&
+      run.contract_hash === CURRENT_WORKER_CONTRACT_HASH
+    );
+    const policy = yield* Effect.serviceOption(PolicyConfig);
+    const policyConfig = Option.isSome(policy) ? yield* policy.value.load() : DEFAULT_POLICY;
+    return buildWorkerContextBlock(relevantRuns, {
+      secretValuePatterns: policyConfig.secretValuePatterns,
+    });
+  });
 
 const fallbackWorkerResult = (output: string): WorkerResult => ({
   summary: output.trim().slice(0, 500) || "worker completed with unstructured output",
@@ -174,7 +224,8 @@ const recordWorkerStart = (
   payload: Extract<NormalizedHookEvent, { readonly _tag: "SubagentStart" }>,
 ): Effect.Effect<void> =>
   Effect.gen(function* () {
-    if (!hasWorkerContractMarker(payload.prompt)) return;
+    const contractMetadata = parseWorkerContractMetadata(payload.prompt);
+    if (contractMetadata === null) return;
     const runs = yield* Effect.serviceOption(WorkerRuns);
     if (runs._tag === "None") return;
     const promptHash =
@@ -192,6 +243,8 @@ const recordWorkerStart = (
         agent_type: payload.agent_type,
         mode,
         prompt_hash: promptHash,
+        ...(contractMetadata.contract_version === undefined ? {} : { contract_version: contractMetadata.contract_version }),
+        ...(contractMetadata.contract_hash === undefined ? {} : { contract_hash: contractMetadata.contract_hash }),
         scope: inferWorkerScope(payload.prompt),
       });
       yield* runs.value.markRunning(workerId);
@@ -494,6 +547,7 @@ export const handleSubagentStart = (
         );
     }
     const hasContract = hasWorkerContractMarker(payload.prompt);
+    const hasCurrentContract = hasCurrentWorkerContract(payload.prompt);
     if (hasContract && !prev.subagent_starts.includes(workerContractKey(key))) {
       yield* state
         .append(payload.session_id, "subagent_starts", workerContractKey(key))
@@ -510,7 +564,12 @@ export const handleSubagentStart = (
     const agentType = payload.agent_type;
     const role = lookupRole(agentType);
     const subagentLabel = agentType === "unknown" ? "subagent" : agentType;
-    const additionalContext = `Subagent ${subagentLabel} (${role.mode}): ${role.scopeRule} ${role.outputContract}`;
+    const derivedContext = hasCurrentContract
+      ? yield* loadDerivedWorkerContext(payload)
+      : "";
+    const baseContext = `Subagent ${subagentLabel} (${role.mode}): ${role.scopeRule} ${role.outputContract}`;
+    const additionalContext =
+      derivedContext.length === 0 ? baseContext : `${baseContext}\n${derivedContext}`;
     const decision: HookDecision = {
       hookSpecificOutput: {
         hookEventName: "SubagentStart",

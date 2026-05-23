@@ -35,14 +35,17 @@ export interface RuntimeConfig {
   readonly workerEnforceReadOnlyRoles: boolean
   readonly workerWriteIsolation: WorkerWriteIsolation
   readonly workerIdOverride: Option.Option<string>
-  /** US-2: mandatory-worker-delegation gate mode. When ALGORITHM tier ≥ 4
-   * and the model attempts a direct Write/Edit/etc. with no active worker,
-   * the gate either:
-   *  - "off"        : passthrough (default)
+  /** US-2: mandatory-worker-delegation gate mode. At or above the configured
+   * minimum tier, direct Write/Edit/etc. with no active worker either:
+   *  - "off"        : passthrough
    *  - "recommend"  : ask, with a remediation hint
    *  - "strict"     : deny, with a remediation hint
    * Env: CLAUDE_HOOKS_WORKER_MANDATORY_MODE. */
   readonly workerMandatoryMode: WorkerMandatoryMode
+  /** US-2: minimum ALGORITHM tier for worker-mandatory enforcement.
+   * Defaults to E4. E3 is supported only when explicitly configured.
+   * Env: CLAUDE_HOOKS_WORKER_MANDATORY_MIN_TIER. */
+  readonly workerMandatoryMinTier: number
 }
 
 export type WorkerMandatoryMode = "off" | "recommend" | "strict"
@@ -95,6 +98,7 @@ export const DEFAULT_RUNTIME_CONFIG: RuntimeConfig = {
   // CLAUDE_HOOKS_WORKER_MANDATORY_MODE=off to restore the prior
   // behavior.
   workerMandatoryMode: "recommend",
+  workerMandatoryMinTier: 4,
 }
 
 const envWorkerMandatoryMode = (
@@ -109,6 +113,17 @@ const envWorkerMandatoryMode = (
     default:
       return fallback
   }
+}
+
+const envWorkerMandatoryMinTier = (
+  value: string | undefined,
+  fallback: number,
+): number => {
+  if (value === undefined) return fallback
+  const parsed = Number(value)
+  return Number.isInteger(parsed) && parsed >= 3 && parsed <= 5
+    ? parsed
+    : fallback
 }
 
 const envFlag = (value: string | undefined): boolean =>
@@ -218,6 +233,10 @@ export const runtimeConfigFromEnv = (
     env["CLAUDE_HOOKS_WORKER_MANDATORY_MODE"],
     base.workerMandatoryMode,
   ),
+  workerMandatoryMinTier: envWorkerMandatoryMinTier(
+    env["CLAUDE_HOOKS_WORKER_MANDATORY_MIN_TIER"],
+    base.workerMandatoryMinTier,
+  ),
 })
 
 export const loadRuntimeConfig: Effect.Effect<RuntimeConfig> = Effect.gen(function* () {
@@ -253,6 +272,7 @@ export interface RuntimeConfigSummary {
   readonly workerEnforceReadOnlyRoles: boolean
   readonly workerWriteIsolation: WorkerWriteIsolation
   readonly workerMandatoryMode: WorkerMandatoryMode
+  readonly workerMandatoryMinTier: number
 }
 
 export const summarizeRuntimeConfig = (
@@ -281,6 +301,7 @@ export const summarizeRuntimeConfig = (
   workerEnforceReadOnlyRoles: cfg.workerEnforceReadOnlyRoles,
   workerWriteIsolation: cfg.workerWriteIsolation,
   workerMandatoryMode: cfg.workerMandatoryMode,
+  workerMandatoryMinTier: cfg.workerMandatoryMinTier,
 })
 
 const makeLive = Effect.sync(() => {

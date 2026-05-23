@@ -118,6 +118,289 @@ const integrationBlockers = (runs: ReadonlyArray<WorkerRun>): ReadonlyArray<stri
     return [`worker ${run.worker_id} has pending integration`]
   })
 
+export interface HistoricalWorkerRunKey {
+  readonly agent_type: string
+  readonly scope: string
+  readonly prompt_hash: string
+  readonly contract_version?: string
+  readonly contract_hash?: string
+}
+
+export interface HistoricalWorkerPatternSummary {
+  readonly key: HistoricalWorkerRunKey
+  readonly pattern: string
+  readonly count: number
+  readonly worker_ids: ReadonlyArray<string>
+  readonly session_ids: ReadonlyArray<string>
+}
+
+export interface SuccessfulVerifiedWorkerRunsSummary {
+  readonly key: HistoricalWorkerRunKey
+  readonly count: number
+  readonly worker_ids: ReadonlyArray<string>
+  readonly session_ids: ReadonlyArray<string>
+  readonly verification_patterns: ReadonlyArray<string>
+}
+
+export interface HistoricalWorkerRunGroupSummary {
+  readonly key: HistoricalWorkerRunKey
+  readonly runs_total: number
+  readonly session_ids: ReadonlyArray<string>
+  readonly worker_ids: ReadonlyArray<string>
+  readonly status_counts: Record<WorkerRun["status"], number>
+  readonly failure_patterns: ReadonlyArray<string>
+  readonly blocker_patterns: ReadonlyArray<string>
+  readonly verification_patterns: ReadonlyArray<string>
+  readonly repeated_failures: ReadonlyArray<HistoricalWorkerPatternSummary>
+  readonly successful_verified_runs: SuccessfulVerifiedWorkerRunsSummary | null
+}
+
+export interface HistoricalWorkerAggregationOptions {
+  readonly lastRuns?: number
+  readonly lastSessions?: number
+  readonly repeatedThreshold?: number
+}
+
+export interface HistoricalWorkerAggregationSummary {
+  readonly runs_considered: number
+  readonly sessions_considered: ReadonlyArray<string>
+  readonly groups: ReadonlyArray<HistoricalWorkerRunGroupSummary>
+  readonly repeated_failures: ReadonlyArray<HistoricalWorkerPatternSummary>
+  readonly successful_verified_runs: ReadonlyArray<SuccessfulVerifiedWorkerRunsSummary>
+}
+
+type WorkerRunWithOptionalContract = WorkerRun & {
+  readonly contract_version?: unknown
+  readonly contract_hash?: unknown
+}
+
+const statusCounts = (): Record<WorkerRun["status"], number> => ({
+  queued: 0,
+  running: 0,
+  blocked: 0,
+  completed: 0,
+  failed: 0,
+  cancelled: 0,
+})
+
+const optionalString = (value: unknown): string | undefined =>
+  typeof value === "string" && value.trim().length > 0 ? value : undefined
+
+const historicalKeyForRun = (run: WorkerRun): HistoricalWorkerRunKey => {
+  const withContract = run as WorkerRunWithOptionalContract
+  const contractVersion = optionalString(withContract.contract_version)
+  const contractHash = optionalString(withContract.contract_hash)
+  return {
+    agent_type: run.agent_type,
+    scope: run.scope,
+    prompt_hash: run.prompt_hash,
+    ...(contractVersion === undefined ? {} : { contract_version: contractVersion }),
+    ...(contractHash === undefined ? {} : { contract_hash: contractHash }),
+  }
+}
+
+const keyId = (key: HistoricalWorkerRunKey): string =>
+  JSON.stringify([
+    key.agent_type,
+    key.scope,
+    key.prompt_hash,
+    key.contract_version ?? "",
+    key.contract_hash ?? "",
+  ])
+
+const timestampMs = (value: string | undefined): number => {
+  if (value === undefined) return Number.NEGATIVE_INFINITY
+  const ms = Date.parse(value)
+  return Number.isFinite(ms) ? ms : Number.NEGATIVE_INFINITY
+}
+
+const runRecencyMs = (run: WorkerRun): number =>
+  Math.max(
+    timestampMs(run.integrated_at),
+    timestampMs(run.stopped_at),
+    timestampMs(run.started_at),
+    timestampMs(run.created_at),
+  )
+
+const runsByRecencyAscending = (runs: ReadonlyArray<WorkerRun>): ReadonlyArray<WorkerRun> =>
+  runs
+    .map((run, index) => ({ run, index, recencyMs: runRecencyMs(run) }))
+    .sort((left, right) => {
+      if (left.recencyMs === right.recencyMs) return left.index - right.index
+      return left.recencyMs < right.recencyMs ? -1 : 1
+    })
+    .map(({ run }) => run)
+
+const selectHistoricalRuns = (
+  runs: ReadonlyArray<WorkerRun>,
+  options: HistoricalWorkerAggregationOptions,
+): ReadonlyArray<WorkerRun> => {
+  const orderedRuns = runsByRecencyAscending(runs)
+  const runLimit = options.lastRuns === undefined
+    ? orderedRuns.length
+    : Math.max(0, Math.floor(options.lastRuns))
+  if (runLimit === 0) return []
+  const limitedRuns = orderedRuns.slice(-runLimit)
+  if (options.lastSessions === undefined) return limitedRuns
+
+  const sessionLimit = Math.max(0, Math.floor(options.lastSessions))
+  if (sessionLimit === 0) return []
+  const selectedSessions = new Set<string>()
+  for (let index = limitedRuns.length - 1; index >= 0 && selectedSessions.size < sessionLimit; index -= 1) {
+    selectedSessions.add(limitedRuns[index]!.session_id)
+  }
+  return limitedRuns.filter((run) => selectedSessions.has(run.session_id))
+}
+
+const normalizedPattern = (kind: "failure" | "blocker", value: string | undefined): string | null => {
+  const normalized = value?.trim().replace(/\s+/g, " ")
+  return normalized === undefined || normalized.length === 0 ? null : `${kind}:${normalized}`
+}
+
+const failedVerificationPatterns = (run: WorkerRun): ReadonlyArray<string> =>
+  (workerResult(run)?.verification ?? [])
+    .filter((check) => check.status !== "passed")
+    .map((check) => `verification:${check.status}:${check.check}`)
+
+const verificationPatterns = (run: WorkerRun): ReadonlyArray<string> =>
+  (workerResult(run)?.verification ?? []).map((check) => `${check.status}:${check.check}`)
+
+const isSuccessfulVerifiedRun = (run: WorkerRun): boolean => {
+  if (run.status !== "completed") return false
+  const verification = workerResult(run)?.verification ?? []
+  return verification.length > 0 && verification.every((check) => check.status === "passed")
+}
+
+const repeatedPatternSummaries = (
+  key: HistoricalWorkerRunKey,
+  patternsByRun: ReadonlyArray<readonly [WorkerRun, string]>,
+  repeatedThreshold: number,
+): ReadonlyArray<HistoricalWorkerPatternSummary> => {
+  const byPattern = new Map<string, Array<WorkerRun>>()
+  const countedRunPatterns = new Set<string>()
+  for (const [run, pattern] of patternsByRun) {
+    const runPatternId = JSON.stringify([run.worker_id, pattern])
+    if (countedRunPatterns.has(runPatternId)) continue
+    countedRunPatterns.add(runPatternId)
+    const entries = byPattern.get(pattern) ?? []
+    entries.push(run)
+    byPattern.set(pattern, entries)
+  }
+
+  return [...byPattern.entries()]
+    .filter(([, patternRuns]) => patternRuns.length >= repeatedThreshold)
+    .map(([pattern, patternRuns]) => ({
+      key,
+      pattern,
+      count: patternRuns.length,
+      worker_ids: uniqueSorted(patternRuns.map((run) => run.worker_id)),
+      session_ids: uniqueSorted(patternRuns.map((run) => run.session_id)),
+    }))
+    .sort((left, right) => left.pattern.localeCompare(right.pattern))
+}
+
+export const summarizeHistoricalWorkerRuns = (
+  runs: ReadonlyArray<WorkerRun>,
+  options: HistoricalWorkerAggregationOptions = {},
+): HistoricalWorkerAggregationSummary => {
+  const selectedRuns = selectHistoricalRuns(runs, options)
+  const repeatedThreshold = Math.max(2, Math.floor(options.repeatedThreshold ?? 2))
+  const byKey = new Map<string, Array<WorkerRun>>()
+  const keys = new Map<string, HistoricalWorkerRunKey>()
+
+  for (const run of selectedRuns) {
+    const key = historicalKeyForRun(run)
+    const id = keyId(key)
+    const entries = byKey.get(id) ?? []
+    entries.push(run)
+    byKey.set(id, entries)
+    keys.set(id, key)
+  }
+
+  const groups = [...byKey.entries()]
+    .map(([id, groupRuns]) => {
+      const key = keys.get(id)!
+      const counts = statusCounts()
+      for (const run of groupRuns) {
+        counts[run.status] += 1
+      }
+
+      const failurePatterns = groupRuns.flatMap((run) => {
+        const pattern = normalizedPattern("failure", run.failure_reason)
+        return pattern === null ? [] : [pattern]
+      })
+      const blockerPatterns = groupRuns.flatMap((run) => {
+        const directBlocker = normalizedPattern("blocker", run.blocked_reason)
+        const resultBlockers = (workerResult(run)?.blockers ?? [])
+          .flatMap((blocker) => {
+            const pattern = normalizedPattern("blocker", blocker)
+            return pattern === null ? [] : [pattern]
+          })
+        return directBlocker === null ? resultBlockers : [directBlocker, ...resultBlockers]
+      })
+      const verification = groupRuns.flatMap(verificationPatterns)
+      const repeatedFailures = repeatedPatternSummaries(
+        key,
+        groupRuns.flatMap((run) => [
+          ...failurePatternsForRun(run),
+          ...blockerPatternsForRun(run),
+          ...failedVerificationPatterns(run),
+        ].map((pattern) => [run, pattern] as const)),
+        repeatedThreshold,
+      )
+      const verifiedRuns = groupRuns.filter(isSuccessfulVerifiedRun)
+      const successfulVerifiedRuns = verifiedRuns.length === 0
+        ? null
+        : {
+            key,
+            count: verifiedRuns.length,
+            worker_ids: uniqueSorted(verifiedRuns.map((run) => run.worker_id)),
+            session_ids: uniqueSorted(verifiedRuns.map((run) => run.session_id)),
+            verification_patterns: uniqueSorted(verifiedRuns.flatMap(verificationPatterns)),
+          }
+
+      return {
+        key,
+        runs_total: groupRuns.length,
+        session_ids: uniqueSorted(groupRuns.map((run) => run.session_id)),
+        worker_ids: uniqueSorted(groupRuns.map((run) => run.worker_id)),
+        status_counts: counts,
+        failure_patterns: uniqueSorted(failurePatterns),
+        blocker_patterns: uniqueSorted(blockerPatterns),
+        verification_patterns: uniqueSorted(verification),
+        repeated_failures: repeatedFailures,
+        successful_verified_runs: successfulVerifiedRuns,
+      }
+    })
+    .sort((left, right) => keyId(left.key).localeCompare(keyId(right.key)))
+
+  return {
+    runs_considered: selectedRuns.length,
+    sessions_considered: uniqueSorted(selectedRuns.map((run) => run.session_id)),
+    groups,
+    repeated_failures: groups.flatMap((group) => group.repeated_failures),
+    successful_verified_runs: groups.flatMap((group) =>
+      group.successful_verified_runs === null ? [] : [group.successful_verified_runs],
+    ),
+  }
+}
+
+const failurePatternsForRun = (run: WorkerRun): ReadonlyArray<string> => {
+  if (run.status !== "failed" && run.status !== "blocked") return []
+  const pattern = normalizedPattern("failure", run.failure_reason)
+  return pattern === null ? [] : [pattern]
+}
+
+const blockerPatternsForRun = (run: WorkerRun): ReadonlyArray<string> => {
+  if (run.status !== "failed" && run.status !== "blocked") return []
+  const directBlocker = normalizedPattern("blocker", run.blocked_reason)
+  const resultBlockers = (workerResult(run)?.blockers ?? []).flatMap((blocker) => {
+    const pattern = normalizedPattern("blocker", blocker)
+    return pattern === null ? [] : [pattern]
+  })
+  return directBlocker === null ? resultBlockers : [directBlocker, ...resultBlockers]
+}
+
 export const summarizeWorkerRuns = (
   sessionId: string,
   runs: ReadonlyArray<WorkerRun>,
