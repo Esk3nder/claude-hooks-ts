@@ -1,4 +1,5 @@
 import { Context, Effect, Layer, Ref, Schema } from "effect";
+import { randomUUID } from "node:crypto";
 import * as fs from "node:fs/promises";
 import * as fsSync from "node:fs";
 import * as path from "node:path";
@@ -393,6 +394,38 @@ const readRecordIfExists = async (
   return readRecordOrEmpty(file, sessionId, op);
 };
 
+const writeRecordAtomic = async (
+  file: string,
+  record: SessionStateRecord,
+  op: string,
+): Promise<void> => {
+  const dir = path.dirname(file);
+  await fs.mkdir(dir, { recursive: true });
+  const tempFile = path.join(
+    dir,
+    `${path.basename(file)}.tmp-${process.pid}-${Date.now()}-${randomUUID()}`,
+  );
+  let committed = false;
+  try {
+    await fs.writeFile(tempFile, JSON.stringify(record, null, 2), {
+      encoding: "utf8",
+      flag: "wx",
+      mode: 0o600,
+    });
+    await fs.rename(tempFile, file);
+    committed = true;
+  } catch (cause) {
+    if (!committed) {
+      try {
+        await fs.rm(tempFile, { force: true });
+      } catch {
+        // best-effort cleanup; the final state file was not touched
+      }
+    }
+    throw fsError(op, file, cause);
+  }
+};
+
 const mergePatch = (
   prev: SessionStateRecord,
   patch: Partial<SessionStateRecord>,
@@ -461,7 +494,6 @@ export const SessionStateLiveBase = (
             Effect.tryPromise({
               try: async () => {
                 const file = statePath(root, sessionId);
-                await fs.mkdir(path.dirname(file), { recursive: true });
                 await Effect.runPromise(
                   locks.withLock(
                     file,
@@ -469,11 +501,7 @@ export const SessionStateLiveBase = (
                       try: async () => {
                         const prev = await readRecordIfExists(file, sessionId, "session-state.update");
                         const next = mergePatch(prev, patch);
-                        await fs.writeFile(
-                          file,
-                          JSON.stringify(next, null, 2),
-                          "utf8",
-                        );
+                        await writeRecordAtomic(file, next, "session-state.update");
                       },
                       catch: (cause) => fsError("session-state.update", file, cause),
                     }),
@@ -530,17 +558,11 @@ export const SessionStateLiveBase = (
         Effect.tryPromise({
           try: async () => {
             const file = statePath(root, sessionId);
-            await fs.mkdir(path.dirname(file), { recursive: true });
             await Effect.runPromise(
               locks.withLock(
                 file,
                 Effect.tryPromise({
-                  try: () =>
-                    fs.writeFile(
-                      file,
-                      JSON.stringify(EMPTY_SESSION_STATE, null, 2),
-                      "utf8",
-                    ),
+                  try: () => writeRecordAtomic(file, EMPTY_SESSION_STATE, "session-state.reset"),
                   catch: (cause) => fsError("session-state.reset", file, cause),
                 }),
               ).pipe(
@@ -580,7 +602,6 @@ const appendBatchLive = (
       file,
       Effect.tryPromise({
         try: async () => {
-          await fs.mkdir(path.dirname(file), { recursive: true });
           const prev = await readRecordIfExists(file, sessionId, "session-state.appendBatch");
           let next: SessionStateRecord = prev;
           for (const { key, value } of entries) {
@@ -589,7 +610,7 @@ const appendBatchLive = (
             next = { ...next, [key]: capArray([...arr, value]) };
           }
           if (next === prev) return;
-          await fs.writeFile(file, JSON.stringify(next, null, 2), "utf8");
+          await writeRecordAtomic(file, next, "session-state.appendBatch");
         },
         catch: (cause) => fsError("session-state.appendBatch", file, cause),
       }),
