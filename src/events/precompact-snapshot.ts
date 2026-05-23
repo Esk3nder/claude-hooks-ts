@@ -158,6 +158,7 @@ export const handlePreCompact = (
 
     const goal = record.next_required_action ?? "(no explicit goal recorded)"
     const filesChanged = record.files_changed
+    const metaArtifactsChanged = record.meta_artifacts_changed
     const filesRead = record.files_read
     const commands = record.commands_run
     const failures = record.commands_failed
@@ -204,6 +205,9 @@ export const handlePreCompact = (
       "## Files changed",
       fmtList(filesChanged),
       "",
+      "## Hook meta-artifacts changed",
+      fmtList(metaArtifactsChanged),
+      "",
       "## Files read",
       fmtList(filesRead),
       "",
@@ -247,6 +251,7 @@ export const handlePreCompact = (
       `- goal/next: ${goal}`,
       `- active_isas: ${fmtIsaInline(isas)}`,
       `- files_changed: ${head(filesChanged)}`,
+      `- meta_artifacts_changed: ${head(metaArtifactsChanged)}`,
       `- commands_run: ${head(commands)}`,
       `- failures: ${head(failures)}`,
       `- verification: ${record.verification_status}`,

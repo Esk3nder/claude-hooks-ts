@@ -160,6 +160,82 @@ describe("handlePostToolBatch", () => {
     expect(r.next_required_action).toBeNull()
   })
 
+  // Hook meta-artifact loop fix: edits to ISA.md / verify-map.yaml are
+  // documentation of verification, not subjects of it. See
+  // post-edit-quality.ts for the self-trap rationale.
+  test("does not record ISA.md edits in files_changed (meta-artifact)", async () => {
+    const layer = SessionStateTest()
+    const isaPath = "/repo/.claude-hooks/work/abc123/ISA.md"
+    const payload = batch("sid-meta-isa", [
+      {
+        tool_name: "Write",
+        tool_input: { file_path: isaPath },
+        tool_response: { success: true },
+      },
+      {
+        tool_name: "Edit",
+        tool_input: { file_path: "/repo/src/real.ts" },
+        tool_response: { success: true },
+      },
+    ])
+    const program = Effect.gen(function* () {
+      yield* handlePostToolBatch(payload)
+      const s = yield* SessionState
+      return yield* s.get("sid-meta-isa")
+    })
+    const r = await Effect.runPromise(program.pipe(Effect.provide(layer)))
+    expect(r.files_changed).not.toContain(isaPath)
+    expect(r.files_changed).toContain("/repo/src/real.ts")
+    expect(r.meta_artifacts_changed).toContain(isaPath)
+  })
+
+  test("does not record verify-map.yaml edits in files_changed (meta-artifact)", async () => {
+    const layer = SessionStateTest()
+    const vmPath = "/repo/.claude-hooks/verify-map.yaml"
+    const payload = batch("sid-meta-vm", [
+      {
+        tool_name: "Edit",
+        tool_input: { file_path: vmPath },
+        tool_response: { success: true },
+      },
+    ])
+    const program = Effect.gen(function* () {
+      yield* handlePostToolBatch(payload)
+      const s = yield* SessionState
+      return yield* s.get("sid-meta-vm")
+    })
+    const r = await Effect.runPromise(program.pipe(Effect.provide(layer)))
+    expect(r.files_changed).not.toContain(vmPath)
+    expect(r.meta_artifacts_changed).toContain(vmPath)
+    expect(r.next_required_action ?? "").toContain("meta-artifact")
+  })
+
+  test("records foreign verify-map.yaml as files_changed when cwd scopes the active config", async () => {
+    const layer = SessionStateTest()
+    const foreignPath = "/repo/fixtures/.claude-hooks/verify-map.yaml"
+    const payload = decode({
+      _tag: "PostToolBatch",
+      session_id: "sid-foreign-vm",
+      hook_event_name: "PostToolBatch",
+      cwd: "/repo",
+      tools: [
+        {
+          tool_name: "Edit",
+          tool_input: { file_path: foreignPath },
+          tool_response: { success: true },
+        },
+      ],
+    })
+    const program = Effect.gen(function* () {
+      yield* handlePostToolBatch(payload)
+      const s = yield* SessionState
+      return yield* s.get("sid-foreign-vm")
+    })
+    const r = await Effect.runPromise(program.pipe(Effect.provide(layer)))
+    expect(r.files_changed).toContain(foreignPath)
+    expect(r.meta_artifacts_changed).not.toContain(foreignPath)
+  })
+
   test("records source URLs from source tool UI aliases", async () => {
     const layer = SessionStateTest()
     const payload = batch("sid-4e", [

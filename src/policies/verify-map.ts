@@ -48,9 +48,37 @@ import { runCommandLive, runShellCommandLive } from "../services/command-runner.
 import { logWarningSync } from "../services/diagnostics.ts"
 
 const VERIFY_MAP_SUBPATH = [".claude-hooks", "verify-map.yaml"] as const
+const VERIFY_MAP_REL = VERIFY_MAP_SUBPATH.join("/")
+const VERIFY_MAP_TAIL = `/${VERIFY_MAP_REL}`
+
+const trimTrailingSlash = (value: string): string => value.replace(/\/+$/, "")
 
 export const verifyMapPathFor = (root: string = process.cwd()): string =>
   join(root, ...VERIFY_MAP_SUBPATH)
+
+/**
+ * Does `filePath` point to the active hook `.claude-hooks/verify-map.yaml`
+ * config? When `root` is supplied, only that root's config (or its
+ * root-relative spelling) matches. Without a root, falls back to a
+ * `.claude-hooks/verify-map.yaml` tail match. A bare `verify-map.yaml`
+ * in an unrelated directory is intentionally NOT matched.
+ */
+export const isVerifyMapPath = (
+  filePath: string,
+  root?: string | null,
+): boolean => {
+  if (typeof filePath !== "string" || filePath.length === 0) return false
+  const normalized = normalizePathPattern(filePath)
+  if (typeof root === "string" && root.length > 0) {
+    if (normalized === VERIFY_MAP_REL) return true
+    const rootNormalized = trimTrailingSlash(normalizePathPattern(root))
+    return normalized === `${rootNormalized}/${VERIFY_MAP_REL}`
+  }
+  return (
+    normalized.endsWith(VERIFY_MAP_TAIL) ||
+    normalized === VERIFY_MAP_REL
+  )
+}
 
 export const DEFAULT_VERIFY_TIMEOUT_MS = 15_000
 export const MAX_VERIFY_TIMEOUT_MS = 22_000

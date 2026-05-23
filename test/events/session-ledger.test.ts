@@ -25,6 +25,7 @@ describe("handleSessionEnd", () => {
             {
               ...EMPTY_SESSION_STATE,
               files_changed: ["/repo/a.ts"],
+              meta_artifacts_changed: ["/repo/.claude-hooks/verify-map.yaml"],
               commands_run: ["bun test"],
               verification_status: "passed" as const,
             },
@@ -52,6 +53,8 @@ describe("handleSessionEnd", () => {
     expect(r.content).toContain("# Session summary")
     expect(r.content).toContain("user-quit")
     expect(r.content).toContain("/repo/a.ts")
+    expect(r.content).toContain("Hook meta-artifacts changed")
+    expect(r.content).toContain("/repo/.claude-hooks/verify-map.yaml")
     expect(r.content).toContain("bun test")
     expect(r.content).toContain("verification_status: passed")
   })
