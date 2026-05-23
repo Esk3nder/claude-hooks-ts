@@ -48,6 +48,12 @@ export interface EngagementState {
 export interface VerificationLedger {
   readonly files_read: ReadonlyArray<string>;
   readonly files_changed: ReadonlyArray<string>;
+  /**
+   * Hook-owned evidence/config artifacts that were edited successfully but
+   * are intentionally excluded from `files_changed` so they do not trigger
+   * the generic Stop verification loop.
+   */
+  readonly meta_artifacts_changed: ReadonlyArray<string>;
   readonly commands_run: ReadonlyArray<string>;
   readonly commands_failed: ReadonlyArray<string>;
   readonly tests_run: ReadonlyArray<string>;
@@ -148,6 +154,7 @@ export const EMPTY_SESSION_STATE: SessionStateRecord = {
   _schema_version: SESSION_STATE_SCHEMA_VERSION,
   files_read: [],
   files_changed: [],
+  meta_artifacts_changed: [],
   commands_run: [],
   commands_failed: [],
   tests_run: [],
@@ -177,6 +184,7 @@ export const EMPTY_SESSION_STATE: SessionStateRecord = {
 export type AppendableKey =
   | "files_read"
   | "files_changed"
+  | "meta_artifacts_changed"
   | "commands_run"
   | "commands_failed"
   | "tests_run"
@@ -245,6 +253,7 @@ const MAX_SESSION_ARRAY_ITEMS = 1_000;
 const appendableKeys = [
   "files_read",
   "files_changed",
+  "meta_artifacts_changed",
   "commands_run",
   "commands_failed",
   "tests_run",
@@ -812,6 +821,7 @@ export const engagementOf = (r: SessionStateRecord): EngagementState => ({
 export const verificationOf = (r: SessionStateRecord): VerificationLedger => ({
   files_read: r.files_read,
   files_changed: r.files_changed,
+  meta_artifacts_changed: r.meta_artifacts_changed,
   commands_run: r.commands_run,
   commands_failed: r.commands_failed,
   tests_run: r.tests_run,

@@ -7,6 +7,7 @@ import { Shell } from "../services/shell.ts"
 import { SessionState, type VerificationStatus } from "../services/session-state.ts"
 import { makeShellCommand } from "../schema/branded.ts"
 import { isIsaFilePath } from "../algorithm/isa/locate.ts"
+import { isVerifyMapPath } from "../policies/verify-map.ts"
 import { runCheckpoint } from "../algorithm/isa/checkpoint.ts"
 import { mutablePathFromInput } from "../policies/write-class.ts"
 import { handlePostToolUseIsaEffects } from "../algorithm/isa/lifecycle.ts"
@@ -120,6 +121,7 @@ const recordSingleToolUseEvidence = (
   payload: HookPayload,
   file: string | null,
   isEdit: boolean,
+  sessionRoot: string | null,
 ): Effect.Effect<void> =>
   Effect.gen(function* () {
     if (payload._tag !== "PostToolUse") return
@@ -128,6 +130,7 @@ const recordSingleToolUseEvidence = (
     const entries: Array<{
       readonly key:
         | "files_changed"
+        | "meta_artifacts_changed"
         | "commands_run"
         | "commands_failed"
         | "tests_run"
@@ -136,13 +139,32 @@ const recordSingleToolUseEvidence = (
     }> = []
     let verification: VerificationStatus = "none"
     let nextRequiredAction: string | null = null
+    let shouldResetVerification = false
     // EP P2 #8: record the literal command that flipped verification
     // to passed/failed so a reviewer can audit which run counted.
     let verificationCommand: string | null = null
 
+    // Hook meta-artifacts (ISA.md, .claude-hooks/verify-map.yaml) are
+    // documentation OF verification, not code that needs verifying.
+    // Recording them in `files_changed` creates a self-trap: the Stop
+    // gate then demands verification, the model edits the ISA to add
+    // verification evidence, and that edit re-enters `files_changed`,
+    // looping indefinitely. Skip recording but otherwise treat the
+    // edit as a no-op for evidence purposes.
+    const isMetaEdit =
+      isEdit &&
+      file !== null &&
+      (isIsaFilePath(file) || isVerifyMapPath(file, sessionRoot))
+
     if (isEdit && file !== null && success) {
-      entries.push({ key: "files_changed", value: file })
-      nextRequiredAction = "Run the smallest relevant test/typecheck for the changed files."
+      if (isMetaEdit) {
+        entries.push({ key: "meta_artifacts_changed", value: file })
+        nextRequiredAction = "Review or validate the hook meta-artifact change."
+      } else {
+        entries.push({ key: "files_changed", value: file })
+        shouldResetVerification = true
+        nextRequiredAction = "Run the smallest relevant test/typecheck for the changed files."
+      }
     } else if (payload.tool_name === "Bash") {
       const cmd = commandFromInput(payload.tool_input)
       if (cmd !== null) {
@@ -220,7 +242,9 @@ const recordSingleToolUseEvidence = (
           : ([] as ReadonlyArray<string>)
       yield* state
         .update(payload.session_id, {
-          verification_status: verification,
+          ...(verification !== "none" || shouldResetVerification
+            ? { verification_status: verification }
+            : {}),
           next_required_action: nextRequiredAction,
           ...(verificationCommand !== null
             ? {
@@ -281,8 +305,13 @@ export const handlePostToolUse = (
           ).pipe(Effect.as(null))
         }),
       )
+    const sessionRoot =
+      record?.session_root ??
+      (typeof payload.cwd === "string" && payload.cwd.length > 0
+        ? payload.cwd
+        : null)
 
-    yield* recordSingleToolUseEvidence(state, payload, file, isEdit)
+    yield* recordSingleToolUseEvidence(state, payload, file, isEdit, sessionRoot)
 
     // Engaged-marker: when an ISA file is written, stamp `isa_engaged_at`
     // for telemetry. Do NOT clear `engagement_required` — the flag is

@@ -6,6 +6,7 @@ import {
   DEFAULT_VERIFY_PRIORITY,
   DEFAULT_VERIFY_TIMEOUT_MS,
   MAX_VERIFY_TIMEOUT_MS,
+  isVerifyMapPath,
   loadVerifyRules,
   matchVerifyRules,
   parseVerifyMapYaml,
@@ -30,6 +31,52 @@ describe("verifyMapPathFor", () => {
     expect(verifyMapPathFor("/tmp/x")).toBe(
       "/tmp/x/.claude-hooks/verify-map.yaml",
     )
+  })
+})
+
+describe("isVerifyMapPath", () => {
+  test("matches canonical absolute path", () => {
+    expect(isVerifyMapPath("/repo/.claude-hooks/verify-map.yaml")).toBe(true)
+  })
+  test("matches at any repo root", () => {
+    expect(isVerifyMapPath("/some/nested/dir/.claude-hooks/verify-map.yaml")).toBe(
+      true,
+    )
+  })
+  test("matches relative form", () => {
+    expect(isVerifyMapPath(".claude-hooks/verify-map.yaml")).toBe(true)
+    expect(isVerifyMapPath("./.claude-hooks/verify-map.yaml")).toBe(true)
+  })
+  test("matches Windows separators after normalization", () => {
+    expect(isVerifyMapPath("C:\\repo\\.claude-hooks\\verify-map.yaml")).toBe(
+      true,
+    )
+  })
+  test("when root is supplied, matches only the active root config", () => {
+    expect(isVerifyMapPath("/repo/.claude-hooks/verify-map.yaml", "/repo")).toBe(
+      true,
+    )
+    expect(
+      isVerifyMapPath("/repo/fixtures/.claude-hooks/verify-map.yaml", "/repo"),
+    ).toBe(false)
+    expect(isVerifyMapPath(".claude-hooks/verify-map.yaml", "/repo")).toBe(
+      true,
+    )
+  })
+  test("does NOT match a bare verify-map.yaml outside .claude-hooks", () => {
+    expect(isVerifyMapPath("/repo/verify-map.yaml")).toBe(false)
+    expect(isVerifyMapPath("verify-map.yaml")).toBe(false)
+    expect(isVerifyMapPath("/repo/configs/verify-map.yaml")).toBe(false)
+  })
+  test("does NOT match unrelated paths", () => {
+    expect(isVerifyMapPath("/repo/src/foo.ts")).toBe(false)
+    expect(isVerifyMapPath("/repo/.claude-hooks/work/abc/ISA.md")).toBe(false)
+    expect(isVerifyMapPath("/repo/.claude-hooks/verify-map.yaml.bak")).toBe(
+      false,
+    )
+    expect(isVerifyMapPath("")).toBe(false)
+    expect(isVerifyMapPath(null as unknown as string)).toBe(false)
+    expect(isVerifyMapPath(undefined as unknown as string)).toBe(false)
   })
 })
 

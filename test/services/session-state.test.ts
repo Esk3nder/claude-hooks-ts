@@ -27,6 +27,10 @@ describe("SessionState (test layer)", () => {
     expect(EMPTY_SESSION_STATE.probe_verified_iscs).toEqual([]);
   });
 
+  test("meta_artifacts_changed defaults to [] in EMPTY_SESSION_STATE", () => {
+    expect(EMPTY_SESSION_STATE.meta_artifacts_changed).toEqual([]);
+  });
+
   test("US-14: append('probe_verified_iscs', iscId) persists across get()", async () => {
     const program = Effect.gen(function* () {
       const s = yield* SessionState;
@@ -81,6 +85,7 @@ describe("SessionState (test layer)", () => {
     const program = Effect.gen(function* () {
       const s = yield* SessionState;
       yield* s.append("sid", "files_changed", "/a");
+      yield* s.append("sid", "meta_artifacts_changed", "/meta");
       yield* s.append("sid", "commands_run", "ls");
       yield* s.append("sid", "tests_run", "t1");
       yield* s.update("sid", { verification_status: "passed" });
@@ -91,6 +96,7 @@ describe("SessionState (test layer)", () => {
       program.pipe(Effect.provide(SessionStateTest())),
     );
     expect(r.files_changed).toEqual([]);
+    expect(r.meta_artifacts_changed).toEqual([]);
     expect(r.commands_run).toEqual([]);
     expect(r.tests_run).toEqual([]);
     expect(r.verification_status).toBe("none");
@@ -135,6 +141,7 @@ describe("SessionStateRecord — focused sub-record projections", () => {
     const r = {
       ...EMPTY_SESSION_STATE,
       files_changed: ["/a"],
+      meta_artifacts_changed: ["/meta"],
       commands_run: ["ls"],
       tests_run: ["t1"],
       verification_status: "passed" as const,
@@ -148,6 +155,7 @@ describe("SessionStateRecord — focused sub-record projections", () => {
     };
     const v = verificationOf(r);
     expect(v.files_changed).toEqual(["/a"]);
+    expect(v.meta_artifacts_changed).toEqual(["/meta"]);
     expect(v.verification_status).toBe("passed");
     // Cast through `unknown` because VerificationLedger has no string index
     // signature — we're inspecting that fields from other slices did NOT

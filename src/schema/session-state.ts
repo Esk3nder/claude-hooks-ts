@@ -21,6 +21,11 @@ export const SessionStateRecordSchema = Schema.Struct({
   _schema_version: Schema.optional(Schema.Number),
   files_read: Schema.Array(Schema.String),
   files_changed: Schema.Array(Schema.String),
+  /**
+   * Hook-owned evidence/config artifacts excluded from the generic
+   * files_changed Stop gate but retained as auditable session evidence.
+   */
+  meta_artifacts_changed: Schema.Array(Schema.String),
   commands_run: Schema.Array(Schema.String),
   commands_failed: Schema.Array(Schema.String),
   tests_run: Schema.Array(Schema.String),

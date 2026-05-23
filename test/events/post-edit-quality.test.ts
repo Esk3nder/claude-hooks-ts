@@ -302,6 +302,89 @@ describe("handlePostToolUse (post-edit-quality)", () => {
     expect(record.next_required_action).toBeNull()
   })
 
+  // Hook meta-artifact loop fix: ISA.md and .claude-hooks/verify-map.yaml
+  // are documentation OF verification, not subjects of it. Recording them
+  // in files_changed creates a self-trap: the Stop gate demands
+  // verification, the model edits the ISA, that edit re-enters
+  // files_changed, indefinitely.
+  test("does not record ISA.md edits in files_changed (loop self-trap)", async () => {
+    const layer = Layer.mergeAll(
+      ProjectTest(),
+      RedactTest(),
+      SessionStateTest(
+        new Map([
+          [
+            "s",
+            {
+              ...EMPTY_SESSION_STATE,
+              files_changed: ["/repo/src/already-verified.ts"],
+              verification_status: "passed" as const,
+            },
+          ],
+        ]),
+      ),
+      ShellTest(() => ({ stdout: "", stderr: "", exitCode: 1 })),
+    )
+    const isaPath = "/repo/.claude-hooks/work/abc123/ISA.md"
+    const program = Effect.gen(function* () {
+      yield* handlePostToolUse(editPayload(isaPath, "Write"))
+      const state = yield* SessionState
+      return yield* state.get("s")
+    })
+    const record = await Effect.runPromise(program.pipe(Effect.provide(layer)))
+    expect(record.files_changed).not.toContain(isaPath)
+    expect(record.meta_artifacts_changed).toContain(isaPath)
+    expect(record.verification_status).toBe("passed")
+    expect(record.next_required_action ?? "").toContain("meta-artifact")
+  })
+
+  test("does not record .claude-hooks/verify-map.yaml edits in files_changed", async () => {
+    const layer = Layer.mergeAll(
+      ProjectTest(),
+      RedactTest(),
+      SessionStateTest(),
+      ShellTest(() => ({ stdout: "", stderr: "", exitCode: 1 })),
+    )
+    const vmPath = "/repo/.claude-hooks/verify-map.yaml"
+    const program = Effect.gen(function* () {
+      yield* handlePostToolUse(editPayload(vmPath, "Edit"))
+      const state = yield* SessionState
+      return yield* state.get("s")
+    })
+    const record = await Effect.runPromise(program.pipe(Effect.provide(layer)))
+    expect(record.files_changed).not.toContain(vmPath)
+    expect(record.meta_artifacts_changed).toContain(vmPath)
+    expect(record.next_required_action ?? "").toContain("meta-artifact")
+  })
+
+  test("records foreign verify-map.yaml edits as files_changed when cwd scopes the active config", async () => {
+    const layer = Layer.mergeAll(
+      ProjectTest(),
+      RedactTest(),
+      SessionStateTest(),
+      ShellTest(() => ({ stdout: "", stderr: "", exitCode: 1 })),
+    )
+    const foreignPath = "/repo/fixtures/.claude-hooks/verify-map.yaml"
+    const payload = decode({
+      _tag: "PostToolUse",
+      session_id: "s",
+      hook_event_name: "PostToolUse",
+      cwd: "/repo",
+      tool_name: "Edit",
+      tool_input: { file_path: foreignPath },
+      tool_response: { success: true },
+    })
+    const program = Effect.gen(function* () {
+      yield* handlePostToolUse(payload)
+      const state = yield* SessionState
+      return yield* state.get("s")
+    })
+    const record = await Effect.runPromise(program.pipe(Effect.provide(layer)))
+    expect(record.files_changed).toContain(foreignPath)
+    expect(record.meta_artifacts_changed).not.toContain(foreignPath)
+    expect(record.verification_status).toBe("none")
+  })
+
   test("records single PostToolUse source URLs from web tools", async () => {
     const layer = Layer.mergeAll(
       ProjectTest(),

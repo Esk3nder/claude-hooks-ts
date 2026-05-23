@@ -12,6 +12,8 @@ import {
   urlsFromToolInput,
   urlsFromToolResponse,
 } from "../policies/tool-evidence.ts"
+import { isIsaFilePath } from "../algorithm/isa/locate.ts"
+import { isVerifyMapPath } from "../policies/verify-map.ts"
 
 const EDIT_TOOLS = new Set(["Edit", "Write", "MultiEdit", "Update"])
 const READ_TOOLS = new Set(["Read"])
@@ -36,6 +38,7 @@ const commandFromInput = (input: unknown): string | null => {
 interface BatchSummary {
   readonly readsAdded: number
   readonly editsAdded: number
+  readonly metaEditsAdded: number
   readonly commandsAdded: number
   readonly commandsFailedAdded: number
   readonly testsAdded: number
@@ -50,9 +53,18 @@ export const handlePostToolBatch = (
     if (payload._tag !== "PostToolBatch") return NO_DECISION
     const state = yield* SessionState
     const sessionId = payload.session_id
+    const record = yield* state
+      .get(sessionId)
+      .pipe(Effect.catchAll(() => Effect.succeed(null)))
+    const sessionRoot =
+      record?.session_root ??
+      (typeof payload.cwd === "string" && payload.cwd.length > 0
+        ? payload.cwd
+        : null)
 
     const filesRead: string[] = []
     const filesChanged: string[] = []
+    const metaArtifactsChanged: string[] = []
     const commandsRun: string[] = []
     const commandsFailed: string[] = []
     const testsRun: string[] = []
@@ -68,7 +80,15 @@ export const handlePostToolBatch = (
         if (fp !== null) filesRead.push(fp)
       } else if (EDIT_TOOLS.has(entry.tool_name)) {
         const fp = filePathFromInput(entry.tool_input)
-        if (fp !== null && success) filesChanged.push(fp)
+        // Skip hook meta-artifacts (ISA.md, verify-map.yaml) - see
+        // post-edit-quality.ts for the self-trap rationale.
+        if (fp !== null && success) {
+          if (isIsaFilePath(fp) || isVerifyMapPath(fp, sessionRoot)) {
+            metaArtifactsChanged.push(fp)
+          } else {
+            filesChanged.push(fp)
+          }
+        }
       } else if (entry.tool_name === "Bash") {
         const cmd = commandFromInput(entry.tool_input)
         if (cmd !== null) {
@@ -101,6 +121,7 @@ export const handlePostToolBatch = (
     type BatchKey =
       | "files_read"
       | "files_changed"
+      | "meta_artifacts_changed"
       | "commands_run"
       | "commands_failed"
       | "tests_run"
@@ -108,6 +129,9 @@ export const handlePostToolBatch = (
     const batchEntries: Array<{ readonly key: BatchKey; readonly value: string }> = []
     for (const f of filesRead) batchEntries.push({ key: "files_read", value: f })
     for (const f of filesChanged) batchEntries.push({ key: "files_changed", value: f })
+    for (const f of metaArtifactsChanged) {
+      batchEntries.push({ key: "meta_artifacts_changed", value: f })
+    }
     for (const c of commandsRun) batchEntries.push({ key: "commands_run", value: c })
     for (const c of commandsFailed) batchEntries.push({ key: "commands_failed", value: c })
     for (const t of testsRun) batchEntries.push({ key: "tests_run", value: t })
@@ -131,10 +155,14 @@ export const handlePostToolBatch = (
     }
 
     let nextAction: string | null = null
+    let shouldResetVerification = false
     if (verification === "failed") {
       nextAction = "Read the failure output and fix the failing assertion."
     } else if (filesChanged.length > 0 && verification !== "passed") {
       nextAction = "Run the smallest relevant test/typecheck for the changed files."
+      shouldResetVerification = true
+    } else if (metaArtifactsChanged.length > 0) {
+      nextAction = "Review or validate the hook meta-artifact change."
     } else if (commandsFailed.length > 0) {
       nextAction = "Investigate the failed command before continuing."
     } else if (filesRead.length > 0 && filesChanged.length === 0) {
@@ -144,7 +172,9 @@ export const handlePostToolBatch = (
     if (verification !== "none" || nextAction !== null) {
       yield* state
         .update(sessionId, {
-          verification_status: verification,
+          ...(verification !== "none" || shouldResetVerification
+            ? { verification_status: verification }
+            : {}),
           next_required_action: nextAction,
         })
         .pipe(
@@ -164,6 +194,7 @@ export const handlePostToolBatch = (
     const summary: BatchSummary = {
       readsAdded: filesRead.length,
       editsAdded: filesChanged.length,
+      metaEditsAdded: metaArtifactsChanged.length,
       commandsAdded: commandsRun.length,
       commandsFailedAdded: commandsFailed.length,
       testsAdded: testsRun.length,
@@ -173,7 +204,7 @@ export const handlePostToolBatch = (
 
     const parts: string[] = []
     parts.push(
-      `Batch: ${summary.readsAdded} read, ${summary.editsAdded} edit, ${summary.commandsAdded} cmd (${summary.commandsFailedAdded} failed), ${summary.testsAdded} verify.`,
+      `Batch: ${summary.readsAdded} read, ${summary.editsAdded} edit, ${summary.metaEditsAdded} meta, ${summary.commandsAdded} cmd (${summary.commandsFailedAdded} failed), ${summary.testsAdded} verify.`,
     )
     parts.push(`Verification: ${summary.verification}.`)
     if (summary.nextAction !== null) parts.push(`Next: ${summary.nextAction}`)
