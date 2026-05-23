@@ -8,7 +8,7 @@ import { SessionStateRecordSchema } from "../schema/session-state.ts";
 import { getCurrentSession } from "./session-context.ts";
 import { FileLock, FileLockPlatformLive } from "./file-lock.ts";
 import { logWarningSync } from "./diagnostics.ts";
-import { safeStateSegment } from "./state-paths.ts";
+import { sessionStatePath } from "./state-paths.ts";
 
 export type VerificationStatus = "passed" | "failed" | "none";
 
@@ -234,8 +234,11 @@ export class SessionState extends Context.Tag("SessionState")<
   SessionStateApi
 >() {}
 
-const statePath = (root: string, sessionId: string): string =>
-  path.join(root, ".claude-hooks", "state", `${safeStateSegment(sessionId, "session")}.json`);
+const statePath = (
+  root: string,
+  sessionId: string,
+  sessionRoot?: string | null,
+): string => sessionStatePath({ root, sessionId, sessionRoot });
 
 const MAX_SESSION_ARRAY_ITEMS = 1_000;
 
@@ -426,6 +429,47 @@ const writeRecordAtomic = async (
   }
 };
 
+const readRecordFollowingSessionRoot = async (
+  root: string,
+  sessionId: string,
+  op: string,
+): Promise<SessionStateRecord> => {
+  const primary = statePath(root, sessionId);
+  const record = await readRecordOrEmpty(primary, sessionId, op);
+  if (record.session_root === null) return record;
+
+  const canonical = statePath(root, sessionId, record.session_root);
+  if (path.resolve(canonical) === path.resolve(primary)) return record;
+
+  const canonicalRecord = await readRecordIfExists(canonical, sessionId, op);
+  return canonicalRecord === EMPTY_SESSION_STATE ? record : canonicalRecord;
+};
+
+const recordForWritablePath = async (
+  root: string,
+  sessionId: string,
+  patch: Partial<SessionStateRecord>,
+  op: string,
+): Promise<{
+  readonly file: string;
+  readonly previous: SessionStateRecord;
+}> => {
+  const primary = statePath(root, sessionId);
+  const primaryRecord = await readRecordIfExists(primary, sessionId, op);
+  const sessionRoot = patch.session_root ?? primaryRecord.session_root;
+  const file = statePath(root, sessionId, sessionRoot);
+  if (path.resolve(file) === path.resolve(primary)) {
+    return { file, previous: primaryRecord };
+  }
+
+  const canonicalRecord = await readRecordIfExists(file, sessionId, op);
+  return {
+    file,
+    previous: canonicalRecord === EMPTY_SESSION_STATE ? primaryRecord : canonicalRecord,
+  };
+};
+
+
 const mergePatch = (
   prev: SessionStateRecord,
   patch: Partial<SessionStateRecord>,
@@ -475,8 +519,7 @@ export const SessionStateLiveBase = (
           Effect.flatMap((sessionId) =>
             Effect.tryPromise({
               try: async () => {
-                const file = statePath(root, sessionId);
-                return readRecordOrEmpty(file, sessionId, "session-state.get");
+                return readRecordFollowingSessionRoot(root, sessionId, "session-state.get");
               },
               catch: (cause) => fsError("session-state.get", statePath(root, sessionId), cause),
             }),
@@ -493,13 +536,19 @@ export const SessionStateLiveBase = (
           Effect.flatMap((sessionId) =>
             Effect.tryPromise({
               try: async () => {
-                const file = statePath(root, sessionId);
+                const { file, previous } = await recordForWritablePath(
+                  root,
+                  sessionId,
+                  patch,
+                  "session-state.update",
+                );
                 await Effect.runPromise(
                   locks.withLock(
                     file,
                     Effect.tryPromise({
                       try: async () => {
-                        const prev = await readRecordIfExists(file, sessionId, "session-state.update");
+                        const latest = await readRecordIfExists(file, sessionId, "session-state.update");
+                        const prev = latest === EMPTY_SESSION_STATE ? previous : latest;
                         const next = mergePatch(prev, patch);
                         await writeRecordAtomic(file, next, "session-state.update");
                       },
@@ -557,7 +606,12 @@ export const SessionStateLiveBase = (
       reset: (sessionId: string) =>
         Effect.tryPromise({
           try: async () => {
-            const file = statePath(root, sessionId);
+            const { file } = await recordForWritablePath(
+              root,
+              sessionId,
+              {},
+              "session-state.reset",
+            );
             await Effect.runPromise(
               locks.withLock(
                 file,
@@ -597,12 +651,18 @@ const appendBatchLive = (
 ): Effect.Effect<void, FsError> =>
   Effect.gen(function* () {
     if (entries.length === 0) return;
-    const file = statePath(root, sessionId);
+    const { file, previous } = yield* Effect.tryPromise({
+      try: () =>
+        recordForWritablePath(root, sessionId, {}, "session-state.appendBatch"),
+      catch: (cause) =>
+        fsError("session-state.appendBatch", statePath(root, sessionId), cause),
+    });
     yield* locks.withLock(
       file,
       Effect.tryPromise({
         try: async () => {
-          const prev = await readRecordIfExists(file, sessionId, "session-state.appendBatch");
+          const latest = await readRecordIfExists(file, sessionId, "session-state.appendBatch");
+          const prev = latest === EMPTY_SESSION_STATE ? previous : latest;
           let next: SessionStateRecord = prev;
           for (const { key, value } of entries) {
             const arr = next[key];
