@@ -306,13 +306,19 @@ export const handleStop = (
     }
 
     const filesChanged = record.files_changed.length
+    // verify-map is a project-scoped policy (lives at
+    // `<sessionRoot>/.claude-hooks/verify-map.yaml`), so rule loading,
+    // glob-candidate expansion, and command execution must all root at
+    // `sessionRoot` — not the drifted shell cwd. Using `currentCwd` here
+    // diverged from the ISA gate (which uses sessionRoot) and caused
+    // a self-perpetuating Stop loop when cwd != session_root.
     const changedPathCandidates = expandPathMatchCandidates(
-      currentCwd,
+      sessionRoot,
       record.files_changed,
     )
     let verifiedThisStop = false
     if (filesChanged > 0 && record.verification_status !== "passed") {
-      const verifyRules = loadVerifyRules(currentCwd)
+      const verifyRules = loadVerifyRules(sessionRoot)
       const selectedVerify = selectVerifyCommand(
         changedPathCandidates,
         verifyRules,
@@ -330,7 +336,7 @@ export const handleStop = (
         // unexpected exception), don't swallow silently — log the cause
         // and fall through to the reminder block.
         const result = yield* Effect.tryPromise({
-          try: () => runVerifyCommand(selectedVerify, currentCwd),
+          try: () => runVerifyCommand(selectedVerify, sessionRoot),
           catch: (cause) => new Error(String(cause)),
         }).pipe(
           Effect.tapError((cause) =>
