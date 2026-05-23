@@ -31,6 +31,14 @@ export interface EngagementState {
   readonly expected_isa_path_absolute: string | null;
   readonly isa_engaged_at: string | null;
   readonly last_tier: number | null;
+  /**
+   * Engagement tier/mode FROZEN at first engagement. The ISA-completeness
+   * gate prefers these over the per-turn `last_tier` / `last_mode` so a
+   * classifier shift mid-session can't spuriously block on a correctly-
+   * authored ISA. Both optional for back-compat with legacy records.
+   */
+  readonly engagement_tier?: number | null;
+  readonly engagement_mode?: string | null;
   readonly stop_blocked_once: boolean;
   /**
    * Rule names from regenerate.yaml that were skipped on the previous
@@ -174,6 +182,8 @@ export const EMPTY_SESSION_STATE: SessionStateRecord = {
   requires_web_sources: false,
   source_ledger_opt_out: false,
   engagement_required: false,
+  engagement_tier: null,
+  engagement_mode: null,
   expected_isa_path: null,
   session_root: null,
   expected_isa_path_absolute: null,

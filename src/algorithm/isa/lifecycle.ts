@@ -142,6 +142,8 @@ export type ResolveActiveIsaRecord = Pick<
   | "expected_isa_path"
   | "last_mode"
   | "last_tier"
+  | "engagement_mode"
+  | "engagement_tier"
 > & {
   /**
    * Enforcement-plane P1 #1 — when present, `resolveActiveIsa` uses
@@ -404,14 +406,23 @@ export const checkStopReadiness = (
   }
 
   if (input.record?.engagement_required === true) {
-    const expectedTier =
-      typeof input.record.last_tier === "number"
-        ? `E${input.record.last_tier}`
-        : null
+    // Prefer the engagement-frozen tier/mode (set once at first engagement
+    // and never overwritten) so a per-turn classifier fluctuation does not
+    // spuriously misalign with a correctly-authored ISA. Fall back to
+    // `last_tier`/`last_mode` for legacy records written before the freeze
+    // fields existed.
+    const frozenTier =
+      typeof input.record.engagement_tier === "number"
+        ? input.record.engagement_tier
+        : typeof input.record.last_tier === "number"
+          ? input.record.last_tier
+          : null
+    const expectedTier = frozenTier !== null ? `E${frozenTier}` : null
     const actualMode = (fm["classifier_mode"] ?? "").trim()
     const actualTier = (fm["classifier_tier"] ?? "").trim().toUpperCase()
     const actualReason = (fm["classifier_reason"] ?? "").trim()
-    const expectedMode = input.record.last_mode ?? null
+    const expectedMode =
+      input.record.engagement_mode ?? input.record.last_mode ?? null
     const problems: string[] = []
     if (expectedMode !== null && actualMode !== expectedMode) {
       problems.push(`classifier_mode expected ${expectedMode}, got ${actualMode || "<missing>"}`)

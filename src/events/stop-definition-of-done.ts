@@ -316,10 +316,22 @@ export const handleStop = (
       }
     }
 
+    // Verify-watermark: `verification_files` is the set of paths known-verified
+    // by the most recent passing verify. The gate only treats a file as
+    // unverified if it's in `files_changed` AND not in `verification_files`.
+    // This prevents the cumulative `files_changed` list from re-arming the
+    // gate forever after a successful verify — only files genuinely edited
+    // since the last pass trigger another verify run.
+    const verifiedSet = new Set(record.verification_files ?? [])
+    const unverifiedFiles = record.files_changed.filter(
+      (f) => !verifiedSet.has(f),
+    )
+    const hasUnverifiedFiles = unverifiedFiles.length > 0
+
     if (
       preflightBlockReasons.length > 0 &&
       record.files_changed.length > 0 &&
-      record.verification_status !== "passed"
+      hasUnverifiedFiles
     ) {
       preflightBlockReasons.push(BLOCK_REASON)
     }
@@ -349,7 +361,7 @@ export const handleStop = (
       record.files_changed,
     )
     let verifiedThisStop = false
-    if (filesChanged > 0 && record.verification_status !== "passed") {
+    if (filesChanged > 0 && hasUnverifiedFiles) {
       const verifyRules = loadVerifyRules(sessionRoot)
       const selectedVerify = selectVerifyCommand(
         verifyPathCandidates,
@@ -379,9 +391,23 @@ export const handleStop = (
 
         if (result !== null) {
           const passed = result.exitCode === 0 && !result.timedOut
+          // On pass: snapshot the current files_changed into verification_files
+          // (union with the prior watermark so multiple partial-verify runs
+          // accumulate). This is the gate's freshness anchor — subsequent
+          // Stops with no new edits will see files_changed ⊆ verification_files
+          // and skip the verify run entirely.
+          const nextVerificationFiles = passed
+            ? Array.from(
+                new Set([
+                  ...(record.verification_files ?? []),
+                  ...record.files_changed,
+                ]),
+              )
+            : (record.verification_files ?? [])
           yield* state
             .update(sid, {
               verification_status: passed ? "passed" : "failed",
+              ...(passed ? { verification_files: nextVerificationFiles } : {}),
             })
             .pipe(Effect.catchAll((cause) => reportStateWriteFailure(sid, "verification-status", cause)))
           yield* state
@@ -412,7 +438,7 @@ export const handleStop = (
 
     if (
       filesChanged > 0 &&
-      record.verification_status !== "passed" &&
+      hasUnverifiedFiles &&
       !verifiedThisStop
     ) {
       // D2: when no verify-map rule matched, tell the user (a) which paths
