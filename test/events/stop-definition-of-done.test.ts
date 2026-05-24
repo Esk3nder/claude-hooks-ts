@@ -339,6 +339,39 @@ describe("handleStop (definition of done)", () => {
     expect(reason).toContain("+1 more")
   })
 
+  // D6 — no-verify-rule stanza must include the absolute verify-map path the
+  // hook actually reads (under session_root), not a bare relative spelling.
+  // Without this, a user whose session_root has drifted from their mental
+  // model of "the project" can edit the wrong verify-map.yaml for many
+  // turns without realizing the hook is reading a different file.
+  test("D6: no-verify-rule stanza pins the absolute verify-map path under session_root", async () => {
+    const root = mkdtempSync(join(tmpdir(), "stop-d6-"))
+    try {
+      const layer = SessionStateTest(
+        new Map([
+          [
+            "sid-d6",
+            {
+              ...EMPTY_SESSION_STATE,
+              session_root: root,
+              files_changed: ["uncovered/foo.md"],
+              verification_status: "none" as const,
+            },
+          ],
+        ]),
+      )
+      const d = await Effect.runPromise(
+        handleStop(stop("sid-d6")).pipe(Effect.provide(layer)),
+      )
+      const out = d as { decision?: string; reason?: string }
+      expect(out.decision).toBe("block")
+      const reason = out.reason ?? ""
+      expect(reason).toContain(`${root}/.claude-hooks/verify-map.yaml`)
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
   // D3 — regenerate skip records a session-state marker for next prompt.
   test("D3: regenerate rules skipped for budget are recorded in session state", async () => {
     const root = mkdtempSync(join(tmpdir(), "stop-d3-"))

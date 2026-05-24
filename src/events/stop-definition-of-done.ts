@@ -18,6 +18,7 @@ import {
   runVerifyCommand,
   selectVerifyCommand,
   tailOf,
+  verifyMapPathFor,
 } from "../policies/verify-map.ts"
 import { runCommandLive, runShellCommandLive } from "../services/command-runner.ts"
 import { logWarning } from "../services/diagnostics.ts"
@@ -451,8 +452,15 @@ export const handleStop = (
         sample.length === 0
           ? ""
           : `\nChanged files (sample): ${sample.join(", ")}${more > 0 ? ` (+${more} more)` : ""}.`
+      // D6: surface the absolute path the hook actually reads. The frozen
+      // `session_root` can diverge from the user's mental model of "the
+      // project" (e.g. when an early Bash `cd` shifted it before the first
+      // engagement froze it). Without the absolute path here, the user can
+      // edit the wrong `.claude-hooks/verify-map.yaml` for many turns
+      // without realizing the hook is reading a different file.
+      const verifyMapAbs = verifyMapPathFor(sessionRoot)
       const stanza =
-        "\nAdd a rule to `.claude-hooks/verify-map.yaml`, e.g.:\n" +
+        `\nAdd a rule to \`${verifyMapAbs}\`, e.g.:\n` +
         "rules:\n" +
         '  - source: "src/**/*.ts"\n' +
         '    command: "bun run typecheck"\n' +
