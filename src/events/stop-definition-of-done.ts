@@ -15,11 +15,14 @@ import { loadRegenerateRules, matchRules } from "../policies/regenerate.ts"
 import { expandPathMatchCandidates } from "../policies/path-utils.ts"
 import {
   loadVerifyRules,
+  loadVerifyRulesFromFile,
   runVerifyCommand,
   selectVerifyCommand,
   tailOf,
   verifyMapPathFor,
 } from "../policies/verify-map.ts"
+import { parseFrontmatter } from "../algorithm/isa/frontmatter.ts"
+import { safeResolvePath } from "../services/path-resolution.ts"
 import { runCommandLive, runShellCommandLive } from "../services/command-runner.ts"
 import { logWarning } from "../services/diagnostics.ts"
 import { reportHookFailure } from "../services/hook-failure.ts"
@@ -363,7 +366,30 @@ export const handleStop = (
     )
     let verifiedThisStop = false
     if (filesChanged > 0 && hasUnverifiedFiles) {
-      const verifyRules = loadVerifyRules(sessionRoot)
+      const repoRules = loadVerifyRules(sessionRoot)
+      // Per-task verify-map: if the active ISA's frontmatter has a
+      // `verify_map: <path>` field, load that file and concat its rules
+      // with the repo rules. Same parser, same priority/specificity
+      // tiebreak — selectVerifyCommand handles a flat array. Missing /
+      // malformed file degrades to repo rules only (warn logged inside
+      // loadVerifyRulesFromFile).
+      const isaRules = (() => {
+        const isaPath = resolveActiveIsa({ sessionRoot, record })
+        if (isaPath === null || !existsSync(isaPath)) return []
+        let isaContent: string
+        try {
+          isaContent = readFileSync(isaPath, "utf-8")
+        } catch {
+          return []
+        }
+        const fm = parseFrontmatter(isaContent)
+        const ref = fm?.["verify_map"]
+        if (typeof ref !== "string" || ref.length === 0) return []
+        const resolved = safeResolvePath(sessionRoot, ref)
+        if (resolved === null) return []
+        return loadVerifyRulesFromFile(resolved)
+      })()
+      const verifyRules = [...repoRules, ...isaRules]
       const selectedVerify = selectVerifyCommand(
         verifyPathCandidates,
         verifyRules,

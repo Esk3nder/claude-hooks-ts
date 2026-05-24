@@ -303,18 +303,30 @@ export const selectVerifyCommand = (
 /** Load + parse the verify-map. Returns [] on absence; warns on parse fail. */
 export const loadVerifyRules = (
   root: string = process.cwd(),
+): ReadonlyArray<VerifyRule> => loadVerifyRulesFromFile(verifyMapPathFor(root))
+
+/**
+ * Load verify-map rules from an arbitrary file path. Used by the Stop gate
+ * to load a per-task verify-map referenced from the active ISA's frontmatter
+ * (`verify_map: <relative-path>`). Same parser, same semantics, same failure
+ * mode as the repo-root loader: returns [] on missing/unreadable file, warns
+ * and returns [] on parse failure.
+ */
+export const loadVerifyRulesFromFile = (
+  filePath: string,
 ): ReadonlyArray<VerifyRule> => {
-  const p = verifyMapPathFor(root)
-  if (!existsSync(p)) return []
+  if (!existsSync(filePath)) return []
   let raw: string
   try {
-    raw = readFileSync(p, "utf-8")
+    raw = readFileSync(filePath, "utf-8")
   } catch {
     return []
   }
   const parsed = parseVerifyMapYaml(raw)
   if (parsed._tag === "fail") {
-    logWarningSync(`[verify-map] parse failed: ${parsed.message}`)
+    logWarningSync(
+      `[verify-map] parse failed for ${filePath}: ${parsed.message}`,
+    )
     return []
   }
   return parsed.rules
