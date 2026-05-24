@@ -151,10 +151,29 @@ const recordSingleToolUseEvidence = (
     // verification evidence, and that edit re-enters `files_changed`,
     // looping indefinitely. Skip recording but otherwise treat the
     // edit as a no-op for evidence purposes.
+    // Treat the active session's `.claude-hooks/` tree as hook-owned
+    // bookkeeping: state JSON, work-dir artifacts, archives, etc. ISA
+    // and verify-map already have named filters; this catches the rest
+    // (e.g. a model repairing a corrupt state.json to escape a Stop
+    // loop) so the repair doesn't itself feed the next loop. Scoped to
+    // sessionRoot so foreign `.claude-hooks/` fixtures in test trees
+    // remain real files_changed.
+    const isHookOwnedPath = (p: string): boolean => {
+      if (typeof p !== "string" || p.length === 0) return false
+      if (typeof sessionRoot !== "string" || sessionRoot.length === 0) {
+        return false
+      }
+      const prefix = sessionRoot.endsWith("/")
+        ? `${sessionRoot}.claude-hooks/`
+        : `${sessionRoot}/.claude-hooks/`
+      return p.startsWith(prefix)
+    }
     const isMetaEdit =
       isEdit &&
       file !== null &&
-      (isIsaFilePath(file) || isVerifyMapPath(file, sessionRoot))
+      (isIsaFilePath(file) ||
+        isVerifyMapPath(file, sessionRoot) ||
+        isHookOwnedPath(file))
 
     // Verify-watermark eviction: if a non-meta edit re-touches a file that
     // was in the prior `verification_files` watermark, drop it so the next
