@@ -41,7 +41,7 @@
  * compose them into one wrapper script (e.g. `verify:changed`).
  */
 
-import { existsSync, readFileSync } from "node:fs"
+import { existsSync, readFileSync, statSync } from "node:fs"
 import { join } from "node:path"
 import { normalizePathPattern } from "./path-utils.ts"
 import { runCommandLive, runShellCommandLive } from "../services/command-runner.ts"
@@ -306,16 +306,37 @@ export const loadVerifyRules = (
 ): ReadonlyArray<VerifyRule> => loadVerifyRulesFromFile(verifyMapPathFor(root))
 
 /**
+ * Hard cap on the size of a verify-map file. Files larger than this are
+ * rejected with a warn. Bounded to keep the Stop gate's read cost
+ * predictable and to limit attack surface from a model-authored
+ * per-task verify-map referenced via the ISA `verify_map_path` field.
+ * 64 KB easily fits any reasonable rule set.
+ */
+export const MAX_VERIFY_MAP_BYTES = 64 * 1024
+
+/**
  * Load verify-map rules from an arbitrary file path. Used by the Stop gate
  * to load a per-task verify-map referenced from the active ISA's frontmatter
- * (`verify_map: <relative-path>`). Same parser, same semantics, same failure
- * mode as the repo-root loader: returns [] on missing/unreadable file, warns
- * and returns [] on parse failure.
+ * (`verify_map_path: <relative-path>`). Same parser, same semantics, same
+ * failure mode as the repo-root loader: returns [] on missing/unreadable
+ * file, warns and returns [] on parse failure or oversized file.
  */
 export const loadVerifyRulesFromFile = (
   filePath: string,
 ): ReadonlyArray<VerifyRule> => {
   if (!existsSync(filePath)) return []
+  let size: number
+  try {
+    size = statSync(filePath).size
+  } catch {
+    return []
+  }
+  if (size > MAX_VERIFY_MAP_BYTES) {
+    logWarningSync(
+      `[verify-map] file too large (${size}B > ${MAX_VERIFY_MAP_BYTES}B): ${filePath}`,
+    )
+    return []
+  }
   let raw: string
   try {
     raw = readFileSync(filePath, "utf-8")

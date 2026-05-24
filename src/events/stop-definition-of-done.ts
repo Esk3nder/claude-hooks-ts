@@ -20,9 +20,11 @@ import {
   selectVerifyCommand,
   tailOf,
   verifyMapPathFor,
+  type VerifyRule,
 } from "../policies/verify-map.ts"
 import { parseFrontmatter } from "../algorithm/isa/frontmatter.ts"
 import { safeResolvePath } from "../services/path-resolution.ts"
+import { logWarningSync } from "../services/diagnostics.ts"
 import { runCommandLive, runShellCommandLive } from "../services/command-runner.ts"
 import { logWarning } from "../services/diagnostics.ts"
 import { reportHookFailure } from "../services/hook-failure.ts"
@@ -31,6 +33,62 @@ import { loadRuntimeConfig } from "../services/runtime-config.ts"
 // out of the static import graph saves a small but real chunk of dispatcher
 // cold-start time, which matters for the UserPromptSubmit p50 budget.
 import type { loadInspectionWhitelist as LoadInspectionWhitelist } from "../policies/inspection-whitelist.ts"
+/**
+ * Load verify-map rules referenced by the active ISA's frontmatter field
+ * `verify_map_path: <relative-path>`.
+ *
+ * Path resolution: `safeResolvePath` normalizes against `sessionRoot`,
+ * collapses `..`, and realpath-resolves symlinks — but it does NOT
+ * confine the result to sessionRoot. We enforce confinement here by
+ * requiring the resolved absolute path to live under
+ * `<sessionRoot>/.claude-hooks/` (the only place a per-task verify-map
+ * legitimately belongs). Anything outside is rejected with a warn.
+ *
+ * Failure modes (all return []):
+ *   - no active ISA on disk
+ *   - frontmatter missing / unparseable
+ *   - `verify_map_path` absent or non-string
+ *   - resolved path escapes sessionRoot/.claude-hooks/
+ *   - target file missing / oversized / malformed
+ *
+ * Extracted from the inline IIFE in handleStop so it's unit-testable.
+ */
+export const loadIsaVerifyRules = (
+  sessionRoot: string,
+  record: { readonly engagement_required?: boolean } & Parameters<
+    typeof resolveActiveIsa
+  >[0]["record"],
+): ReadonlyArray<VerifyRule> => {
+  const isaPath = resolveActiveIsa({ sessionRoot, record })
+  if (isaPath === null || !existsSync(isaPath)) return []
+  let isaContent: string
+  try {
+    isaContent = readFileSync(isaPath, "utf-8")
+  } catch {
+    return []
+  }
+  const fm = parseFrontmatter(isaContent)
+  const ref = fm?.["verify_map_path"]
+  if (typeof ref !== "string" || ref.length === 0) return []
+  const resolved = safeResolvePath(sessionRoot, ref)
+  if (resolved === null) return []
+  // Containment: must live under <sessionRoot>/.claude-hooks/.
+  // safeResolvePath returns a realpath-normalized absolute path; we
+  // compare against the realpath-normalized sessionRoot to avoid symlink
+  // bypasses.
+  const sessionRootResolved = safeResolvePath(sessionRoot, ".") ?? sessionRoot
+  const allowedPrefix = sessionRootResolved.endsWith("/")
+    ? `${sessionRootResolved}.claude-hooks/`
+    : `${sessionRootResolved}/.claude-hooks/`
+  if (!resolved.startsWith(allowedPrefix)) {
+    logWarningSync(
+      `[verify-map] rejected ISA verify_map_path escaping session root: ${ref} → ${resolved}`,
+    )
+    return []
+  }
+  return loadVerifyRulesFromFile(resolved)
+}
+
 const REGEN_TIMEOUT_MS = 10_000
 // Total wall-clock budget the Stop handler is willing to spend. Sits under
 // the dispatcher Stop cap (28_000 ms) and the installer's external 30_000 ms
@@ -367,28 +425,14 @@ export const handleStop = (
     let verifiedThisStop = false
     if (filesChanged > 0 && hasUnverifiedFiles) {
       const repoRules = loadVerifyRules(sessionRoot)
-      // Per-task verify-map: if the active ISA's frontmatter has a
-      // `verify_map: <path>` field, load that file and concat its rules
-      // with the repo rules. Same parser, same priority/specificity
-      // tiebreak — selectVerifyCommand handles a flat array. Missing /
-      // malformed file degrades to repo rules only (warn logged inside
-      // loadVerifyRulesFromFile).
-      const isaRules = (() => {
-        const isaPath = resolveActiveIsa({ sessionRoot, record })
-        if (isaPath === null || !existsSync(isaPath)) return []
-        let isaContent: string
-        try {
-          isaContent = readFileSync(isaPath, "utf-8")
-        } catch {
-          return []
-        }
-        const fm = parseFrontmatter(isaContent)
-        const ref = fm?.["verify_map"]
-        if (typeof ref !== "string" || ref.length === 0) return []
-        const resolved = safeResolvePath(sessionRoot, ref)
-        if (resolved === null) return []
-        return loadVerifyRulesFromFile(resolved)
-      })()
+      const isaRules = loadIsaVerifyRules(sessionRoot, record)
+      if (isaRules.length > 0) {
+        yield* logWarning(
+          `[verify-map] loaded ${isaRules.length} rule(s) from ISA-referenced verify_map_path (session_root=${sessionRoot})`,
+        )
+      }
+      // Additive concat: existing priority/specificity tiebreak in
+      // selectVerifyCommand arbitrates conflicts across the combined list.
       const verifyRules = [...repoRules, ...isaRules]
       const selectedVerify = selectVerifyCommand(
         verifyPathCandidates,

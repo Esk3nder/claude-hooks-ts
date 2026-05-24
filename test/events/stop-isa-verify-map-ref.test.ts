@@ -1,6 +1,6 @@
 /**
  * ISA-resident verify-map reference — the Stop gate honors a per-task
- * `verify_map: <relative-path>` field in the active ISA's frontmatter by
+ * `verify_map_path: <relative-path>` field in the active ISA's frontmatter by
  * loading that file with the same parser as the repo verify-map and
  * concatenating its rules before selection.
  *
@@ -127,7 +127,7 @@ describe("Stop verify-map: ISA `verify_map` reference", () => {
       )
       writeIsa(
         root,
-        `verify_map: .claude-hooks/work/${SID}/verify-map.yaml`,
+        `verify_map_path: .claude-hooks/work/${SID}/verify-map.yaml`,
       )
       const layer = SessionStateTest(
         new Map([
@@ -164,7 +164,7 @@ describe("Stop verify-map: ISA `verify_map` reference", () => {
     try {
       writeIsa(
         root,
-        "verify_map: .claude-hooks/missing/nope.yaml",
+        "verify_map_path: .claude-hooks/missing/nope.yaml",
       )
       const layer = SessionStateTest(
         new Map([
@@ -206,7 +206,7 @@ describe("Stop verify-map: ISA `verify_map` reference", () => {
       fs.writeFileSync(taskMap, "this is: not [valid yaml\n", "utf-8")
       writeIsa(
         root,
-        `verify_map: .claude-hooks/work/${SID}/verify-map.yaml`,
+        `verify_map_path: .claude-hooks/work/${SID}/verify-map.yaml`,
       )
       const layer = SessionStateTest(
         new Map([
@@ -226,6 +226,134 @@ describe("Stop verify-map: ISA `verify_map` reference", () => {
       )
       const out = d as { decision?: string; reason?: string }
       // Malformed file degrades to []; repo `false` rule still applies → block.
+      expect(out.decision).toBe("block")
+      expect(out.reason ?? "").toContain("Verification failed")
+    } finally {
+      cleanup()
+    }
+  })
+
+  test("verify_map_path absolute path outside sessionRoot → rejected, repo rules apply", async () => {
+    const { root, cleanup } = stage()
+    try {
+      // Write a known-safe verify-map elsewhere; the ISA points at it via
+      // an absolute path. Containment must reject — must NOT load the
+      // outside file, even though the file exists and parses fine.
+      const outside = fs.mkdtempSync(path.join(os.tmpdir(), "chts-outside-"))
+      try {
+        const outsideMap = path.join(outside, "verify-map.yaml")
+        fs.writeFileSync(
+          outsideMap,
+          'rules:\n  - source: "src/**/*.ts"\n    command: ["true"]\n    priority: 1\n',
+          "utf-8",
+        )
+        writeIsa(root, `verify_map_path: ${outsideMap}`)
+        const layer = SessionStateTest(
+          new Map([
+            [
+              SID,
+              {
+                ...EMPTY_SESSION_STATE,
+                files_changed: ["src/a.ts"],
+                verification_files: [],
+                ...ENGAGED(root),
+              },
+            ],
+          ]),
+        )
+        const d = await Effect.runPromise(
+          handleStop(stop(SID, root)).pipe(Effect.provide(layer)),
+        )
+        const out = d as { decision?: string; reason?: string }
+        // Outside file silently rejected; repo `false` still applies.
+        expect(out.decision).toBe("block")
+        expect(out.reason ?? "").toContain("Verification failed")
+      } finally {
+        fs.rmSync(outside, { recursive: true, force: true })
+      }
+    } finally {
+      cleanup()
+    }
+  })
+
+  test("verify_map_path with `..` escape → rejected, repo rules apply", async () => {
+    const { root, cleanup } = stage()
+    try {
+      writeIsa(
+        root,
+        "verify_map_path: ../../etc/passwd-verify-map.yaml",
+      )
+      const layer = SessionStateTest(
+        new Map([
+          [
+            SID,
+            {
+              ...EMPTY_SESSION_STATE,
+              files_changed: ["src/a.ts"],
+              verification_files: [],
+              ...ENGAGED(root),
+            },
+          ],
+        ]),
+      )
+      const d = await Effect.runPromise(
+        handleStop(stop(SID, root)).pipe(Effect.provide(layer)),
+      )
+      const out = d as { decision?: string; reason?: string }
+      // `..` escapes sessionRoot/.claude-hooks/ → rejected.
+      expect(out.decision).toBe("block")
+      expect(out.reason ?? "").toContain("Verification failed")
+    } finally {
+      cleanup()
+    }
+  })
+
+  test("priority tie across repo + ISA rules — repo rule wins by stable order", async () => {
+    const { root, cleanup } = stage()
+    try {
+      // Both rules at the SAME priority (100). Concat order is
+      // [...repoRules, ...isaRules], so the repo rule comes first in the
+      // matched list, and `selectVerifyCommand` uses original-order
+      // tie-break (stable) — repo rule wins. Repo rule is `false`, so
+      // the run BLOCKS even though ISA rule would have passed.
+      const taskMap = path.join(
+        root,
+        ".claude-hooks",
+        "work",
+        SID,
+        "verify-map.yaml",
+      )
+      fs.mkdirSync(path.dirname(taskMap), { recursive: true })
+      fs.writeFileSync(
+        taskMap,
+        'rules:\n  - source: "src/**/*.ts"\n    command: ["true"]\n    priority: 100\n',
+        "utf-8",
+      )
+      writeIsa(
+        root,
+        `verify_map_path: .claude-hooks/work/${SID}/verify-map.yaml`,
+      )
+      const layer = SessionStateTest(
+        new Map([
+          [
+            SID,
+            {
+              ...EMPTY_SESSION_STATE,
+              files_changed: ["src/a.ts"],
+              verification_files: [],
+              ...ENGAGED(root),
+            },
+          ],
+        ]),
+      )
+      const d = await Effect.runPromise(
+        handleStop(stop(SID, root)).pipe(Effect.provide(layer)),
+      )
+      const out = d as { decision?: string; reason?: string }
+      // Repo `false` wins the priority-100 tie → verification fails.
+      // This pins the contract: ISA rules must use a LOWER priority
+      // number to deterministically override an equally-priorited
+      // repo rule.
       expect(out.decision).toBe("block")
       expect(out.reason ?? "").toContain("Verification failed")
     } finally {
