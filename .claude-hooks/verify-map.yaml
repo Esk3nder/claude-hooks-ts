@@ -1,0 +1,7 @@
+rules:
+  - source: "src/**/*.ts"
+    command: "npx tsc --noEmit"
+    timeoutMs: 22000
+  - source: "test/**/*.ts"
+    command: "npx tsc --noEmit"
+    timeoutMs: 22000
