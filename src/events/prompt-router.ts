@@ -241,6 +241,19 @@ export const handleUserPromptSubmit = (
           : existingEngagementActive
             ? (existing?.last_tier ?? classification.tier)
             : classification.tier,
+        // Engagement tier/mode freeze: set ONCE on first engagement and
+        // preserved across subsequent turns regardless of classifier
+        // fluctuation. The ISA-completeness gate consults these in
+        // preference to `last_tier`/`last_mode` so a mid-session
+        // escalation (e.g. E3 → E4) doesn't spuriously fire the
+        // tier-mismatch block on an ISA that's correctly authored for
+        // the original engagement.
+        engagement_tier:
+          existing?.engagement_tier ??
+          (engagementRequired ? classification.tier : null),
+        engagement_mode:
+          existing?.engagement_mode ??
+          (engagementRequired ? classification.mode : null),
         engagement_required: nextEngagementRequired,
         expected_isa_path: engagementRequired
           ? plan.isaPath

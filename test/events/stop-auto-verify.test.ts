@@ -265,12 +265,12 @@ describe("handleStop with verify-map auto-verifier", () => {
     }
   })
 
-  test("verification_status already passed → verifier skipped (cache hit)", async () => {
+  test("verification_files watermark covers files_changed → verifier skipped (cache hit)", async () => {
     const { root, cleanup } = stage()
     try {
       // Even with a failing command in the map, the verifier should not run
-      // because state is already passed (heuristic detection from a prior
-      // PostToolBatch). This proves we honor the heuristic cache.
+      // because every file in `files_changed` is already in the
+      // `verification_files` watermark from a prior passing run.
       writeVerifyMap(
         root,
         `rules:
@@ -286,6 +286,7 @@ describe("handleStop with verify-map auto-verifier", () => {
               ...EMPTY_SESSION_STATE,
               files_changed: ["src/a.ts"],
               verification_status: "passed" as const,
+              verification_files: ["src/a.ts"],
             },
           ],
         ]),
@@ -294,6 +295,48 @@ describe("handleStop with verify-map auto-verifier", () => {
         handleStop(stopAt("sid-cached", root)).pipe(Effect.provide(layer)),
       )
       expect(decision).toEqual({})
+    } finally {
+      cleanup()
+    }
+  })
+
+  test("verification_status passed but a NEW file appeared in files_changed → verifier re-runs", async () => {
+    const { root, cleanup } = stage()
+    try {
+      writeVerifyMap(
+        root,
+        `rules:
+  - source: src/*.ts
+    command: ["true"]
+`,
+      )
+      const layer = SessionStateTest(
+        new Map([
+          [
+            "sid-stale",
+            {
+              ...EMPTY_SESSION_STATE,
+              // Old file is in the watermark; new file isn't.
+              files_changed: ["src/a.ts", "src/b.ts"],
+              verification_status: "passed" as const,
+              verification_files: ["src/a.ts"],
+            },
+          ],
+        ]),
+      )
+      const program = Effect.gen(function* () {
+        const decision = yield* handleStop(stopAt("sid-stale", root))
+        const s = yield* SessionState
+        const after = yield* s.get("sid-stale")
+        return { decision, after }
+      })
+      const { decision, after } = await Effect.runPromise(
+        program.pipe(Effect.provide(layer)),
+      )
+      expect(decision).toEqual({})
+      // After the new pass, b.ts joins the watermark (union with prior).
+      expect(after.verification_files).toContain("src/a.ts")
+      expect(after.verification_files).toContain("src/b.ts")
     } finally {
       cleanup()
     }

@@ -151,11 +151,36 @@ const recordSingleToolUseEvidence = (
     // verification evidence, and that edit re-enters `files_changed`,
     // looping indefinitely. Skip recording but otherwise treat the
     // edit as a no-op for evidence purposes.
+    // Treat the active session's `.claude-hooks/` tree as hook-owned
+    // bookkeeping: state JSON, work-dir artifacts, archives, etc. ISA
+    // and verify-map already have named filters; this catches the rest
+    // (e.g. a model repairing a corrupt state.json to escape a Stop
+    // loop) so the repair doesn't itself feed the next loop. Scoped to
+    // sessionRoot so foreign `.claude-hooks/` fixtures in test trees
+    // remain real files_changed.
+    const isHookOwnedPath = (p: string): boolean => {
+      if (typeof p !== "string" || p.length === 0) return false
+      if (typeof sessionRoot !== "string" || sessionRoot.length === 0) {
+        return false
+      }
+      const prefix = sessionRoot.endsWith("/")
+        ? `${sessionRoot}.claude-hooks/`
+        : `${sessionRoot}/.claude-hooks/`
+      return p.startsWith(prefix)
+    }
     const isMetaEdit =
       isEdit &&
       file !== null &&
-      (isIsaFilePath(file) || isVerifyMapPath(file, sessionRoot))
+      (isIsaFilePath(file) ||
+        isVerifyMapPath(file, sessionRoot) ||
+        isHookOwnedPath(file))
 
+    // Verify-watermark eviction: if a non-meta edit re-touches a file that
+    // was in the prior `verification_files` watermark, drop it so the next
+    // Stop re-verifies. The Stop gate keys "unverified files" off the set
+    // difference `files_changed \ verification_files`; without this eviction
+    // a re-edit would slip past the gate.
+    let evictFromWatermark: string | null = null
     if (isEdit && file !== null && success) {
       if (isMetaEdit) {
         entries.push({ key: "meta_artifacts_changed", value: file })
@@ -163,6 +188,7 @@ const recordSingleToolUseEvidence = (
       } else {
         entries.push({ key: "files_changed", value: file })
         shouldResetVerification = true
+        evictFromWatermark = file
         nextRequiredAction = "Run the smallest relevant test/typecheck for the changed files."
       }
     } else if (payload.tool_name === "Bash") {
@@ -207,6 +233,31 @@ const recordSingleToolUseEvidence = (
         )
     }
 
+    // Evict the re-edited file from the verify watermark so the Stop gate
+    // re-treats it as unverified. Done as a separate read-modify-write so
+    // it composes with the appendBatch above without growing a new schema
+    // key for an eviction operation.
+    if (evictFromWatermark !== null) {
+      const evictTarget = evictFromWatermark
+      yield* state
+        .get(payload.session_id)
+        .pipe(
+          Effect.flatMap((r) => {
+            const prior = r.verification_files ?? []
+            if (!prior.includes(evictTarget)) return Effect.void
+            const next = prior.filter((p) => p !== evictTarget)
+            return state.update(payload.session_id, {
+              verification_files: next,
+            })
+          }),
+          Effect.catchAll((cause) =>
+            logWarning(
+              `[PostToolUse] session-state op=evict-watermark failed: sid=${payload.session_id} cause=${String(cause).slice(0, 160)}`,
+            ),
+          ),
+        )
+    }
+
     if (verification !== "none" || nextRequiredAction !== null) {
       // EP P2 #8: when verification flipped, compute the audit
       // metadata. verification_files is the intersection of
@@ -231,12 +282,19 @@ const recordSingleToolUseEvidence = (
         )
         return stemRe.test(cmd)
       }
+      // Union with the prior watermark so multiple partial-verify runs
+      // accumulate. Replacing would lose paths verified by earlier runs.
       const verificationFiles =
         verification === "passed" && verificationCommand !== null
           ? yield* state.get(payload.session_id).pipe(
-              Effect.map((r) =>
-                r.files_changed.filter((p) => matchesCommand(p, verificationCommand!)),
-              ),
+              Effect.map((r) => {
+                const matched = r.files_changed.filter((p) =>
+                  matchesCommand(p, verificationCommand!),
+                )
+                return Array.from(
+                  new Set([...(r.verification_files ?? []), ...matched]),
+                )
+              }),
               Effect.catchAll(() => Effect.succeed([] as ReadonlyArray<string>)),
             )
           : ([] as ReadonlyArray<string>)

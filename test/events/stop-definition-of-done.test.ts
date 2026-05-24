@@ -101,6 +101,11 @@ describe("handleStop (definition of done)", () => {
             ...EMPTY_SESSION_STATE,
             files_changed: ["/repo/a.ts"],
             verification_status: "passed" as const,
+            // PR: verify-watermark — the gate now keys "unverified files"
+            // off `files_changed \ verification_files`, not on
+            // `verification_status` alone. Files known-verified must be
+            // listed here to skip the gate.
+            verification_files: ["/repo/a.ts"],
           },
         ],
       ]),
@@ -365,6 +370,10 @@ describe("handleStop (definition of done)", () => {
               ...EMPTY_SESSION_STATE,
               files_changed: [join(root, "src/foo.ts")],
               verification_status: "passed" as const,
+              // PR: verify-watermark — pre-seed the watermark so the
+              // verify gate skips the rerun and the regenerate phase
+              // is reached.
+              verification_files: [join(root, "src/foo.ts")],
               session_root: root,
             },
           ],

@@ -357,6 +357,57 @@ describe("handlePostToolUse (post-edit-quality)", () => {
     expect(record.next_required_action ?? "").toContain("meta-artifact")
   })
 
+  test("does not record .claude-hooks/state/<sid>.json edits in files_changed", async () => {
+    const layer = Layer.mergeAll(
+      ProjectTest(),
+      RedactTest(),
+      SessionStateTest(
+        new Map([
+          ["s", { ...EMPTY_SESSION_STATE, session_root: "/repo" }],
+        ]),
+      ),
+      ShellTest(() => ({ stdout: "", stderr: "", exitCode: 1 })),
+    )
+    // Model-side edits to the hook-owned session-state JSON would otherwise
+    // pollute `files_changed` and re-arm the Stop verify loop. The repair
+    // edits a user might perform to escape a corrupt-state Stop loop must
+    // not themselves trigger the next loop.
+    const statePath =
+      "/repo/.claude-hooks/state/5cd1922e-a5a3-4457-8fd1-f65e2c53bbef.json"
+    const program = Effect.gen(function* () {
+      yield* handlePostToolUse(editPayload(statePath, "Write"))
+      const state = yield* SessionState
+      return yield* state.get("s")
+    })
+    const record = await Effect.runPromise(program.pipe(Effect.provide(layer)))
+    expect(record.files_changed).not.toContain(statePath)
+    expect(record.meta_artifacts_changed).toContain(statePath)
+  })
+
+  test("does not record .claude-hooks/work/<sid>/<artifact> edits in files_changed", async () => {
+    const layer = Layer.mergeAll(
+      ProjectTest(),
+      RedactTest(),
+      SessionStateTest(
+        new Map([
+          ["s", { ...EMPTY_SESSION_STATE, session_root: "/repo" }],
+        ]),
+      ),
+      ShellTest(() => ({ stdout: "", stderr: "", exitCode: 1 })),
+    )
+    // Non-ISA artifacts in the work dir (e.g. checkpoints, notes) are also
+    // hook-owned bookkeeping, not subjects of code verification.
+    const workArtifact = "/repo/.claude-hooks/work/abc123/notes.md"
+    const program = Effect.gen(function* () {
+      yield* handlePostToolUse(editPayload(workArtifact, "Edit"))
+      const state = yield* SessionState
+      return yield* state.get("s")
+    })
+    const record = await Effect.runPromise(program.pipe(Effect.provide(layer)))
+    expect(record.files_changed).not.toContain(workArtifact)
+    expect(record.meta_artifacts_changed).toContain(workArtifact)
+  })
+
   test("records foreign verify-map.yaml edits as files_changed when cwd scopes the active config", async () => {
     const layer = Layer.mergeAll(
       ProjectTest(),

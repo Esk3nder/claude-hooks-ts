@@ -434,6 +434,8 @@ describe("Stop regenerate — cwd drift", () => {
         session_root: root,
         files_changed: [path.join(docs, "a.md")],
         verification_status: "passed",
+        // Verify-watermark: the file is known-verified.
+        verification_files: [path.join(docs, "a.md")],
       })
 
       expect(out.decision).not.toBe("block")

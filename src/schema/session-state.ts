@@ -70,6 +70,18 @@ export const SessionStateRecordSchema = Schema.Struct({
    */
   last_mode: Schema.NullOr(Schema.String),
   last_tier: Schema.NullOr(Schema.Number),
+  /**
+   * Engagement mode/tier frozen at first engagement. The ISA-completeness
+   * gate compares the ISA's `classifier_mode`/`classifier_tier` frontmatter
+   * against these (preferred) rather than the per-turn `last_mode`/`last_tier`
+   * so a mid-session classifier shift (e.g. E3 → E4 escalation) cannot
+   * spuriously fire the tier-mismatch block on an ISA that was correctly
+   * authored under the original engagement.
+   * Both optional for back-compat with records written before the freeze
+   * fields existed; legacy gate path falls back to `last_mode`/`last_tier`.
+   */
+  engagement_mode: Schema.optional(Schema.NullOr(Schema.String)),
+  engagement_tier: Schema.optional(Schema.NullOr(Schema.Number)),
   engagement_required: Schema.Boolean,
   expected_isa_path: Schema.NullOr(Schema.String),
   /**
