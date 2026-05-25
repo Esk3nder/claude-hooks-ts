@@ -1,5 +1,6 @@
 import { Effect } from "effect"
 import { existsSync, readFileSync } from "node:fs"
+import { isAbsolute, win32 } from "node:path"
 import type { HookPayload } from "../schema/payloads.ts"
 import type { HookDecision } from "../schema/decisions.ts"
 import { NO_DECISION } from "../schema/decisions.ts"
@@ -70,6 +71,12 @@ export const loadIsaVerifyRules = (
   const fm = parseFrontmatter(isaContent)
   const ref = fm?.["verify_map_path"]
   if (typeof ref !== "string" || ref.length === 0) return []
+  if (isAbsolute(ref) || win32.isAbsolute(ref)) {
+    logWarningSync(
+      `[verify-map] rejected absolute ISA verify_map_path; use a path relative to session root under .claude-hooks/: ${ref}`,
+    )
+    return []
+  }
   const resolved = safeResolvePath(sessionRoot, ref)
   if (resolved === null) return []
   // Containment: must live under <sessionRoot>/.claude-hooks/.

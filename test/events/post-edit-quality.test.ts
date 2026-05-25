@@ -408,6 +408,28 @@ describe("handlePostToolUse (post-edit-quality)", () => {
     expect(record.meta_artifacts_changed).toContain(workArtifact)
   })
 
+  test("does not record relative .claude-hooks/work edits in files_changed", async () => {
+    const layer = Layer.mergeAll(
+      ProjectTest(),
+      RedactTest(),
+      SessionStateTest(
+        new Map([
+          ["s", { ...EMPTY_SESSION_STATE, session_root: "/repo" }],
+        ]),
+      ),
+      ShellTest(() => ({ stdout: "", stderr: "", exitCode: 1 })),
+    )
+    const workArtifact = ".claude-hooks/work/abc123/verify-map.yaml"
+    const program = Effect.gen(function* () {
+      yield* handlePostToolUse(editPayload(workArtifact, "Write"))
+      const state = yield* SessionState
+      return yield* state.get("s")
+    })
+    const record = await Effect.runPromise(program.pipe(Effect.provide(layer)))
+    expect(record.files_changed).not.toContain(workArtifact)
+    expect(record.meta_artifacts_changed).toContain(workArtifact)
+  })
+
   test("records foreign verify-map.yaml edits as files_changed when cwd scopes the active config", async () => {
     const layer = Layer.mergeAll(
       ProjectTest(),

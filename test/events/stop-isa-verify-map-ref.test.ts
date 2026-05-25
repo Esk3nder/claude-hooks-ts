@@ -77,8 +77,8 @@ const writeIsa = (root: string, frontmatter: string) => {
   )
 }
 
-describe("Stop verify-map: ISA `verify_map` reference", () => {
-  test("no verify_map field → today's behavior (repo rules only)", async () => {
+describe("Stop verify-map: ISA `verify_map_path` reference", () => {
+  test("no verify_map_path field -> today's behavior (repo rules only)", async () => {
     const { root, cleanup } = stage()
     try {
       writeIsa(root, "")
@@ -107,7 +107,7 @@ describe("Stop verify-map: ISA `verify_map` reference", () => {
     }
   })
 
-  test("verify_map points to a valid sibling file → rules merged, lower priority wins", async () => {
+  test("verify_map_path points to a valid sibling file -> rules merged, lower priority wins", async () => {
     const { root, cleanup } = stage()
     try {
       // Sibling per-task verify-map: lower priority (1) overrides the
@@ -159,7 +159,7 @@ describe("Stop verify-map: ISA `verify_map` reference", () => {
     }
   })
 
-  test("verify_map points to a missing file → graceful, repo rules apply", async () => {
+  test("verify_map_path points to a missing file -> graceful, repo rules apply", async () => {
     const { root, cleanup } = stage()
     try {
       writeIsa(
@@ -191,7 +191,7 @@ describe("Stop verify-map: ISA `verify_map` reference", () => {
     }
   })
 
-  test("verify_map points to a malformed file → graceful, repo rules apply", async () => {
+  test("verify_map_path points to a malformed file -> graceful, repo rules apply", async () => {
     const { root, cleanup } = stage()
     try {
       const taskMap = path.join(
@@ -202,8 +202,12 @@ describe("Stop verify-map: ISA `verify_map` reference", () => {
         "verify-map.yaml",
       )
       fs.mkdirSync(path.dirname(taskMap), { recursive: true })
-      // Deliberately broken YAML.
-      fs.writeFileSync(taskMap, "this is: not [valid yaml\n", "utf-8")
+      // Deliberately broken command-array syntax.
+      fs.writeFileSync(
+        taskMap,
+        'rules:\n  - source: "src/**/*.ts"\n    command: ["true"\n',
+        "utf-8",
+      )
       writeIsa(
         root,
         `verify_map_path: .claude-hooks/work/${SID}/verify-map.yaml`,
@@ -271,6 +275,48 @@ describe("Stop verify-map: ISA `verify_map` reference", () => {
       } finally {
         fs.rmSync(outside, { recursive: true, force: true })
       }
+    } finally {
+      cleanup()
+    }
+  })
+
+  test("verify_map_path absolute path inside sessionRoot -> rejected, repo rules apply", async () => {
+    const { root, cleanup } = stage()
+    try {
+      const taskMap = path.join(
+        root,
+        ".claude-hooks",
+        "work",
+        SID,
+        "verify-map.yaml",
+      )
+      fs.mkdirSync(path.dirname(taskMap), { recursive: true })
+      fs.writeFileSync(
+        taskMap,
+        'rules:\n  - source: "src/**/*.ts"\n    command: ["true"]\n    priority: 1\n',
+        "utf-8",
+      )
+      writeIsa(root, `verify_map_path: ${taskMap}`)
+      const layer = SessionStateTest(
+        new Map([
+          [
+            SID,
+            {
+              ...EMPTY_SESSION_STATE,
+              files_changed: ["src/a.ts"],
+              verification_files: [],
+              ...ENGAGED(root),
+            },
+          ],
+        ]),
+      )
+      const d = await Effect.runPromise(
+        handleStop(stop(SID, root)).pipe(Effect.provide(layer)),
+      )
+      const out = d as { decision?: string; reason?: string }
+      // Absolute paths are intentionally non-portable in tracked ISAs.
+      expect(out.decision).toBe("block")
+      expect(out.reason ?? "").toContain("Verification failed")
     } finally {
       cleanup()
     }

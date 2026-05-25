@@ -6,6 +6,7 @@ import {
   DEFAULT_VERIFY_PRIORITY,
   DEFAULT_VERIFY_TIMEOUT_MS,
   MAX_VERIFY_TIMEOUT_MS,
+  loadVerifyRulesFromFile,
   isVerifyMapPath,
   loadVerifyRules,
   matchVerifyRules,
@@ -151,6 +152,26 @@ describe("parseVerifyMapYaml", () => {
     expect(r._tag).toBe("ok")
     if (r._tag === "ok") expect(r.rules.length).toBe(2)
   })
+
+  test("fails on malformed command array syntax", () => {
+    const r = parseVerifyMapYaml(`rules:
+  - source: src/*.ts
+    command: ["bun", "test"
+`)
+    expect(r._tag).toBe("fail")
+    if (r._tag === "fail") expect(r.message).toContain("closing ]")
+  })
+
+  test("keeps POSIX test syntax as a shell-string command", () => {
+    const r = parseVerifyMapYaml(`rules:
+  - source: src/*.ts
+    command: [ -f package.json ] && bun test
+`)
+    expect(r._tag).toBe("ok")
+    if (r._tag === "ok") {
+      expect(r.rules[0]?.command).toBe("[ -f package.json ] && bun test")
+    }
+  })
 })
 
 describe("matchVerifyRules", () => {
@@ -270,6 +291,21 @@ describe("loadVerifyRules", () => {
       const rules = loadVerifyRules(root)
       expect(rules.length).toBe(1)
       expect(rules[0]?.priority).toBe(1)
+    } finally {
+      cleanup()
+    }
+  })
+
+  test("returns [] for a malformed file", () => {
+    const { root, cleanup } = stage()
+    try {
+      const file = join(root, "task-verify-map.yaml")
+      writeFileSync(
+        file,
+        'rules:\n  - source: "src/**/*.ts"\n    command: ["bun", "test"\n',
+        "utf-8",
+      )
+      expect(loadVerifyRulesFromFile(file)).toEqual([])
     } finally {
       cleanup()
     }

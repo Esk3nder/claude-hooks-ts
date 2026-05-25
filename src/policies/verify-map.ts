@@ -127,6 +127,20 @@ interface Draft {
   priority?: number
 }
 
+interface CommandParseSuccess {
+  readonly _tag: "ok"
+  readonly command: string | string[]
+}
+
+interface CommandParseSkip {
+  readonly _tag: "skip"
+}
+
+interface CommandParseFailure {
+  readonly _tag: "fail"
+  readonly message: string
+}
+
 const parseScalarNumber = (val: string): number | null => {
   const trimmed = val.trim()
   if (trimmed.length === 0) return null
@@ -134,36 +148,57 @@ const parseScalarNumber = (val: string): number | null => {
   return Number.isFinite(n) ? n : null
 }
 
-const parseCommandValue = (val: string): string | string[] | null => {
+const parseCommandValue = (
+  val: string,
+): CommandParseSuccess | CommandParseSkip | CommandParseFailure => {
   const trimmed = val.trim()
-  if (trimmed.length === 0) return null
-  if (trimmed.startsWith("[") && trimmed.endsWith("]")) {
+  if (trimmed.length === 0) return { _tag: "skip" }
+  if (trimmed.startsWith("[")) {
+    const looksLikeJsonArray =
+      trimmed === "[]" ||
+      trimmed.startsWith("[\"") ||
+      trimmed.startsWith("['")
+    if (!trimmed.endsWith("]")) {
+      if (!looksLikeJsonArray) {
+        return { _tag: "ok", command: trimmed.replace(/^["']|["']$/g, "") }
+      }
+      return { _tag: "fail", message: "command array is missing closing ]" }
+    }
     try {
       const arr = JSON.parse(trimmed) as unknown
       if (Array.isArray(arr) && arr.every((x) => typeof x === "string")) {
-        return arr as string[]
+        return { _tag: "ok", command: arr as string[] }
       }
-    } catch {
-      // fall through — treat as string
+      return { _tag: "fail", message: "command array must contain only strings" }
+    } catch (err) {
+      if (!looksLikeJsonArray) {
+        return { _tag: "ok", command: trimmed.replace(/^["']|["']$/g, "") }
+      }
+      return {
+        _tag: "fail",
+        message: `command array JSON parse failed: ${String(err).slice(0, 80)}`,
+      }
     }
   }
-  return trimmed.replace(/^["']|["']$/g, "")
+  return { _tag: "ok", command: trimmed.replace(/^["']|["']$/g, "") }
 }
 
-const assignKey = (draft: Draft, key: string, val: string): void => {
+const assignKey = (draft: Draft, key: string, val: string): string | null => {
   if (key === "source") {
     draft.source = val.replace(/^["']|["']$/g, "")
-    return
+    return null
   }
   if (key === "command") {
     const c = parseCommandValue(val)
-    if (c !== null) draft.command = c
-    return
+    if (c._tag === "fail") return c.message
+    if (c._tag === "ok") draft.command = c.command
+    return null
   }
   if (key === "timeoutMs" || key === "priority") {
     const n = parseScalarNumber(val)
     if (n !== null) draft[key] = n
   }
+  return null
 }
 
 export const parseVerifyMapYaml = (raw: string): ParseSuccess | ParseFailure => {
@@ -195,12 +230,14 @@ export const parseVerifyMapYaml = (raw: string): ParseSuccess | ParseFailure => 
     const itemHeadMatch = line.match(/^\s*-\s+([A-Za-z_][A-Za-z0-9_]*)\s*:\s*(.*)$/)
     if (itemHeadMatch && itemHeadMatch[1] !== undefined && itemHeadMatch[2] !== undefined) {
       flush()
-      assignKey(current, itemHeadMatch[1], itemHeadMatch[2])
+      const failure = assignKey(current, itemHeadMatch[1], itemHeadMatch[2])
+      if (failure !== null) return { _tag: "fail", message: failure }
       continue
     }
     const subMatch = line.match(/^\s+([A-Za-z_][A-Za-z0-9_]*)\s*:\s*(.*)$/)
     if (subMatch && subMatch[1] !== undefined && subMatch[2] !== undefined) {
-      assignKey(current, subMatch[1], subMatch[2])
+      const failure = assignKey(current, subMatch[1], subMatch[2])
+      if (failure !== null) return { _tag: "fail", message: failure }
     }
   }
   flush()
