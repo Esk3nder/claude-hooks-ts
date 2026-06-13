@@ -12,9 +12,19 @@ import {
   constants as C,
 } from "node:fs"
 import { join, dirname, resolve, sep } from "node:path"
+import { homedir } from "node:os"
 
+/** Per-project operational state (baseline, runs, evidence, briefs, confirmations) — tied to a repo's files. */
 export function stateRoot(project: string): string {
   return join(project, ".claude-hooks")
+}
+
+/**
+ * Global observability root for logs + ledgers — one place across all projects.
+ * Override with CLAUDE_HOOKS_LOG_DIR (tests point it at a temp dir for isolation).
+ */
+export function logRoot(): string {
+  return process.env["CLAUDE_HOOKS_LOG_DIR"] || join(homedir(), ".claude-hooks")
 }
 
 const ID_RE = /^[a-z0-9][a-z0-9_-]{0,63}$/
@@ -62,9 +72,9 @@ export function writeHookOnly(path: string, content: string): void {
 
 export function hookLog(project: string, line: string): void {
   try {
-    const p = join(stateRoot(project), "eventstore", "hook.log")
+    const p = join(logRoot(), "eventstore", "hook.log")
     mkdirSync(dirname(p), { recursive: true })
-    appendFileSync(p, `${new Date().toISOString()} ${line}\n`)
+    appendFileSync(p, `${new Date().toISOString()} [${project}] ${line}\n`)
   } catch { /* never throws */ }
 }
 

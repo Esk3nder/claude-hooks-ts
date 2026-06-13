@@ -14,6 +14,8 @@ export function gitProject(): string {
   writeFileSync(join(dir, "README.md"), "x\n")
   spawnSync("git", ["add", "-A"], { cwd: dir })
   spawnSync("git", ["-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "base"], { cwd: dir })
+  // isolate global logs/ledgers per test project (production defaults to ~/.claude-hooks)
+  process.env["CLAUDE_HOOKS_LOG_DIR"] = join(dir, ".claude-hooks")
   return dir
 }
 

@@ -2,7 +2,7 @@
 import { createHmac } from "node:crypto"
 import { join } from "node:path"
 import { statSync, renameSync, appendFileSync, mkdirSync, readFileSync, existsSync, readdirSync } from "node:fs"
-import { stateRoot, writeHookOnly, readHookOnly, withLock } from "./fsx.ts"
+import { stateRoot, logRoot, writeHookOnly, readHookOnly, withLock } from "./fsx.ts"
 import type { Outcome, Role } from "./types.ts"
 import type { NodeAuthority } from "./recursion.ts"
 
@@ -85,17 +85,20 @@ export function loadVerdict(project: string, sess: string, runId: string): Verdi
 
 /** Append-only ledger with lock + rotation. */
 export async function appendLedger(project: string, stream: string, row: object, maxBytes = 10_485_760): Promise<void> {
-  const path = join(stateRoot(project), "eventstore", `${stream}.jsonl`)
-  mkdirSync(join(stateRoot(project), "eventstore"), { recursive: true })
+  // ledgers are GLOBAL observability (one place across projects); project is recorded in each row
+  const path = join(logRoot(), "eventstore", `${stream}.jsonl`)
+  mkdirSync(join(logRoot(), "eventstore"), { recursive: true })
   await withLock(path, () => {
     try { if (statSync(path).size >= maxBytes) renameSync(path, `${path}.${process.pid}-${process.hrtime.bigint()}.rotated`) } catch { /* none */ }
-    appendFileSync(path, JSON.stringify({ ts: new Date().toISOString(), ...row }) + "\n")
+    appendFileSync(path, JSON.stringify({ ts: new Date().toISOString(), project, ...row }) + "\n")
   })
 }
 
-/** Per-role history from the acceptance ledger (for intensity sampling, BUILD-SPEC §8). */
-export function roleStats(project: string, role: Role): { runs: number; accepted: number } {
-  const path = join(stateRoot(project), "eventstore", "worker-acceptance.jsonl")
+/** Per-role history from the GLOBAL acceptance ledger (for intensity sampling, BUILD-SPEC §8).
+ *  Cross-project by design — role reliability is a property of the role/model, not one repo.
+ *  `project` is unused for filtering but kept for signature stability / future scoping. */
+export function roleStats(_project: string, role: Role): { runs: number; accepted: number } {
+  const path = join(logRoot(), "eventstore", "worker-acceptance.jsonl")
   let runs = 0, accepted = 0
   try {
     for (const line of readFileSync(path, "utf8").split("\n")) {
