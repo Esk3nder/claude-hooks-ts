@@ -134,6 +134,8 @@ export async function route(payload: Payload): Promise<object> {
       return r.decision === "block" ? { decision: "block", reason: r.reason } : {}
     }
     case "Stop": {
+      // kill-switch: stand the evidential Stop gate down per-environment (default: active)
+      if (process.env["CLAUDE_HOOKS_DISABLE_EVIDENTIAL_GATE"] === "1") return {}
       const r = handleStop(project, session, evidenceIscs(project, session))
       return r.decision === "block" ? { decision: "block", reason: r.reason } : {}
     }

@@ -33,12 +33,45 @@ function recursiveForceRmSegment(cmd: string): string | null {
   return null
 }
 
+function unquote(tok: string): string {
+  return tok.replace(/^["']|["']$/g, "")
+}
+
+/**
+ * Filesystem paths a command would WRITE to: output redirects (`>`, `>>`, `2>`,
+ * `&>`), `tee`, `cp`/`mv` destinations, and `dd of=`. Bash writes bypass the
+ * Edit/Write path gate (PreToolUse only runs evalPathSafety on Edit/Write), so a
+ * redirect like `echo … > .claude-hooks/policy.json` could tamper with protected
+ * state. Running these targets through evalPathSafety closes that hole. Best-effort
+ * shell parsing, per segment; quoted redirect targets are unquoted (a deliberate
+ * `> "…protected…"` is caught), and a stray `>` inside an echoed string may produce
+ * a harmless false-positive target (fails safe — evalPathSafety allows normal paths).
+ */
+function bashWriteTargets(cmd: string): string[] {
+  const targets: string[] = []
+  for (const seg of cmd.split(/&&|\|\||[\n;|&]/)) {
+    const s = seg.trim()
+    for (const m of s.matchAll(/>{1,2}\s*("[^"]*"|'[^']*'|[^\s;|&>]+)/g)) targets.push(unquote(m[1]!))
+    const tokens = s.split(/\s+/)
+    const c0 = tokens[0] ?? ""
+    if (c0 === "tee") for (const t of tokens.slice(1)) { if (!t.startsWith("-")) targets.push(unquote(t)) }
+    if (c0 === "cp" || c0 === "mv") { const a = tokens.slice(1).filter((t) => !t.startsWith("-")); if (a.length) targets.push(unquote(a[a.length - 1]!)) }
+    for (const m of s.matchAll(/\bof=("[^"]*"|'[^']*'|[^\s;|&]+)/g)) targets.push(unquote(m[1]!))
+  }
+  return targets
+}
+
 export function evalBashSafety(cmd: string): GateDecision {
   for (const re of DESTRUCTIVE) if (re.test(cmd)) return { kind: "deny", reason: `destructive command blocked: ${re}`, cls: "security" }
   const rmSeg = recursiveForceRmSegment(cmd)
   if (rmSeg) {
     if (/\s(\/[^\s]*|~\/?|\$HOME\b|\$\{HOME\})/.test(rmSeg)) return { kind: "deny", reason: "destructive command blocked: recursive force-delete of an absolute/home path", cls: "security" }
     return { kind: "allow" } // relative recursive delete (build/dist/node_modules) — routine cleanup, no prompt
+  }
+  // a Bash write to a secret/protected/generated path is gated exactly like an Edit/Write
+  for (const target of bashWriteTargets(cmd)) {
+    const ps = evalPathSafety(target)
+    if (ps.kind === "deny") return { kind: "deny", reason: `bash write to ${ps.reason}`, cls: "security" }
   }
   if (/\bcurl\b.*\|\s*sh\b/.test(cmd) || /\bnpm\s+publish\b/.test(cmd)) return { kind: "ask", reason: "high-blast-radius command" }
   return { kind: "allow" }

@@ -2,7 +2,7 @@
  * Idempotent terminal write via CAS under the run-state lock (fix #4). */
 import { join } from "node:path"
 import { stateRoot, withLock } from "./fsx.ts"
-import { loadPolicy, type PolicyConfig } from "./config.ts"
+import { loadPolicy, POLICY_REL, type PolicyConfig } from "./config.ts"
 import { loadBrief, briefTrust, briefFromSnapshot } from "./briefs.ts"
 import {
   loadRun, saveRun, saveVerdict, signVerdict, appendLedger, roleStats, type RunState, type Verdict,
@@ -144,7 +144,10 @@ async function tryReplay(
     // spine flip only when allowlist-pinned (argv came from policy allowlist) AND idempotent
     if (isSpine && brief?.isa_path && brief.isc_id) {
       const fromAllowlist = policy.replay.allowed_argv.some((a) => a.argv.join("\0") === pin.argv.join("\0"))
-      if (fromAllowlist) {
+      // a spine flip's argv must come from an allowlist the MODEL could not author:
+      // policy.json counts only when it is user-pinned (committed-clean since session start).
+      const policyTrusted = isUserPinned(inp.project, POLICY_REL)
+      if (fromAllowlist && policyTrusted) {
         const fileScope = hashScope(inp.project, [...(brief.files_in_scope ?? [])])
         const g: EvidenceGraph = {
           schema_version: 1, isc_id: brief.isc_id, isa_path: brief.isa_path, flipped_at: new Date().toISOString(),
