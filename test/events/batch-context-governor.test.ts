@@ -3,6 +3,7 @@ import { Effect, Schema } from "effect"
 import { handlePostToolBatch } from "../../src/events/batch-context-governor.ts"
 import { HookPayload } from "../../src/schema/payloads.ts"
 import {
+  EMPTY_SESSION_STATE,
   SessionState,
   SessionStateTest,
 } from "../../src/services/session-state.ts"
@@ -207,6 +208,31 @@ describe("handlePostToolBatch", () => {
     const r = await Effect.runPromise(program.pipe(Effect.provide(layer)))
     expect(r.files_changed).not.toContain(vmPath)
     expect(r.meta_artifacts_changed).toContain(vmPath)
+    expect(r.next_required_action ?? "").toContain("meta-artifact")
+  })
+
+  test("does not record session .claude-hooks/work edits in files_changed", async () => {
+    const layer = SessionStateTest(
+      new Map([
+        ["sid-meta-work", { ...EMPTY_SESSION_STATE, session_root: "/repo" }],
+      ]),
+    )
+    const workArtifact = "/repo/.claude-hooks/work/abc123/verify-map.yaml"
+    const payload = batch("sid-meta-work", [
+      {
+        tool_name: "Write",
+        tool_input: { file_path: workArtifact },
+        tool_response: { success: true },
+      },
+    ])
+    const program = Effect.gen(function* () {
+      yield* handlePostToolBatch(payload)
+      const s = yield* SessionState
+      return yield* s.get("sid-meta-work")
+    })
+    const r = await Effect.runPromise(program.pipe(Effect.provide(layer)))
+    expect(r.files_changed).not.toContain(workArtifact)
+    expect(r.meta_artifacts_changed).toContain(workArtifact)
     expect(r.next_required_action ?? "").toContain("meta-artifact")
   })
 

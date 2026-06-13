@@ -5,3 +5,10 @@ rules:
   - source: "test/**/*.ts"
     command: "npx tsc --noEmit"
     timeoutMs: 22000
+  # docs changes: cheapest repo sanity check. Added 2026-06-12 to unblock the
+  # Stop-gate watermark (docs matched no rule and could never self-clear).
+  # NOTE: this verifies the repo, not the markdown. M1 of docs/MIGRATION-PLAN.md
+  # replaces this with an "unmatched files are advisory" path. Revert freely.
+  - source: "docs/**/*.md"
+    command: "npx tsc --noEmit"
+    timeoutMs: 22000

@@ -1,0 +1,7 @@
+#!/usr/bin/env bun
+import { route } from "../src/v2/hook-entry.ts"
+const text = await new Response(Bun.stdin.stream()).text()
+let decision = {}
+try { decision = await route(JSON.parse(text)) } catch { decision = {} }
+process.stdout.write(JSON.stringify(decision))
+process.exit(0)

@@ -8,6 +8,7 @@ import { SessionState, type VerificationStatus } from "../services/session-state
 import { makeShellCommand } from "../schema/branded.ts"
 import { isIsaFilePath } from "../algorithm/isa/locate.ts"
 import { isVerifyMapPath } from "../policies/verify-map.ts"
+import { isSessionHookOwnedPath } from "../policies/hook-owned-path.ts"
 import { runCheckpoint } from "../algorithm/isa/checkpoint.ts"
 import { mutablePathFromInput } from "../policies/write-class.ts"
 import { handlePostToolUseIsaEffects } from "../algorithm/isa/lifecycle.ts"
@@ -158,22 +159,12 @@ const recordSingleToolUseEvidence = (
     // loop) so the repair doesn't itself feed the next loop. Scoped to
     // sessionRoot so foreign `.claude-hooks/` fixtures in test trees
     // remain real files_changed.
-    const isHookOwnedPath = (p: string): boolean => {
-      if (typeof p !== "string" || p.length === 0) return false
-      if (typeof sessionRoot !== "string" || sessionRoot.length === 0) {
-        return false
-      }
-      const prefix = sessionRoot.endsWith("/")
-        ? `${sessionRoot}.claude-hooks/`
-        : `${sessionRoot}/.claude-hooks/`
-      return p.startsWith(prefix)
-    }
     const isMetaEdit =
       isEdit &&
       file !== null &&
       (isIsaFilePath(file) ||
         isVerifyMapPath(file, sessionRoot) ||
-        isHookOwnedPath(file))
+        isSessionHookOwnedPath(file, sessionRoot))
 
     // Verify-watermark eviction: if a non-meta edit re-touches a file that
     // was in the prior `verification_files` watermark, drop it so the next

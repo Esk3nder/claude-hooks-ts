@@ -14,6 +14,7 @@ import {
 } from "../policies/tool-evidence.ts"
 import { isIsaFilePath } from "../algorithm/isa/locate.ts"
 import { isVerifyMapPath } from "../policies/verify-map.ts"
+import { isSessionHookOwnedPath } from "../policies/hook-owned-path.ts"
 
 const EDIT_TOOLS = new Set(["Edit", "Write", "MultiEdit", "Update"])
 const READ_TOOLS = new Set(["Read"])
@@ -83,7 +84,11 @@ export const handlePostToolBatch = (
         // Skip hook meta-artifacts (ISA.md, verify-map.yaml) - see
         // post-edit-quality.ts for the self-trap rationale.
         if (fp !== null && success) {
-          if (isIsaFilePath(fp) || isVerifyMapPath(fp, sessionRoot)) {
+          if (
+            isIsaFilePath(fp) ||
+            isVerifyMapPath(fp, sessionRoot) ||
+            isSessionHookOwnedPath(fp, sessionRoot)
+          ) {
             metaArtifactsChanged.push(fp)
           } else {
             filesChanged.push(fp)
