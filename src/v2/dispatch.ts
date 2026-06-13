@@ -4,7 +4,7 @@ import { loadBrief } from "./briefs.ts"
 import { loadRun, saveRun, concurrentRuns, verifyConfirmation, type RunState } from "./runs.ts"
 import { loadPolicy, POLICY_REL } from "./config.ts"
 import { deriveAuthority, canSpawn, type NodeAuthority } from "./recursion.ts"
-import { ROLE_CAPS, type Role } from "./types.ts"
+import { ROLE_CAPS, coerceRole, type Role } from "./types.ts"
 import { evalBashSafety, evalPathSafety, evalCapability, type GateDecision } from "./gates.ts"
 import { writeBaseline } from "./trust.ts"
 import { revalidate, loadEvidence } from "./evidence.ts"
@@ -21,7 +21,7 @@ export interface StartInput {
   run_id: string
   agent_id: string
   parent_run_id: string | null
-  agent_type: Role
+  agent_type: string // the HOST agent_type (e.g. general-purpose, Explore) — NOT assumed to be a v2 role
   label: string
 }
 
@@ -38,11 +38,18 @@ export function handleSubagentStart(inp: StartInput): { ok: true; run: RunState 
     parent = loadRun(inp.project, inp.session_id, inp.parent_run_id)
     if (parent) { depth = parent.depth + 1; ancestry = [...parent.ancestry_labels]; parentAuthority = parent.authority }
   }
-  const authority = deriveAuthority(inp.agent_type, parentAuthority)
+  // the v2 role is the BRIEF's assignment (authoritative); the host agent_type is only a fallback, and
+  // only when it maps to a recognized restrictive role. Capability binds iff such an explicit role exists —
+  // a general subagent (no brief, unrecognized host type) is uncapped, never throws (N1).
+  const briefRole = lk.brief?.role
+  const hostRole = coerceRole(inp.agent_type)
+  const role: Role = briefRole ?? hostRole ?? "scout"
+  const capped = briefRole !== undefined || hostRole !== null
+  const authority = deriveAuthority(role, parentAuthority)
   const run: RunState = {
     schema_version: 1, session_id: inp.session_id, run_id: inp.run_id, agent_id: inp.agent_id,
-    parent_run_id: inp.parent_run_id, agent_type: inp.agent_type, depth, ancestry_labels: [...ancestry, inp.label],
-    authority, state: "RUNNING", brief_snapshot: snapshot, warm: lk.brief?.warm === true,
+    parent_run_id: inp.parent_run_id, agent_type: role, depth, ancestry_labels: [...ancestry, inp.label],
+    authority, capped, state: "RUNNING", brief_snapshot: snapshot, warm: lk.brief?.warm === true,
     blocks_used: 0, terminal_outcome: null, last_event_seq: 0, panel_id: null,
   }
   saveRun(inp.project, run)
@@ -52,10 +59,9 @@ export function handleSubagentStart(inp: StartInput): { ok: true; run: RunState 
 export interface PreToolInput {
   project: string
   session_id: string
-  run_id: string | null // null = orchestrator (depth 0)
+  run_id: string | null // null = orchestrator (depth 0); else the calling worker's run
   tool_name: string
   tool_input: Record<string, unknown>
-  agent_type?: Role | undefined // host fact: PreToolUse carries agent_type ONLY inside a subagent ⇒ present means a worker call
 }
 
 /** PreToolUse: safety → capability → spawn-authority/caps. Security-class denials; malformed → ask. */
@@ -72,12 +78,12 @@ export function handlePreToolUse(inp: PreToolInput): GateDecision {
     if (typeof path !== "string") return { kind: "ask", reason: "malformed write input" }
     const s = evalPathSafety(path); if (s.kind !== "allow") return s
   }
-  // capability: authority from the worker's run state, else its role caps when the host marks the
-  // call as a subagent's (agent_type present). A worker call never inherits orchestrator authority (F3).
+  // capability binds ONLY a run with an explicit restrictive role (capped) — a briefed v2 worker, or a
+  // recognized restrictive host type. General subagents and the orchestrator are governed by the safety
+  // plane only. Never derive authority from an unvalidated host agent_type (that threw → fail-open: N1).
   const run = inp.run_id ? loadRun(inp.project, inp.session_id, inp.run_id) : null
-  const authority: NodeAuthority | null = run?.authority ?? (inp.agent_type ? deriveAuthority(inp.agent_type, null) : null)
-  if (authority) {
-    const cap = evalCapability(inp.tool_name, authority.tools); if (cap.kind !== "allow") return cap
+  if (run && run.capped) {
+    const cap = evalCapability(inp.tool_name, run.authority.tools); if (cap.kind !== "allow") return cap
   }
   // spawn authority + caps (Agent/Task)
   if (base === "Agent" || base === "Task") {
@@ -85,7 +91,7 @@ export function handlePreToolUse(inp: PreToolInput): GateDecision {
     const childLabel = (inp.tool_input["label"] as string) ?? "child"
     if (childRole && ROLE_CAPS[childRole]) {
       const policy = loadPolicy(inp.project)
-      const parentAuthority: NodeAuthority = authority ?? { tools: [...ROLE_CAPS.implementer], may_spawn: true }
+      const parentAuthority: NodeAuthority = run?.authority ?? { tools: [...ROLE_CAPS.implementer], may_spawn: true }
       const d = canSpawn({
         parentAuthority, parentDepth: run?.depth ?? 0, childRole, childTools: [...ROLE_CAPS[childRole]],
         ancestryLabels: run?.ancestry_labels ?? [], childLabel,

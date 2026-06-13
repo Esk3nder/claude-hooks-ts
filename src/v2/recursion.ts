@@ -6,7 +6,7 @@ export interface NodeAuthority { tools: string[]; may_spawn: boolean }
 
 /** Child authority = role caps ∩ parent authority. Capabilities narrow with depth, never widen. */
 export function deriveAuthority(role: Role, parent: NodeAuthority | null): NodeAuthority {
-  const roleCaps = ROLE_CAPS[role]
+  const roleCaps = ROLE_CAPS[role] ?? ROLE_CAPS.scout // defensive (N1): unknown role ⇒ least privilege, never throw
   const tools = parent === null ? [...roleCaps] : roleCaps.filter((c) => parent.tools.includes(c))
   // skeptic is leaf-only (verification stays undelegated); scout may spawn (read-only fan-out); implementer may spawn.
   const may_spawn = role !== "skeptic"

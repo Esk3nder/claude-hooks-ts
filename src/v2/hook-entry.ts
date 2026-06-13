@@ -25,7 +25,7 @@ function projectRoot(cwd: string): string {
 }
 
 // --- pragmatic spawn correlation: PreToolUse(Agent) records {label,role,parent}; SubagentStart pops it (FIFO) ---
-interface Pending { label: string; role: Role; parent_run_id: string | null }
+interface Pending { label: string; role: string; parent_run_id: string | null } // role = host agent_type (correlation key)
 function pendingPath(project: string, session: string): string {
   return join(stateRoot(project), "runs", "pending", `${session}.json`)
 }
@@ -39,7 +39,7 @@ function pushPending(project: string, session: string, p: Pending): void {
 /** Pop the first pending brief whose role matches the starting subagent (host fact: SubagentStart
  *  carries agent_type). No role match ⇒ null: the run gets no brief snapshot and stays untrusted —
  *  fail closed under concurrent/reordered spawns rather than bind a mismatched brief (F6, SPEC §6.5). */
-function popPendingByRole(project: string, session: string, role: Role): Pending | null {
+function popPendingByRole(project: string, session: string, role: string): Pending | null {
   const path = pendingPath(project, session)
   if (!existsSync(path)) return null
   const q: Pending[] = JSON.parse(readFileSync(path, "utf8"))
@@ -118,25 +118,27 @@ export async function route(payload: Payload): Promise<object> {
       const tool = str(payload, "tool_name")
       const input = (payload["tool_input"] as Payload) ?? {}
       const base = tool.split("(")[0]!
-      // host fact: agent_id/agent_type appear ONLY when this call originates inside a subagent.
+      // host fact: agent_id appears ONLY when this call originates inside a subagent. The calling worker's
+      // capability is read from its run state (brief-derived authority), never from the host agent_type.
       const callerAgentId = str(payload, "agent_id")
-      const callerRole = (str(payload, "agent_type") as Role) || undefined
       const callerRunId = callerAgentId ? (findRunIdByAgent(project, session, callerAgentId) ?? callerAgentId) : null
       if (base === "Agent" || base === "Task") {
-        const role = (input["subagent_type"] ?? input["agent_type"]) as Role | undefined
+        const childType = (input["subagent_type"] ?? input["agent_type"]) as string | undefined
         const label = (input["label"] as string) ?? "child"
-        if (role) pushPending(project, session, { label, role, parent_run_id: callerRunId })
+        if (childType) pushPending(project, session, { label, role: childType, parent_run_id: callerRunId })
       }
-      return gateToDecision(handlePreToolUse({ project, session_id: session, run_id: callerRunId, tool_name: tool, tool_input: input, agent_type: callerAgentId ? callerRole : undefined }))
+      return gateToDecision(handlePreToolUse({ project, session_id: session, run_id: callerRunId, tool_name: tool, tool_input: input }))
     }
     case "SubagentStart": {
       const agentId = str(payload, "agent_id")
-      const role = (str(payload, "agent_type") as Role) || "implementer"
-      const pend = popPendingByRole(project, session, role) // F6: correlate by role, fail closed on no match
+      const hostType = str(payload, "agent_type") || "implementer"
+      // correlate the pending brief by the host agent_type (both sides use the same string the orchestrator
+      // passed to Task) — fail closed on no match. The v2 role is resolved from the brief inside dispatch.
+      const pend = popPendingByRole(project, session, hostType)
       const label = pend?.label ?? agentId
       const parent = pend?.parent_run_id ?? null
       const runId = parent ? `${parent}/${agentId}` : agentId
-      handleSubagentStart({ project, session_id: session, run_id: runId, agent_id: agentId, parent_run_id: parent, agent_type: role, label })
+      handleSubagentStart({ project, session_id: session, run_id: runId, agent_id: agentId, parent_run_id: parent, agent_type: hostType, label })
       return {}
     }
     case "SubagentStop": {

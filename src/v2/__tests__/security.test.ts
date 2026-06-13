@@ -60,6 +60,13 @@ describe("replay argv safety (§6.3, F5)", () => {
     expect(evalReplayArgvSafety(["python", "-m", "pytest"]).ok).toBe(true)
     expect(evalReplayArgvSafety(["pytest"]).ok).toBe(true)
   })
+  test("N6: env-wrapped and versioned interpreters with inline code → refused", () => {
+    expect(evalReplayArgvSafety(["env", "python3", "-c", "import os"]).ok).toBe(false)
+    expect(evalReplayArgvSafety(["env", "FOO=1", "python3", "-c", "x"]).ok).toBe(false)
+    expect(evalReplayArgvSafety(["python3.12", "-c", "x"]).ok).toBe(false)
+    expect(evalReplayArgvSafety(["/usr/bin/python3.11", "-c", "x"]).ok).toBe(false)
+    expect(evalReplayArgvSafety(["env", "bun", "test"]).ok).toBe(true)
+  })
 })
 
 describe("session secret (§6.5, F7)", () => {

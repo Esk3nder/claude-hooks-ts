@@ -7,16 +7,31 @@ import type { WorkerBrief } from "../types.ts"
 /** Adapter-level tests: drive route() with synthetic host payloads (the real live path), exercising
  *  the host-fact correlation the dispatch functions can't see — agent_id/agent_type, verdict delivery. */
 describe("adapter route() — host-fact correlation (F3/F4/F6)", () => {
-  test("F3: a scout worker's Write is denied via host agent_type; orchestrator Write allowed", async () => {
+  test("F3/N1: capability binds the brief's role under a GENERIC host type; no throw, no over-block", async () => {
     const p = gitProject()
     const sess = "s-f3"
+    const W = (extra: Record<string, unknown>) => route({ hook_event_name: "PreToolUse", session_id: sess, cwd: p, tool_name: "Write", tool_input: { file_path: "x.ts" }, ...extra })
+    const deny = (r: unknown) => (r as { hookSpecificOutput?: { permissionDecision?: string } }).hookSpecificOutput?.permissionDecision
     await route({ hook_event_name: "SessionStart", session_id: sess, cwd: p })
-    // orchestrator (no agent_id) — full authority
-    const orch = await route({ hook_event_name: "PreToolUse", session_id: sess, cwd: p, tool_name: "Write", tool_input: { file_path: "src/x.ts" } })
-    expect(orch).toEqual({})
-    // worker scout (host marks the call with agent_id + agent_type) — capability-gated
-    const worker = await route({ hook_event_name: "PreToolUse", session_id: sess, cwd: p, agent_id: "w1", agent_type: "scout", tool_name: "Write", tool_input: { file_path: "src/x.ts" } }) as { hookSpecificOutput?: { permissionDecision?: string } }
-    expect(worker.hookSpecificOutput?.permissionDecision).toBe("deny")
+
+    // orchestrator (no agent_id) — uncapped
+    expect(await W({})).toEqual({})
+
+    // scout worker spawned under the GENERIC host type general-purpose (the real-host case that used to throw → fail open)
+    registerBrief(p, { schema_version: 1, role: "scout", label: "scout-leg" } as WorkerBrief)
+    await route({ hook_event_name: "PreToolUse", session_id: sess, cwd: p, tool_name: "Agent", tool_input: { subagent_type: "general-purpose", label: "scout-leg" } })
+    await route({ hook_event_name: "SubagentStart", session_id: sess, cwd: p, agent_id: "wScout", agent_type: "general-purpose" })
+    expect(deny(await W({ agent_id: "wScout", agent_type: "general-purpose" }))).toBe("deny") // capped by the BRIEF's scout role
+
+    // implementer worker under the SAME generic host type → may write (no over-block); crucially NO fail-open crash
+    registerBrief(p, { schema_version: 1, role: "implementer", label: "impl-leg", acceptance: { argv: ["true"], cwd: ".", replay: "required", idempotent: true } })
+    await route({ hook_event_name: "PreToolUse", session_id: sess, cwd: p, tool_name: "Agent", tool_input: { subagent_type: "general-purpose", label: "impl-leg" } })
+    await route({ hook_event_name: "SubagentStart", session_id: sess, cwd: p, agent_id: "wImpl", agent_type: "general-purpose" })
+    expect(await W({ agent_id: "wImpl", agent_type: "general-purpose" })).toEqual({})
+
+    // UNBRIEFED general subagent (no brief, unrecognized host type) → uncapped, deterministic (not a crash)
+    await route({ hook_event_name: "SubagentStart", session_id: sess, cwd: p, agent_id: "wBare", agent_type: "general-purpose" })
+    expect(await W({ agent_id: "wBare", agent_type: "general-purpose" })).toEqual({})
   })
 
   test("F6: pending briefs correlate by role even when SubagentStart arrives reversed", async () => {

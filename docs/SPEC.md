@@ -15,6 +15,16 @@ claude-hooks-ts is a **deterministic runtime that makes Claude Code's work verif
 
 What it is *not*, by constitution: a cognition manager. No component decides, for the model or the user, how much ceremony a task deserves and then *imposes* it. Help scales itself; enforcement keys off facts. Neither is invoked.
 
+### 1.1 Threat model & honest guarantees (revised 2026-06-13 after the F1–F9 / N1–N9 adversarial round)
+
+The hooks run as the **same OS user as the model** on a local single-user machine. That substrate bounds what any gate can promise, and an empirical adversarial review (PR #92) falsified the stronger framing used elsewhere in this document ("the model cannot make its own claim count as trusted"; "dual & unforgeable verdict", §6.5). The honest statement:
+
+- **Defended:** a model **over-claiming by self-certification** — calling work done/verified without producing the evidence a gate requires. Completion demands an evidence artifact of a specific shape, in a write-protected directory, surviving a staleness recheck (§6.4); replay executes only allowlist/brief-pinned argv (§6.3); capability and safety gates are deterministic. This raises the cost of **careless or confused** over-claiming — the common failure mode.
+- **NOT defended:** a **deliberately adversarial** model with shell access. Because it runs as the user it can read any on-disk secret (HMAC artifacts are therefore forgeable — N4) and write any protected file via an interpreter the path-gate cannot parse (N2/N3). In a same-user model **there is no on-disk trust root the model cannot reach.** The gates are **defense-in-depth and an honesty scaffold, not a cryptographic guarantee** against forgery.
+- **Consequence:** the "unforgeable" language in §6.5 and the "teeth" of §6.4 hold against accidental over-claiming, **not** against forgery. A forgery-proof root would require a secret outside the model's read-reach (unavailable on this substrate) or an external trust party (a remote / second user). Until then, every "cannot forge" claim here is scoped to the non-adversarial case.
+
+Full boundary and the residual-finding ledger: **`docs/THREAT-MODEL.md`**.
+
 ## 2. Doctrine
 
 Eight invariants. Every PR is judged against them; **R8 judges the judges.**

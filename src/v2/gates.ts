@@ -47,22 +47,38 @@ function unquote(tok: string): string {
  * `> "…protected…"` is caught), and a stray `>` inside an echoed string may produce
  * a harmless false-positive target (fails safe — evalPathSafety allows normal paths).
  */
+/** sed/perl/ruby/gawk run in-place (`-i`, `-i.bak`, `--in-place`, gawk `-i inplace`) WRITE their file arg (N3). */
+const IN_PLACE_CMDS = new Set(["sed", "perl", "ruby", "gawk"])
+function inPlaceEditTarget(tokens: string[]): string | null {
+  const base = (tokens[0] ?? "").split("/").pop() ?? ""
+  if (!IN_PLACE_CMDS.has(base)) return null
+  if (!tokens.slice(1).some((t) => /^-i/.test(t) || t === "--in-place" || t === "inplace")) return null
+  const last = tokens[tokens.length - 1]
+  return last && !last.startsWith("-") ? last : null // best-effort: the file is conventionally the last arg
+}
+
 function bashWriteTargets(cmd: string): string[] {
   const targets: string[] = []
+  // redirects (>, >>, >|, 2>, &>) — scan the WHOLE command; splitting on `|` per-segment would lose `>|`.
+  for (const m of cmd.matchAll(/>{1,2}\|?\s*("[^"]*"|'[^']*'|[^\s;|&>]+)/g)) targets.push(unquote(m[1]!))
   for (const seg of cmd.split(/&&|\|\||[\n;|&]/)) {
     const s = seg.trim()
-    for (const m of s.matchAll(/>{1,2}\s*("[^"]*"|'[^']*'|[^\s;|&>]+)/g)) targets.push(unquote(m[1]!))
     const tokens = s.split(/\s+/)
     const c0 = tokens[0] ?? ""
     if (c0 === "tee") for (const t of tokens.slice(1)) { if (!t.startsWith("-")) targets.push(unquote(t)) }
     if (c0 === "cp" || c0 === "mv") { const a = tokens.slice(1).filter((t) => !t.startsWith("-")); if (a.length) targets.push(unquote(a[a.length - 1]!)) }
     for (const m of s.matchAll(/\bof=("[^"]*"|'[^']*'|[^\s;|&]+)/g)) targets.push(unquote(m[1]!))
+    const inplace = inPlaceEditTarget(tokens); if (inplace) targets.push(unquote(inplace))
   }
   return targets
 }
 
 export function evalBashSafety(cmd: string): GateDecision {
-  for (const re of DESTRUCTIVE) if (re.test(cmd)) return { kind: "deny", reason: `destructive command blocked: ${re}`, cls: "security" }
+  // N5: match destructive patterns against a quote-masked command, so a phrase inside a commit message /
+  // echo arg (`git commit -m "… git push --force main"`) doesn't false-positive — the real command isn't quoted.
+  // (Residual: a heredoc body can still false-positive; documented in the threat model.)
+  const scan = cmd.replace(/"[^"]*"|'[^']*'/g, "  ")
+  for (const re of DESTRUCTIVE) if (re.test(scan)) return { kind: "deny", reason: `destructive command blocked: ${re}`, cls: "security" }
   const rmSeg = recursiveForceRmSegment(cmd)
   if (rmSeg) {
     if (/\s(\/[^\s]*|~\/?|\$HOME\b|\$\{HOME\})/.test(rmSeg)) return { kind: "deny", reason: "destructive command blocked: recursive force-delete of an absolute/home path", cls: "security" }

@@ -3,6 +3,19 @@
 export type Role = "scout" | "implementer" | "skeptic"
 export const ROLES: readonly Role[] = ["scout", "implementer", "skeptic"]
 
+/**
+ * Map a host agent_type to a v2 role ONLY when it denotes a recognized restrictive worker (N1).
+ * v2 roles spawned under their own name map directly; the host's read-only `Explore` maps to scout.
+ * Anything else (general-purpose, Plan, custom names) returns null — it is NOT a constrained v2 worker,
+ * so the capability gate must neither constrain it nor throw on it. The real role of a v2 worker comes
+ * from its BRIEF, not the host type; this is only the fallback when no brief is registered.
+ */
+const HOST_ROLE_ALIASES: Record<string, Role> = { Explore: "scout" }
+export function coerceRole(hostType: string): Role | null {
+  if ((ROLES as readonly string[]).includes(hostType)) return hostType as Role
+  return HOST_ROLE_ALIASES[hostType] ?? null
+}
+
 /** Tool capability sets per role (BUILD-SPEC §6.1 — capabilities narrow with depth). */
 export const ROLE_CAPS: Record<Role, readonly string[]> = {
   scout: ["Read", "Grep", "Glob"],

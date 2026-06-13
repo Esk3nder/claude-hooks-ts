@@ -10,27 +10,36 @@ export function argvEqual(a: string[], b: string[]): boolean {
   return a.length === b.length && a.every((x, i) => x === b[i])
 }
 
-const INTERPRETERS = new Set([
-  "sh", "bash", "zsh", "ksh", "csh", "tcsh", "fish", "dash",
-  "python", "python2", "python3", "node", "bun", "deno", "ruby", "perl", "php", "Rscript",
-])
-const INLINE_CODE_FLAG = /^-(c|e|-eval|-command)$/
+// interpreter basenames incl. versioned python (python3.12) — N6
+const INTERP_RE = /^(?:python\d?(?:\.\d+)?|node|bun|deno|ruby|perl|php|Rscript|sh|bash|zsh|ksh|csh|tcsh|fish|dash)$/
+const INLINE_CODE_FLAG = /^-(?:c|e|-eval|-command)$/
+
+/** Effective interpreter, unwrapping an `env [VAR=val|-flags] <cmd>` prefix that hides it (N6). */
+function effectiveInterp(argv: string[]): { interp: string; rest: string[] } {
+  let i = 0
+  let base = (argv[0] ?? "").split("/").pop() ?? ""
+  if (base === "env") {
+    i = 1
+    while (i < argv.length && (/^[A-Za-z_]\w*=/.test(argv[i]!) || argv[i]!.startsWith("-"))) i++
+    base = (argv[i] ?? "").split("/").pop() ?? ""
+  }
+  return { interp: base, rest: argv.slice(i + 1) }
+}
 
 /**
  * Safety check over a replay's pinned argv (constitution §6.3, F5). A pin can come from a
  * MODEL-authored brief (acceptance/allowed_reproduction), so even though replay is argv-only
  * (no shell), cwd-confined, and env-replaced, the argv itself can still be destructive
  * (`git push --force main`, recursive absolute delete, writes to a secret path) or hand control
- * to an interpreter running inline code (`python -c …`). Reject those before executing.
+ * to an interpreter running inline code (`python -c …`, `env python3.12 -c …`). Reject those.
  * Bound (honest): a benign file write inside the confined workspace (e.g. `touch x`) is allowed —
  * the threat model accepts the worker mutating its own workspace; this gate stops escape/destruction.
  */
 export function evalReplayArgvSafety(argv: string[]): { ok: boolean; reason?: string } {
   if (argv.length === 0) return { ok: false, reason: "empty replay argv" }
-  const a0 = argv[0]!
-  const base = a0.split("/").pop() ?? a0
-  if (INTERPRETERS.has(base) && argv.slice(1).some((x) => INLINE_CODE_FLAG.test(x)))
-    return { ok: false, reason: `replay argv runs inline interpreter code (${base} -c/-e)` }
+  const { interp, rest } = effectiveInterp(argv)
+  if (INTERP_RE.test(interp) && rest.some((x) => INLINE_CODE_FLAG.test(x)))
+    return { ok: false, reason: `replay argv runs inline interpreter code (${interp} -c/-e)` }
   const d = evalBashSafety(argv.join(" "))
   if (d.kind === "deny") return { ok: false, reason: `unsafe replay argv: ${d.reason}` }
   return { ok: true }

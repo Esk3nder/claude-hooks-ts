@@ -16,6 +16,7 @@ export interface RunState {
   depth: number
   ancestry_labels: string[]
   authority: NodeAuthority
+  capped: boolean // enforce capability only for an explicit restrictive role (brief, or a recognized host type) — N1
   state: "RUNNING" | "TERMINAL"
   brief_snapshot: Record<string, unknown> | null
   warm: boolean
