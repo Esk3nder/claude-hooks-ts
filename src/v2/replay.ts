@@ -2,11 +2,38 @@
 import { spawn } from "node:child_process"
 import { realpathSync, statSync } from "node:fs"
 import { resolve, sep } from "node:path"
+import { evalBashSafety } from "./gates.ts"
 import type { WorkerBrief } from "./types.ts"
 import type { AllowedArgv } from "./config.ts"
 
 export function argvEqual(a: string[], b: string[]): boolean {
   return a.length === b.length && a.every((x, i) => x === b[i])
+}
+
+const INTERPRETERS = new Set([
+  "sh", "bash", "zsh", "ksh", "csh", "tcsh", "fish", "dash",
+  "python", "python2", "python3", "node", "bun", "deno", "ruby", "perl", "php", "Rscript",
+])
+const INLINE_CODE_FLAG = /^-(c|e|-eval|-command)$/
+
+/**
+ * Safety check over a replay's pinned argv (constitution §6.3, F5). A pin can come from a
+ * MODEL-authored brief (acceptance/allowed_reproduction), so even though replay is argv-only
+ * (no shell), cwd-confined, and env-replaced, the argv itself can still be destructive
+ * (`git push --force main`, recursive absolute delete, writes to a secret path) or hand control
+ * to an interpreter running inline code (`python -c …`). Reject those before executing.
+ * Bound (honest): a benign file write inside the confined workspace (e.g. `touch x`) is allowed —
+ * the threat model accepts the worker mutating its own workspace; this gate stops escape/destruction.
+ */
+export function evalReplayArgvSafety(argv: string[]): { ok: boolean; reason?: string } {
+  if (argv.length === 0) return { ok: false, reason: "empty replay argv" }
+  const a0 = argv[0]!
+  const base = a0.split("/").pop() ?? a0
+  if (INTERPRETERS.has(base) && argv.slice(1).some((x) => INLINE_CODE_FLAG.test(x)))
+    return { ok: false, reason: `replay argv runs inline interpreter code (${base} -c/-e)` }
+  const d = evalBashSafety(argv.join(" "))
+  if (d.kind === "deny") return { ok: false, reason: `unsafe replay argv: ${d.reason}` }
+  return { ok: true }
 }
 
 export interface Pin { argv: string[]; cwd: string; risk: "low" | "high" }

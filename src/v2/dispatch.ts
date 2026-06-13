@@ -1,7 +1,7 @@
 /** Event dispatch for the build (BUILD-SPEC §12): SessionStart, PreToolUse, SubagentStart, SubagentStop, Stop.
  * Host-only spawning/elicitation are simulated by the e2e driver; everything deterministic is real. */
 import { loadBrief } from "./briefs.ts"
-import { loadRun, saveRun, concurrentRuns, type RunState } from "./runs.ts"
+import { loadRun, saveRun, concurrentRuns, verifyConfirmation, type RunState } from "./runs.ts"
 import { loadPolicy, POLICY_REL } from "./config.ts"
 import { deriveAuthority, canSpawn, type NodeAuthority } from "./recursion.ts"
 import { ROLE_CAPS, type Role } from "./types.ts"
@@ -9,9 +9,6 @@ import { evalBashSafety, evalPathSafety, evalCapability, type GateDecision } fro
 import { writeBaseline } from "./trust.ts"
 import { revalidate, loadEvidence } from "./evidence.ts"
 import { findActiveIsa } from "./isa.ts"
-import { stateRoot } from "./fsx.ts"
-import { existsSync } from "node:fs"
-import { join } from "node:path"
 export { handleSubagentStop } from "./seam.ts"
 
 export function handleSessionStart(project: string, sessionId: string): void {
@@ -58,6 +55,7 @@ export interface PreToolInput {
   run_id: string | null // null = orchestrator (depth 0)
   tool_name: string
   tool_input: Record<string, unknown>
+  agent_type?: Role | undefined // host fact: PreToolUse carries agent_type ONLY inside a subagent ⇒ present means a worker call
 }
 
 /** PreToolUse: safety → capability → spawn-authority/caps. Security-class denials; malformed → ask. */
@@ -74,10 +72,12 @@ export function handlePreToolUse(inp: PreToolInput): GateDecision {
     if (typeof path !== "string") return { kind: "ask", reason: "malformed write input" }
     const s = evalPathSafety(path); if (s.kind !== "allow") return s
   }
-  // capability (worker sessions only)
+  // capability: authority from the worker's run state, else its role caps when the host marks the
+  // call as a subagent's (agent_type present). A worker call never inherits orchestrator authority (F3).
   const run = inp.run_id ? loadRun(inp.project, inp.session_id, inp.run_id) : null
-  if (run) {
-    const cap = evalCapability(inp.tool_name, run.authority.tools); if (cap.kind !== "allow") return cap
+  const authority: NodeAuthority | null = run?.authority ?? (inp.agent_type ? deriveAuthority(inp.agent_type, null) : null)
+  if (authority) {
+    const cap = evalCapability(inp.tool_name, authority.tools); if (cap.kind !== "allow") return cap
   }
   // spawn authority + caps (Agent/Task)
   if (base === "Agent" || base === "Task") {
@@ -85,7 +85,7 @@ export function handlePreToolUse(inp: PreToolInput): GateDecision {
     const childLabel = (inp.tool_input["label"] as string) ?? "child"
     if (childRole && ROLE_CAPS[childRole]) {
       const policy = loadPolicy(inp.project)
-      const parentAuthority: NodeAuthority = run?.authority ?? { tools: [...ROLE_CAPS.implementer], may_spawn: true }
+      const parentAuthority: NodeAuthority = authority ?? { tools: [...ROLE_CAPS.implementer], may_spawn: true }
       const d = canSpawn({
         parentAuthority, parentDepth: run?.depth ?? 0, childRole, childTools: [...ROLE_CAPS[childRole]],
         ancestryLabels: run?.ancestry_labels ?? [], childLabel,
@@ -107,10 +107,7 @@ function iscSatisfied(project: string, session: string, isc: string): boolean {
   if (revalidate(project, session, isc) !== "valid") return false
   const g = loadEvidence(project, session, isc)
   if (g === null || g.trust_label === "sampled") return false
-  if (g.flip_source === "manual") {
-    const conf = join(stateRoot(project), "confirmations", session, `${isc.replace(/[^\w-]/g, "_")}.json`)
-    return existsSync(conf)
-  }
+  if (g.flip_source === "manual") return verifyConfirmation(project, session, isc) // §11: host-signed, unforgeable
   return true // replay-verified, graph still valid
 }
 

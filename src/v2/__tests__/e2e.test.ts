@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test"
-import { writeFileSync, mkdirSync, readFileSync, existsSync } from "node:fs"
+import { writeFileSync, mkdirSync, readFileSync, existsSync, mkdtempSync } from "node:fs"
 import { join } from "node:path"
+import { tmpdir } from "node:os"
 import { spawnSync } from "node:child_process"
 import { handleSubagentStart, handleSubagentStop, handlePreToolUse, handleStop } from "../dispatch.ts"
 import { loadVerdict, verifyVerdict, type Verdict } from "../runs.ts"
@@ -195,5 +196,27 @@ describe("evidential completion gate (F1, §6.4)", () => {
   test("no ISA → gate does not bind", () => {
     const p = setup()
     expect(handleStop(p, SESS, []).decision).toBe("pass")
+  })
+})
+
+describe("honest trust labels (F9)", () => {
+  function cleanRepo(): string {
+    const d = mkdtempSync(join(tmpdir(), "ws-"))
+    spawnSync("git", ["init", "-q"], { cwd: d })
+    writeFileSync(join(d, "f.txt"), "x\n")
+    spawnSync("git", ["add", "-A"], { cwd: d }); spawnSync("git", ["-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "b"], { cwd: d })
+    return d
+  }
+  test("skeptic without reproduction → accepted but trust none / advisory, not verified", async () => {
+    const p = setup()
+    const ws = cleanRepo()
+    registerBrief(p, { schema_version: 1, role: "skeptic", label: "sk1" } as WorkerBrief)
+    handleSubagentStart({ project: p, session_id: SESS, run_id: "sk1", agent_id: "sk1", parent_run_id: null, agent_type: "skeptic", label: "sk1" })
+    const msg = JSON.stringify({ label: "sk1", claim: "x holds", verdict: "confirmed", workspace: { root: ws }, caveats: ["scoped"] })
+    const r = await handleSubagentStop({ project: p, session_id: SESS, run_id: "sk1", event_seq: 1, last_assistant_message: msg })
+    expect(r.outcome).toBe("accepted_verified")
+    const v = loadVerdict(p, SESS, "sk1")!
+    expect(v.trust_label).toBe("none")
+    expect(v.advice).toContain("advisory")
   })
 })

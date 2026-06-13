@@ -12,7 +12,7 @@ import {
   validateImplementerResult, validateScoutResult, validateSkepticResult, extractJson,
 } from "./validate.ts"
 import { checkDrift } from "./drift.ts"
-import { resolvePin, resolveWorkspace, executeReplay } from "./replay.ts"
+import { resolvePin, resolveWorkspace, executeReplay, evalReplayArgvSafety } from "./replay.ts"
 import { hashScope, writeEvidence, type EvidenceGraph } from "./evidence.ts"
 import { isUserPinned, sha256 } from "./trust.ts"
 import type { Outcome, Role, ImplementerResult, SkepticResult } from "./types.ts"
@@ -90,7 +90,8 @@ export async function handleSubagentStop(inp: StopInput): Promise<StopResult> {
         const r = await tryReplay(inp, run, trust, trustedBrief, repro.argv, sk.workspace.root, repro.cwd ?? ".", policy, repro.expected_exit_code ?? 0)
         if (r) return r
       }
-      await finalize(inp, run, "accepted_verified", `skeptic ${sk.verdict}`, {}, "verified")
+      // no reproduction command ⇒ no replayed world-fact: accepted but advisory, not "verified" (F9)
+      await finalize(inp, run, "accepted_verified", `skeptic ${sk.verdict} (no reproduction — advisory)`, {}, "none")
       return { decision: "pass", outcome: "accepted_verified" }
     }
 
@@ -136,6 +137,9 @@ async function tryReplay(
     await finalize(inp, run, "soft_failed", "claimed argv not pinned (allowlist/brief)", { claimed: claimedArgv }, "none")
     return { decision: "pass", outcome: "soft_failed" }
   }
+  // the pin may be brief-authored (model-reachable) — refuse destructive/interpreter-inline argv (F5)
+  const safe = evalReplayArgvSafety(pin.argv)
+  if (!safe.ok) { await finalize(inp, run, "soft_failed", `replay refused: ${safe.reason}`, { argv: pin.argv }, "none"); return { decision: "pass", outcome: "soft_failed" } }
   const ws = resolveWorkspace(wsRoot, cwd)
   if (!ws.ok) { await finalize(inp, run, "soft_failed", `workspace: ${ws.detail}`, {}, "none"); return { decision: "pass", outcome: "soft_failed" } }
   const exec = await executeReplay(pin, ws.absCwd, { timeoutMs: policy.replay.timeout_ms, maxBytes: 1200, envAllow: policy.replay.env_allow })
@@ -159,22 +163,24 @@ async function tryReplay(
         await appendLedger(inp.project, "isc-flip", { isc: brief.isc_id, channel: "replay", user_pinned: true, trust_label: "verified", evidence_status: "valid" })
       }
     }
-    await finalize(inp, run, "accepted_verified", `replay match: ${pin.argv.join(" ")} exit ${exec.exitCode}`, {}, "verified")
+    await finalize(inp, run, "accepted_verified", `replay match: ${pin.argv.join(" ")} exit ${exec.exitCode}`, {}, "verified", true)
     return { decision: "pass", outcome: "accepted_verified" }
   }
   // contradiction
   if (run.blocks_used < 2) { run.blocks_used++; saveRun(inp.project, run); return { decision: "block", reason: `replay did not match: ${pin.argv.join(" ")} exit ${exec.exitCode} (expected ${expectExit}). Fix or revise.` } }
-  await finalize(inp, run, "rejected", `replay contradiction: got ${exec.exitCode}`, { tail: exec.tail }, "none")
+  await finalize(inp, run, "rejected", `replay contradiction: got ${exec.exitCode}`, { tail: exec.tail }, "none", true)
   return { decision: "pass", outcome: "rejected" }
 }
 
-async function finalize(inp: StopInput, run: RunState | null, outcome: Outcome, summary: string, evidence: Record<string, unknown>, trust: "verified" | "sampled" | "none"): Promise<void> {
+async function finalize(inp: StopInput, run: RunState | null, outcome: Outcome, summary: string, evidence: Record<string, unknown>, trust: "verified" | "sampled" | "none", replayed = false): Promise<void> {
   if (run) { run.state = "TERMINAL"; run.terminal_outcome = outcome; run.last_event_seq = inp.event_seq; saveRun(inp.project, run) }
   const role: Role = run?.agent_type ?? "implementer"
   const v = signVerdict(inp.project, {
     schema_version: 1, run_id: inp.run_id, agent_id: run?.agent_id ?? inp.run_id, role,
-    outcome, trust_label: trust, summary_line: summary.slice(0, 200), evidence, advice: outcome === "accepted_verified" ? "verified" : "treat as advisory; verify before integrating",
+    outcome, trust_label: trust, summary_line: summary.slice(0, 200), evidence,
+    advice: trust === "verified" ? "verified" : "treat as advisory; verify before integrating", // honest advice keys on trust, not the outcome name (F9)
   })
   saveVerdict(inp.project, inp.session_id, v)
-  await appendLedger(inp.project, "worker-acceptance", { run_id: inp.run_id, role, outcome, trust_label: trust })
+  // `replayed` marks a genuine replay outcome (pass/fail world-fact) — the only rows that feed sampling eligibility (F8)
+  await appendLedger(inp.project, "worker-acceptance", { run_id: inp.run_id, role, outcome, trust_label: trust, replayed })
 }
