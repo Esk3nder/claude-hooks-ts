@@ -35,15 +35,19 @@ describe("adapter route() — host-fact correlation (F3/F4/F6)", () => {
     expect((loadRun(p, sess, "agImpl")?.brief_snapshot as { label?: string } | null)?.label).toBe("impl-leg")
   })
 
-  test("F4: SubagentStop injects a hook-signed verdict to the orchestrator", async () => {
+  test("F4: verdict delivered to orchestrator via PostToolUse(Agent); SubagentStop stays silent", async () => {
     const p = gitProject()
     const sess = "s-f4"
     await route({ hook_event_name: "SessionStart", session_id: sess, cwd: p })
     registerBrief(p, { schema_version: 1, role: "implementer", label: "impl-a", acceptance: { argv: ["true"], cwd: ".", replay: "required", idempotent: true } })
     await route({ hook_event_name: "PreToolUse", session_id: sess, cwd: p, tool_name: "Agent", tool_input: { subagent_type: "implementer", label: "impl-a" } })
     await route({ hook_event_name: "SubagentStart", session_id: sess, cwd: p, agent_id: "agA", agent_type: "implementer" })
-    const out = await route({ hook_event_name: "SubagentStop", session_id: sess, cwd: p, agent_id: "agA", result_summary: implResult("impl-a", p, ["true"]) }) as { hookSpecificOutput?: { additionalContext?: string } }
-    const ctx = out.hookSpecificOutput?.additionalContext ?? ""
+    // SubagentStop must NOT emit output — any non-empty output resumes the stopped subagent (probe finding)
+    const stop = await route({ hook_event_name: "SubagentStop", session_id: sess, cwd: p, agent_id: "agA", result_summary: implResult("impl-a", p, ["true"]) })
+    expect(stop).toEqual({})
+    // the orchestrator sees the signed verdict when its Agent tool call completes (tool_response.agentId correlates)
+    const post = await route({ hook_event_name: "PostToolUse", session_id: sess, cwd: p, tool_name: "Agent", tool_response: { agentId: "agA", status: "completed" } }) as { hookSpecificOutput?: { additionalContext?: string } }
+    const ctx = post.hookSpecificOutput?.additionalContext ?? ""
     expect(ctx).toContain("verified-by-hook")
     expect(ctx).toContain("accepted_verified")
   })

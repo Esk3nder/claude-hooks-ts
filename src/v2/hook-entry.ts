@@ -93,7 +93,7 @@ function evidenceIscs(project: string, session: string): { isc: string; required
 
 /** Events v2 is wired on but has no active logic for yet — it stays AWARE (logs) and no-ops. */
 const NOOP_AWARE = new Set([
-  "PostToolUse", "PostToolUseFailure", "PostToolBatch", "PreCompact", "PostCompact",
+  "PostToolUseFailure", "PostToolBatch", "PreCompact", "PostCompact",
   "SessionEnd", "PermissionRequest", "PermissionDenied", "ConfigChange", "FileChanged",
   "Notification", "Setup", "InstructionsLoaded", "CwdChanged", "StopFailure",
   "UserPromptSubmit", "UserPromptExpansion", "TaskCreated", "TaskCompleted",
@@ -144,11 +144,23 @@ export async function route(payload: Payload): Promise<object> {
       const runId = findRunIdByAgent(project, session, agentId) ?? agentId
       const msg = str(payload, "last_assistant_message") || str(payload, "result_summary")
       const r = await handleSubagentStop({ project, session_id: session, run_id: runId, event_seq: 1, last_assistant_message: msg })
-      if (r.decision === "block") return { decision: "block", reason: r.reason }
-      // F4: inject the hook-signed verdict so the orchestrator sees an unforgeable outcome, not just
-      // the worker's self-authored message. SubagentStop carries the stable agent_id + supports additionalContext.
-      const v = loadVerdict(project, session, runId)
-      if (v && verifyVerdict(project, v)) return { hookSpecificOutput: { hookEventName: "SubagentStop", additionalContext: formatVerdict(v) } }
+      // Probe finding (CC 2.1.177): ANY non-empty SubagentStop output resumes the stopped subagent and
+      // is scoped to its sidechain, never the parent. So only a genuine contract-retry block emits here;
+      // the verdict is delivered to the ORCHESTRATOR at PostToolUse(Agent), whose context the parent sees.
+      return r.decision === "block" ? { decision: "block", reason: r.reason } : {}
+    }
+    case "PostToolUse": {
+      // F4 delivery: when the orchestrator's Agent/Task call completes, inject the finished worker's
+      // hook-signed verdict into the parent's context. PostToolUse runs in the orchestrator's turn, and
+      // tool_response.agentId correlates to the child (probe-confirmed). The worker cannot forge this.
+      const base = str(payload, "tool_name").split("(")[0]!
+      if (base === "Agent" || base === "Task") {
+        const tr = (payload["tool_response"] as Payload) ?? {}
+        const childAgentId = str(tr, "agentId") || str(tr, "agent_id")
+        const runId = childAgentId ? findRunIdByAgent(project, session, childAgentId) : null
+        const v = runId ? loadVerdict(project, session, runId) : null
+        if (v && verifyVerdict(project, v)) return { hookSpecificOutput: { hookEventName: "PostToolUse", additionalContext: formatVerdict(v) } }
+      }
       return {}
     }
     case "Stop": {
