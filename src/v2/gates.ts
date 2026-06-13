@@ -12,6 +12,9 @@ const SECRET_PATHS: RegExp[] = [/(^|\/)\.env(\.|$)/, /\.pem$/, /\.key$/, /(^|\/)
 const PROTECTED: RegExp[] = [/(^|\/)\.git\//, /(^|\/)\.claude-hooks\//, /(^|\/)\.claude\/settings/]
 // briefs/ is model-authorable by design (BUILD-SPEC §2) — exempt it from the .claude-hooks/ protection.
 const PROTECTED_EXEMPT: RegExp[] = [/(^|\/)\.claude-hooks\/briefs\//]
+// generated/build outputs and lockfiles — absorbed from the old safety plane so v2 PreToolUse is complete.
+const GENERATED: RegExp[] = [/(^|\/)node_modules\//, /(^|\/)(dist|build|out|\.next|\.nuxt|\.turbo|coverage)\//, /(^|\/)\.terraform\//]
+const LOCKFILES: RegExp[] = [/(^|\/)(package-lock\.json|yarn\.lock|pnpm-lock\.yaml|bun\.lock|Cargo\.lock|Gemfile\.lock|poetry\.lock|composer\.lock)$/]
 
 /**
  * Find an `rm` that is the actual command of a segment (start, or after a shell
@@ -45,6 +48,8 @@ export function evalPathSafety(path: string): GateDecision {
   for (const re of SECRET_PATHS) if (re.test(path)) return { kind: "deny", reason: `secret path blocked: ${path}`, cls: "security" }
   if (PROTECTED_EXEMPT.some((re) => re.test(path))) return { kind: "allow" } // briefs/ stays model-writable
   for (const re of PROTECTED) if (re.test(path)) return { kind: "deny", reason: `protected path blocked: ${path}`, cls: "security" }
+  for (const re of GENERATED) if (re.test(path)) return { kind: "deny", reason: `generated/build path blocked: ${path}`, cls: "security" }
+  for (const re of LOCKFILES) if (re.test(path)) return { kind: "ask", reason: `lockfile edit — confirm: ${path}` }
   return { kind: "allow" }
 }
 

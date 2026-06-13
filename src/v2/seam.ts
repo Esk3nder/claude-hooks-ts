@@ -5,8 +5,9 @@ import { stateRoot, withLock } from "./fsx.ts"
 import { loadPolicy, type PolicyConfig } from "./config.ts"
 import { loadBrief, briefTrust, briefFromSnapshot } from "./briefs.ts"
 import {
-  loadRun, saveRun, saveVerdict, signVerdict, appendLedger, type RunState, type Verdict,
+  loadRun, saveRun, saveVerdict, signVerdict, appendLedger, roleStats, type RunState, type Verdict,
 } from "./runs.ts"
+import { shouldSample, type RoleStats } from "./sampling.ts"
 import {
   validateImplementerResult, validateScoutResult, validateSkepticResult, extractJson,
 } from "./validate.ts"
@@ -117,6 +118,17 @@ async function tryReplay(
   if (brief?.acceptance?.replay === "none") {
     await finalize(inp, run, "soft_failed", "declared non-replayable (replay:none)", {}, "none")
     return { decision: "pass", outcome: "soft_failed" }
+  }
+  // intensity sampling (BUILD-SPEC §8): a proven-reliable, non-spine, low-risk role may skip
+  // full replay this run → accepted_sampled (distinct label, never flips a spine ISC).
+  const risk = brief?.risk ?? "low"
+  if (!isSpine) {
+    const st = roleStats(inp.project, run.agent_type)
+    const stats: RoleStats = { runs: st.runs, accepted: st.accepted, sinceFullAudit: 0, eligible: st.runs > 0 && st.accepted / st.runs >= policy.sampling.min_acceptance }
+    if (shouldSample({ policy, isSpine: false, risk, isPanelMember: run.panel_id !== null, stats, runIndex: st.runs })) {
+      await finalize(inp, run, "accepted_sampled", `sampled (role ${run.agent_type} at ${st.accepted}/${st.runs}); full replay skipped`, { sampled: true, audit_due: true }, "sampled")
+      return { decision: "pass", outcome: "accepted_sampled" }
+    }
   }
   // spine flips require an allowlist-pinned argv, not a brief-authored one
   const pin = resolvePin(claimedArgv, brief, policy.replay.allowed_argv)

@@ -93,6 +93,24 @@ export async function appendLedger(project: string, stream: string, row: object,
   })
 }
 
+/** Per-role history from the acceptance ledger (for intensity sampling, BUILD-SPEC §8). */
+export function roleStats(project: string, role: Role): { runs: number; accepted: number } {
+  const path = join(stateRoot(project), "eventstore", "worker-acceptance.jsonl")
+  let runs = 0, accepted = 0
+  try {
+    for (const line of readFileSync(path, "utf8").split("\n")) {
+      if (!line.trim()) continue
+      try {
+        const r = JSON.parse(line) as { role?: string; outcome?: string }
+        if (r.role !== role) continue
+        runs++
+        if (r.outcome === "accepted_verified" || r.outcome === "accepted_sampled") accepted++
+      } catch { /* skip */ }
+    }
+  } catch { /* no ledger yet */ }
+  return { runs, accepted }
+}
+
 /** Count concurrent (RUNNING, non-terminal) runs in a session — for recursion caps. */
 export function concurrentRuns(project: string, sess: string): number {
   const dir = join(stateRoot(project), "runs", "state", sess)

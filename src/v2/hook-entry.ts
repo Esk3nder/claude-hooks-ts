@@ -8,10 +8,11 @@
 import { readFileSync, writeFileSync, mkdirSync, existsSync, readdirSync } from "node:fs"
 import { join } from "node:path"
 import { spawnSync } from "node:child_process"
-import { stateRoot } from "./fsx.ts"
+import { createHmac } from "node:crypto"
+import { stateRoot, hookLog, writeHookOnly } from "./fsx.ts"
 import { handleSessionStart, handleSubagentStart, handlePreToolUse, handleStop } from "./dispatch.ts"
 import { handleSubagentStop } from "./seam.ts"
-import { type RunState } from "./runs.ts"
+import { sessionSecret, type RunState } from "./runs.ts"
 import type { GateDecision } from "./gates.ts"
 import type { Role } from "./types.ts"
 
@@ -60,6 +61,19 @@ function gateToDecision(d: GateDecision): object {
   return { hookSpecificOutput: { hookEventName: "PreToolUse", permissionDecision: "deny", permissionDecisionReason: d.reason } }
 }
 
+/** Capture a host-delivered user confirmation (BUILD-SPEC §11). Only the host can produce this;
+ *  workers cannot forge it. Stored HMAC-signed for the evidential gate to consume. */
+function captureConfirmation(project: string, session: string, payload: Payload): void {
+  const isc = str(payload, "isc_id") || str(payload, "elicitation_id")
+  const accepted = payload["accepted"] === true || str(payload, "response").toLowerCase().startsWith("y")
+  if (!isc || !accepted) return
+  const body = { schema_version: 1, isc_id: isc, session, confirmed_at: new Date().toISOString(), source: "host_elicitation" }
+  const sig = createHmac("sha256", sessionSecret(project)).update(JSON.stringify(body)).digest("hex")
+  try {
+    writeHookOnly(join(stateRoot(project), "confirmations", session, `${isc.replace(/[^\w-]/g, "_")}.json`), JSON.stringify({ ...body, sig }, null, 2))
+  } catch { /* availability: never trap */ }
+}
+
 /** Active-ISA ISCs that have an evidence file — passed to Stop so staleness blocks completion. */
 function evidenceIscs(project: string, session: string): { isc: string; required: boolean }[] {
   const dir = join(stateRoot(project), "evidence", session)
@@ -67,11 +81,23 @@ function evidenceIscs(project: string, session: string): { isc: string; required
   return readdirSync(dir).filter((f) => f.endsWith(".json")).map((f) => ({ isc: f.replace(/\.json$/, ""), required: true }))
 }
 
+/** Events v2 is wired on but has no active logic for yet — it stays AWARE (logs) and no-ops. */
+const NOOP_AWARE = new Set([
+  "PostToolUse", "PostToolUseFailure", "PostToolBatch", "PreCompact", "PostCompact",
+  "SessionEnd", "PermissionRequest", "PermissionDenied", "ConfigChange", "FileChanged",
+  "Notification", "Setup", "InstructionsLoaded", "CwdChanged", "StopFailure",
+  "UserPromptSubmit", "UserPromptExpansion", "TaskCreated", "TaskCompleted",
+  "WorktreeCreate", "WorktreeRemove",
+])
+
 export async function route(payload: Payload): Promise<object> {
   const event = str(payload, "hook_event_name")
   const cwd = str(payload, "cwd") || process.cwd()
   const project = projectRoot(cwd)
   const session = str(payload, "session_id") || "default"
+
+  // Awareness: every event v2 sees is recorded, even ones it no-ops on (user ask: "the system should be aware").
+  hookLog(project, `event ${event} session=${session}`)
 
   switch (event) {
     case "SessionStart": {
@@ -111,7 +137,15 @@ export async function route(payload: Payload): Promise<object> {
       const r = handleStop(project, session, evidenceIscs(project, session))
       return r.decision === "block" ? { decision: "block", reason: r.reason } : {}
     }
+    case "ElicitationResult": {
+      // Manual-confirmation channel (BUILD-SPEC §11): a host-delivered user response is the only
+      // thing that can confirm a manual ISC flip. Capture it signed for later evidential use.
+      captureConfirmation(project, session, payload)
+      return {}
+    }
     default:
+      // Wired for awareness; no active gate. Flag genuinely-unknown events distinctly.
+      if (!NOOP_AWARE.has(event)) hookLog(project, `UNKNOWN event ${event} (not in v2's known set)`)
       return {}
   }
 }
