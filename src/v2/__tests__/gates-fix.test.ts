@@ -20,8 +20,12 @@ describe("destructive rm coverage (test-prompt regression)", () => {
   test("--recursive --force absolute → deny", () => {
     expect(evalBashSafety(RF_LONG).kind).toBe("deny")
   })
-  test("recursive force-delete of a relative build dir → ask (not blocked outright)", () => {
-    expect(evalBashSafety(RF_REL).kind).toBe("ask")
+  test("recursive force-delete of a relative build dir → allow (routine cleanup, no prompt)", () => {
+    expect(evalBashSafety(RF_REL).kind).toBe("allow")
+  })
+  test("lockfile edit → deny (no prompt; regenerate via package manager)", () => {
+    expect(evalPathSafety("package-lock.json").kind).toBe("deny")
+    expect(evalPathSafety("a/b/yarn.lock").kind).toBe("deny")
   })
   test("plain ls is allowed", () => {
     expect(evalBashSafety("ls -la").kind).toBe("allow")

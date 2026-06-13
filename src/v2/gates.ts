@@ -38,7 +38,7 @@ export function evalBashSafety(cmd: string): GateDecision {
   const rmSeg = recursiveForceRmSegment(cmd)
   if (rmSeg) {
     if (/\s(\/[^\s]*|~\/?|\$HOME\b|\$\{HOME\})/.test(rmSeg)) return { kind: "deny", reason: "destructive command blocked: recursive force-delete of an absolute/home path", cls: "security" }
-    return { kind: "ask", reason: "recursive force-delete — confirm the target" }
+    return { kind: "allow" } // relative recursive delete (build/dist/node_modules) — routine cleanup, no prompt
   }
   if (/\bcurl\b.*\|\s*sh\b/.test(cmd) || /\bnpm\s+publish\b/.test(cmd)) return { kind: "ask", reason: "high-blast-radius command" }
   return { kind: "allow" }
@@ -49,7 +49,7 @@ export function evalPathSafety(path: string): GateDecision {
   if (PROTECTED_EXEMPT.some((re) => re.test(path))) return { kind: "allow" } // briefs/ stays model-writable
   for (const re of PROTECTED) if (re.test(path)) return { kind: "deny", reason: `protected path blocked: ${path}`, cls: "security" }
   for (const re of GENERATED) if (re.test(path)) return { kind: "deny", reason: `generated/build path blocked: ${path}`, cls: "security" }
-  for (const re of LOCKFILES) if (re.test(path)) return { kind: "ask", reason: `lockfile edit — confirm: ${path}` }
+  for (const re of LOCKFILES) if (re.test(path)) return { kind: "deny", reason: `lockfile edit blocked (regenerate via the package manager): ${path}`, cls: "security" }
   return { kind: "allow" }
 }
 
