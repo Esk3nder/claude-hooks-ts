@@ -32,6 +32,61 @@ describe("destructive rm coverage (test-prompt regression)", () => {
   })
 })
 
+describe("bash write-target gate (F2 redirect-bypass closure)", () => {
+  test("redirect into a protected path → deny", () => {
+    expect(evalBashSafety("echo '{}' > .claude-hooks/policy.json").kind).toBe("deny")
+  })
+  test("quoted redirect target into a protected path → deny (no quote bypass)", () => {
+    expect(evalBashSafety('printf x > ".claude-hooks/baseline.json"').kind).toBe("deny")
+  })
+  test("append redirect into .git → deny", () => {
+    expect(evalBashSafety("echo x >> .git/config").kind).toBe("deny")
+  })
+  test("redirect into a secret path → deny", () => {
+    expect(evalBashSafety("echo k > deploy/id_rsa").kind).toBe("deny")
+  })
+  test("tee into a protected path → deny", () => {
+    expect(evalBashSafety("echo x | tee .claude-hooks/policy.json").kind).toBe("deny")
+  })
+  test("cp/mv destination in a protected path → deny", () => {
+    expect(evalBashSafety("cp /tmp/x .claude-hooks/policy.json").kind).toBe("deny")
+    expect(evalBashSafety("mv a.json .claude-hooks/policy.json").kind).toBe("deny")
+  })
+  test("dd of= a secret path → deny", () => {
+    expect(evalBashSafety("dd if=/dev/zero of=.aws/credentials").kind).toBe("deny")
+  })
+  test("redirect into briefs/ stays allowed (model-writable by design)", () => {
+    expect(evalBashSafety("echo '{}' > .claude-hooks/briefs/w1.json").kind).toBe("allow")
+  })
+  test("ordinary redirect to a normal file → allow", () => {
+    expect(evalBashSafety("bun test > out.log 2>&1").kind).toBe("allow")
+  })
+  test("2>&1 alone creates no bogus target → allow", () => {
+    expect(evalBashSafety("make 2>&1").kind).toBe("allow")
+  })
+})
+
+describe("write-gate / destructive hardening (N3, N5)", () => {
+  test("N3: >| clobber redirect into a protected path → deny", () => {
+    expect(evalBashSafety("echo x >| .claude-hooks/policy.json").kind).toBe("deny")
+  })
+  test("N3: sed -i / perl -i editing a protected path → deny", () => {
+    expect(evalBashSafety("sed -i 's/a/b/' .claude-hooks/policy.json").kind).toBe("deny")
+    expect(evalBashSafety("perl -i -pe 's/a/b/' .git/config").kind).toBe("deny")
+  })
+  test("N3: in-place edit of a normal source file → allow", () => {
+    expect(evalBashSafety("sed -i 's/a/b/' src/app.ts").kind).toBe("allow")
+  })
+  test("N5: destructive phrase inside a quoted commit message → allow (no false positive)", () => {
+    expect(evalBashSafety("git commit -m 'fix: document git push --force origin main'").kind).toBe("allow")
+    expect(evalBashSafety("echo \"git reset --hard\"").kind).toBe("allow")
+  })
+  test("N5: a real unquoted destructive command still → deny", () => {
+    expect(evalBashSafety("git push --force origin main").kind).toBe("deny")
+    expect(evalBashSafety("git reset --hard HEAD~3").kind).toBe("deny")
+  })
+})
+
 describe("briefs exemption (BUILD-SPEC §2)", () => {
   test("briefs/ stays model-writable", () => {
     expect(evalPathSafety(".claude-hooks/briefs/w1.json").kind).toBe("allow")

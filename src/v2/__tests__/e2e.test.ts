@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test"
-import { writeFileSync, mkdirSync, readFileSync, existsSync } from "node:fs"
+import { writeFileSync, mkdirSync, readFileSync, existsSync, mkdtempSync } from "node:fs"
 import { join } from "node:path"
+import { tmpdir } from "node:os"
 import { spawnSync } from "node:child_process"
 import { handleSubagentStart, handleSubagentStop, handlePreToolUse, handleStop } from "../dispatch.ts"
 import { loadVerdict, verifyVerdict, type Verdict } from "../runs.ts"
@@ -16,8 +17,8 @@ const allow = (argv: string[], risk: "low" | "high" = "low") => ({ replay: { all
 function setup(briefExtra: Partial<WorkerBrief> = {}, pin = PIN): string {
   const p = gitProject()
   writeFileSync(join(p, "src.ts"), "ok\n")
+  writePolicy(p, allow(pin)) // committed below → the allowlist is user-pinned (committed-clean at session start)
   spawnSync("git", ["add", "-A"], { cwd: p }); spawnSync("git", ["-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "x"], { cwd: p })
-  writePolicy(p, allow(pin))
   startSession(p, SESS)
   return p
 }
@@ -41,6 +42,21 @@ describe("seam e2e (§3,§4,§6.2)", () => {
     expect(ev?.status).toBe("valid")
     expect(ev?.trust_label).toBe("verified")
     expect(Object.keys(ev!.depends_on.file_scope)).toContain("src.ts")
+  })
+
+  test("F2: model-authored (uncommitted) allowlist does NOT mint a verified flip", async () => {
+    // policy.json is written AFTER session start and never committed ⇒ not user-pinned.
+    const p = gitProject()
+    writeFileSync(join(p, "src.ts"), "ok\n")
+    spawnSync("git", ["add", "-A"], { cwd: p }); spawnSync("git", ["-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "x"], { cwd: p })
+    startSession(p, SESS)
+    writePolicy(p, allow(PIN)) // the model writes its own allowlist mid-session
+    const brief: WorkerBrief = { schema_version: 1, role: "implementer", label: "evil-spine", isa_path: ".claude-hooks/ISA.md", isc_id: "ISC1", files_in_scope: ["src.ts"], acceptance: { argv: PIN, cwd: ".", replay: "required", idempotent: true } }
+    registerBrief(p, brief)
+    handleSubagentStart({ project: p, session_id: SESS, run_id: "evil-spine", agent_id: "evil-spine", parent_run_id: null, agent_type: "implementer", label: "evil-spine" })
+    const r = await handleSubagentStop({ project: p, session_id: SESS, run_id: "evil-spine", event_seq: 1, last_assistant_message: implResult("evil-spine", p, PIN) })
+    expect(r.outcome).toBe("accepted_verified") // replay matched...
+    expect(loadEvidence(p, SESS, "ISC1")).toBeNull() // ...but no spine flip from an untrusted allowlist
   })
 
   test("forged brief (registered after start) → soft_failed", async () => {
@@ -127,5 +143,80 @@ describe("gates via dispatch (§12)", () => {
   test("orchestrator destructive bash → deny", () => {
     const p = setup()
     expect(handlePreToolUse({ project: p, session_id: SESS, run_id: null, tool_name: "Bash", tool_input: { command: "rm -rf /" } }).kind).toBe("deny")
+  })
+})
+
+describe("evidential completion gate (F1, §6.4)", () => {
+  const SPINE = (overrides: Partial<WorkerBrief> = {}): WorkerBrief => ({
+    schema_version: 1, role: "implementer", label: "spine-x", isa_path: "ISA.md", isc_id: "ISC1",
+    files_in_scope: ["src.ts"], acceptance: { argv: PIN, cwd: ".", replay: "required", idempotent: true }, ...overrides,
+  })
+  const writeIsa = (p: string, phase: string, isc: string[]) =>
+    writeFileSync(join(p, "ISA.md"), `---\neffort: E3\nphase: ${phase}\n---\n\n## Goal\nship it\n\n## Criteria\n${isc.join("\n")}\n`)
+
+  test("phase: complete, declared ISC with no evidence → block (was vacuous)", () => {
+    const p = setup()
+    writeIsa(p, "complete", ["- [ ] ISC1: it works"])
+    const r = handleStop(p, SESS, [])
+    expect(r.decision).toBe("block")
+    expect(r.reason).toContain("ISC1")
+  })
+
+  test("phase: complete, zero ## Criteria → block (empty-stub bypass)", () => {
+    const p = setup()
+    writeIsa(p, "complete", [])
+    const r = handleStop(p, SESS, [])
+    expect(r.decision).toBe("block")
+    expect(r.reason).toContain("zero")
+  })
+
+  test("phase: complete, ISC flipped by verified replay → pass", async () => {
+    const p = setup()
+    await runOnce(p, "spine-x", "implementer", implResult("spine-x", p, PIN), true, SPINE())
+    expect(loadEvidence(p, SESS, "ISC1")?.trust_label).toBe("verified")
+    writeIsa(p, "complete", ["- [x] ISC1: it works"])
+    expect(handleStop(p, SESS, []).decision).toBe("pass")
+  })
+
+  test("phase: complete, verified ISC then scope file mutates → stale → block", async () => {
+    const p = setup()
+    await runOnce(p, "spine-y", "implementer", implResult("spine-y", p, PIN), true, SPINE({ label: "spine-y" }))
+    writeIsa(p, "complete", ["- [x] ISC1: it works"])
+    expect(handleStop(p, SESS, []).decision).toBe("pass")
+    writeFileSync(join(p, "src.ts"), "CHANGED\n")
+    expect(handleStop(p, SESS, []).decision).toBe("block")
+  })
+
+  test("ISA present but phase != complete → no completion block (work in progress)", () => {
+    const p = setup()
+    writeIsa(p, "in_progress", ["- [ ] ISC1: pending"])
+    expect(handleStop(p, SESS, []).decision).toBe("pass")
+  })
+
+  test("no ISA → gate does not bind", () => {
+    const p = setup()
+    expect(handleStop(p, SESS, []).decision).toBe("pass")
+  })
+})
+
+describe("honest trust labels (F9)", () => {
+  function cleanRepo(): string {
+    const d = mkdtempSync(join(tmpdir(), "ws-"))
+    spawnSync("git", ["init", "-q"], { cwd: d })
+    writeFileSync(join(d, "f.txt"), "x\n")
+    spawnSync("git", ["add", "-A"], { cwd: d }); spawnSync("git", ["-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "b"], { cwd: d })
+    return d
+  }
+  test("skeptic without reproduction → accepted but trust none / advisory, not verified", async () => {
+    const p = setup()
+    const ws = cleanRepo()
+    registerBrief(p, { schema_version: 1, role: "skeptic", label: "sk1" } as WorkerBrief)
+    handleSubagentStart({ project: p, session_id: SESS, run_id: "sk1", agent_id: "sk1", parent_run_id: null, agent_type: "skeptic", label: "sk1" })
+    const msg = JSON.stringify({ label: "sk1", claim: "x holds", verdict: "confirmed", workspace: { root: ws }, caveats: ["scoped"] })
+    const r = await handleSubagentStop({ project: p, session_id: SESS, run_id: "sk1", event_seq: 1, last_assistant_message: msg })
+    expect(r.outcome).toBe("accepted_verified")
+    const v = loadVerdict(p, SESS, "sk1")!
+    expect(v.trust_label).toBe("none")
+    expect(v.advice).toContain("advisory")
   })
 })

@@ -2,10 +2,11 @@ import { describe, expect, test } from "bun:test"
 import { mkdtempSync, mkdirSync, writeFileSync, symlinkSync, realpathSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-import { executeReplay, resolveWorkspace, resolvePin, minimalEnv, argvEqual } from "../replay.ts"
+import { executeReplay, resolveWorkspace, resolvePin, minimalEnv, argvEqual, evalReplayArgvSafety } from "../replay.ts"
 import { confine, isValidId, isValidRunId } from "../fsx.ts"
 import { loadBrief } from "../briefs.ts"
 import { writeBaseline, isUserPinned } from "../trust.ts"
+import { sessionSecret, roleStats, appendLedger } from "../runs.ts"
 import { gitProject, registerBrief } from "./helpers.ts"
 import { spawnSync } from "node:child_process"
 
@@ -45,6 +46,49 @@ describe("replay security (§13)", () => {
   test("resolvePin: worker cannot choose its own command", () => {
     expect(resolvePin(["rm", "-rf", "/"], null, [{ argv: ["bun", "test"], cwd_policy: "workspace", idempotent: true, max_output_bytes: 1, risk: "low" }])).toBeNull()
     expect(resolvePin(["bun", "test"], null, [{ argv: ["bun", "test"], cwd_policy: "workspace", idempotent: true, max_output_bytes: 1, risk: "low" }])).not.toBeNull()
+  })
+})
+
+describe("replay argv safety (§6.3, F5)", () => {
+  test("destructive / interpreter-inline argv refused; build commands allowed", () => {
+    expect(evalReplayArgvSafety(["git", "push", "--force", "origin", "main"]).ok).toBe(false)
+    expect(evalReplayArgvSafety(["rm", "-rf", "/etc"]).ok).toBe(false)
+    expect(evalReplayArgvSafety(["python", "-c", "import os"]).ok).toBe(false)
+    expect(evalReplayArgvSafety(["bash", "-c", "echo hi"]).ok).toBe(false)
+    expect(evalReplayArgvSafety(["tee", ".env"]).ok).toBe(false)
+    expect(evalReplayArgvSafety(["bun", "test"]).ok).toBe(true)
+    expect(evalReplayArgvSafety(["python", "-m", "pytest"]).ok).toBe(true)
+    expect(evalReplayArgvSafety(["pytest"]).ok).toBe(true)
+  })
+  test("N6: env-wrapped and versioned interpreters with inline code → refused", () => {
+    expect(evalReplayArgvSafety(["env", "python3", "-c", "import os"]).ok).toBe(false)
+    expect(evalReplayArgvSafety(["env", "FOO=1", "python3", "-c", "x"]).ok).toBe(false)
+    expect(evalReplayArgvSafety(["python3.12", "-c", "x"]).ok).toBe(false)
+    expect(evalReplayArgvSafety(["/usr/bin/python3.11", "-c", "x"]).ok).toBe(false)
+    expect(evalReplayArgvSafety(["env", "bun", "test"]).ok).toBe(true)
+  })
+})
+
+describe("session secret (§6.5, F7)", () => {
+  test("256-bit hex, unique per project, stable across calls", () => {
+    const a = gitProject(); const b = gitProject()
+    const sa = sessionSecret(a)
+    expect(sa).toMatch(/^[0-9a-f]{64}$/)
+    expect(sa).not.toBe(sessionSecret(b))
+    expect(sessionSecret(a)).toBe(sa) // persisted, not regenerated
+  })
+})
+
+describe("sampling stats integrity (§8, F8)", () => {
+  test("roleStats counts only replayed rows scoped to this project", async () => {
+    const a = gitProject() // sets CLAUDE_HOOKS_LOG_DIR → a/.claude-hooks
+    await appendLedger(a, "worker-acceptance", { role: "implementer", outcome: "accepted_verified", replayed: true })
+    await appendLedger(a, "worker-acceptance", { role: "implementer", outcome: "rejected", replayed: true })
+    await appendLedger(a, "worker-acceptance", { role: "implementer", outcome: "accepted_verified", replayed: false }) // no-replay farm attempt
+    await appendLedger("/other/repo", "worker-acceptance", { role: "implementer", outcome: "accepted_verified", replayed: true }) // cross-project
+    const st = roleStats(a, "implementer")
+    expect(st.runs).toBe(2) // only the two genuine replay rows in THIS project
+    expect(st.accepted).toBe(1) // one of them passed
   })
 })
 

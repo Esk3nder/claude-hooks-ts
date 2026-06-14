@@ -1,5 +1,5 @@
 /** Per-run state + signed verdicts + ledger (BUILD-SPEC §3.1, §5.4, §5.5). */
-import { createHmac } from "node:crypto"
+import { createHmac, randomBytes } from "node:crypto"
 import { join } from "node:path"
 import { statSync, renameSync, appendFileSync, mkdirSync, readFileSync, existsSync, readdirSync } from "node:fs"
 import { stateRoot, logRoot, writeHookOnly, readHookOnly, withLock } from "./fsx.ts"
@@ -16,6 +16,7 @@ export interface RunState {
   depth: number
   ancestry_labels: string[]
   authority: NodeAuthority
+  capped: boolean // enforce capability only for an explicit restrictive role (brief, or a recognized host type) — N1
   state: "RUNNING" | "TERMINAL"
   brief_snapshot: Record<string, unknown> | null
   warm: boolean
@@ -34,7 +35,7 @@ export function sessionSecret(project: string): string {
   const path = secretPath(project)
   const existing = readHookOnly(path)
   if (existing) return existing
-  const secret = createHmac("sha256", String(process.hrtime.bigint())).update("cw-session").digest("hex")
+  const secret = randomBytes(32).toString("hex") // CSPRNG (F7) — the HMAC trust root, not a guessable counter
   writeHookOnly(path, secret)
   return secret
 }
@@ -74,6 +75,20 @@ export function verifyVerdict(project: string, v: Verdict): boolean {
   const expect = createHmac("sha256", sessionSecret(project)).update(canonical(body as Omit<Verdict, "sig">)).digest("hex")
   return sig === expect
 }
+/** Verify a host-delivered manual-flip confirmation's HMAC (§11). A worker can write the file but
+ *  cannot forge the signature (the secret is hook-only, CSPRNG). Returns false on missing/tampered. */
+export function verifyConfirmation(project: string, sess: string, isc: string): boolean {
+  const safeIsc = isc.replace(/[^\w-]/g, "_")
+  const raw = readHookOnly(join(stateRoot(project), "confirmations", sess, `${safeIsc}.json`))
+  if (raw === null) return false
+  try {
+    const c = JSON.parse(raw) as Record<string, unknown> & { sig?: string }
+    if (typeof c.sig !== "string") return false
+    const { sig, ...body } = c
+    return createHmac("sha256", sessionSecret(project)).update(JSON.stringify(body)).digest("hex") === sig
+  } catch { return false }
+}
+
 export function saveVerdict(project: string, sess: string, v: Verdict): void {
   writeHookOnly(verdictPath(project, sess, v.run_id), JSON.stringify(v, null, 2))
 }
@@ -94,20 +109,22 @@ export async function appendLedger(project: string, stream: string, row: object,
   })
 }
 
-/** Per-role history from the GLOBAL acceptance ledger (for intensity sampling, BUILD-SPEC §8).
- *  Cross-project by design — role reliability is a property of the role/model, not one repo.
- *  `project` is unused for filtering but kept for signature stability / future scoping. */
-export function roleStats(_project: string, role: Role): { runs: number; accepted: number } {
+/** Per-role replay history for intensity sampling (BUILD-SPEC §8).
+ *  Scoped to THIS project (cross-project rows can't inflate eligibility — F8) and counts only
+ *  rows that represent an actual replay outcome (`replayed:true`): a pass/fail world-fact. Rows
+ *  with no replay — blocked implementer, reproduction-less skeptic, scout, sampled — never count,
+ *  so eligibility cannot be farmed from outcomes that skipped verification. */
+export function roleStats(project: string, role: Role): { runs: number; accepted: number } {
   const path = join(logRoot(), "eventstore", "worker-acceptance.jsonl")
   let runs = 0, accepted = 0
   try {
     for (const line of readFileSync(path, "utf8").split("\n")) {
       if (!line.trim()) continue
       try {
-        const r = JSON.parse(line) as { role?: string; outcome?: string }
-        if (r.role !== role) continue
+        const r = JSON.parse(line) as { project?: string; role?: string; outcome?: string; replayed?: boolean }
+        if (r.project !== project || r.role !== role || r.replayed !== true) continue
         runs++
-        if (r.outcome === "accepted_verified" || r.outcome === "accepted_sampled") accepted++
+        if (r.outcome === "accepted_verified") accepted++
       } catch { /* skip */ }
     }
   } catch { /* no ledger yet */ }

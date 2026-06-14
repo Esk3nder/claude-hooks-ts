@@ -29,6 +29,9 @@ export const DEFAULTS: PolicyConfig = {
   speculative: { max_k: 4, budget_token_cap: 1_500_000 },
 }
 
+/** Policy file path relative to the project root — what the session baseline pins for trust. */
+export const POLICY_REL = ".claude-hooks/policy.json"
+
 export function policyPath(project: string): string {
   return join(stateRoot(project), "policy.json")
 }

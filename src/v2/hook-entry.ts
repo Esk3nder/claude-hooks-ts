@@ -12,7 +12,7 @@ import { createHmac } from "node:crypto"
 import { stateRoot, hookLog, writeHookOnly } from "./fsx.ts"
 import { handleSessionStart, handleSubagentStart, handlePreToolUse, handleStop } from "./dispatch.ts"
 import { handleSubagentStop } from "./seam.ts"
-import { sessionSecret, type RunState } from "./runs.ts"
+import { sessionSecret, loadVerdict, verifyVerdict, type RunState, type Verdict } from "./runs.ts"
 import type { GateDecision } from "./gates.ts"
 import type { Role } from "./types.ts"
 
@@ -25,7 +25,7 @@ function projectRoot(cwd: string): string {
 }
 
 // --- pragmatic spawn correlation: PreToolUse(Agent) records {label,role,parent}; SubagentStart pops it (FIFO) ---
-interface Pending { label: string; role: Role; parent_run_id: string | null }
+interface Pending { label: string; role: string; parent_run_id: string | null } // role = host agent_type (correlation key)
 function pendingPath(project: string, session: string): string {
   return join(stateRoot(project), "runs", "pending", `${session}.json`)
 }
@@ -36,13 +36,23 @@ function pushPending(project: string, session: string, p: Pending): void {
   q.push(p)
   writeFileSync(path, JSON.stringify(q), { mode: 0o600 })
 }
-function popPending(project: string, session: string): Pending | null {
+/** Pop the first pending brief whose role matches the starting subagent (host fact: SubagentStart
+ *  carries agent_type). No role match ⇒ null: the run gets no brief snapshot and stays untrusted —
+ *  fail closed under concurrent/reordered spawns rather than bind a mismatched brief (F6, SPEC §6.5). */
+function popPendingByRole(project: string, session: string, role: string): Pending | null {
   const path = pendingPath(project, session)
   if (!existsSync(path)) return null
   const q: Pending[] = JSON.parse(readFileSync(path, "utf8"))
-  const head = q.shift() ?? null
+  const idx = q.findIndex((p) => p.role === role)
+  if (idx === -1) return null
+  const [head] = q.splice(idx, 1)
   writeFileSync(path, JSON.stringify(q), { mode: 0o600 })
-  return head
+  return head ?? null
+}
+
+/** Concise, hook-authored verdict line for orchestrator injection (F4) — the worker cannot forge it. */
+function formatVerdict(v: Verdict): string {
+  return `[verified-by-hook] worker ${v.role} ${v.run_id}: outcome=${v.outcome} trust=${v.trust_label} — ${v.summary_line} (advice: ${v.advice})`
 }
 
 function findRunIdByAgent(project: string, session: string, agentId: string): string | null {
@@ -83,7 +93,7 @@ function evidenceIscs(project: string, session: string): { isc: string; required
 
 /** Events v2 is wired on but has no active logic for yet — it stays AWARE (logs) and no-ops. */
 const NOOP_AWARE = new Set([
-  "PostToolUse", "PostToolUseFailure", "PostToolBatch", "PreCompact", "PostCompact",
+  "PostToolUseFailure", "PostToolBatch", "PreCompact", "PostCompact",
   "SessionEnd", "PermissionRequest", "PermissionDenied", "ConfigChange", "FileChanged",
   "Notification", "Setup", "InstructionsLoaded", "CwdChanged", "StopFailure",
   "UserPromptSubmit", "UserPromptExpansion", "TaskCreated", "TaskCompleted",
@@ -108,32 +118,56 @@ export async function route(payload: Payload): Promise<object> {
       const tool = str(payload, "tool_name")
       const input = (payload["tool_input"] as Payload) ?? {}
       const base = tool.split("(")[0]!
+      // host fact: agent_id appears ONLY when this call originates inside a subagent. The calling worker's
+      // capability is read from its run state (brief-derived authority), never from the host agent_type.
+      const callerAgentId = str(payload, "agent_id")
+      const callerRunId = callerAgentId ? (findRunIdByAgent(project, session, callerAgentId) ?? callerAgentId) : null
       if (base === "Agent" || base === "Task") {
-        const role = (input["subagent_type"] ?? input["agent_type"]) as Role | undefined
+        const childType = (input["subagent_type"] ?? input["agent_type"]) as string | undefined
         const label = (input["label"] as string) ?? "child"
-        if (role) pushPending(project, session, { label, role, parent_run_id: process.env["CLAUDE_HOOKS_RUN_ID"] ?? null })
+        if (childType) pushPending(project, session, { label, role: childType, parent_run_id: callerRunId })
       }
-      const runId = process.env["CLAUDE_HOOKS_RUN_ID"] ?? null
-      return gateToDecision(handlePreToolUse({ project, session_id: session, run_id: runId, tool_name: tool, tool_input: input }))
+      return gateToDecision(handlePreToolUse({ project, session_id: session, run_id: callerRunId, tool_name: tool, tool_input: input }))
     }
     case "SubagentStart": {
       const agentId = str(payload, "agent_id")
-      const role = (str(payload, "agent_type") as Role) || "implementer"
-      const pend = popPending(project, session)
+      const hostType = str(payload, "agent_type") || "implementer"
+      // correlate the pending brief by the host agent_type (both sides use the same string the orchestrator
+      // passed to Task) — fail closed on no match. The v2 role is resolved from the brief inside dispatch.
+      const pend = popPendingByRole(project, session, hostType)
       const label = pend?.label ?? agentId
       const parent = pend?.parent_run_id ?? null
       const runId = parent ? `${parent}/${agentId}` : agentId
-      handleSubagentStart({ project, session_id: session, run_id: runId, agent_id: agentId, parent_run_id: parent, agent_type: role, label })
+      handleSubagentStart({ project, session_id: session, run_id: runId, agent_id: agentId, parent_run_id: parent, agent_type: hostType, label })
       return {}
     }
     case "SubagentStop": {
       const agentId = str(payload, "agent_id")
       const runId = findRunIdByAgent(project, session, agentId) ?? agentId
-      // monotonic event_seq per run (count prior stop attempts via blocks_used is handled in-seam; use a timestamp-free counter)
-      const r = await handleSubagentStop({ project, session_id: session, run_id: runId, event_seq: 1, last_assistant_message: str(payload, "last_assistant_message") })
+      const msg = str(payload, "last_assistant_message") || str(payload, "result_summary")
+      const r = await handleSubagentStop({ project, session_id: session, run_id: runId, event_seq: 1, last_assistant_message: msg })
+      // Probe finding (CC 2.1.177): ANY non-empty SubagentStop output resumes the stopped subagent and
+      // is scoped to its sidechain, never the parent. So only a genuine contract-retry block emits here;
+      // the verdict is delivered to the ORCHESTRATOR at PostToolUse(Agent), whose context the parent sees.
       return r.decision === "block" ? { decision: "block", reason: r.reason } : {}
     }
+    case "PostToolUse": {
+      // F4 delivery: when the orchestrator's Agent/Task call completes, inject the finished worker's
+      // hook-signed verdict into the parent's context. PostToolUse runs in the orchestrator's turn, and
+      // tool_response.agentId correlates to the child (probe-confirmed). The worker cannot forge this.
+      const base = str(payload, "tool_name").split("(")[0]!
+      if (base === "Agent" || base === "Task") {
+        const tr = (payload["tool_response"] as Payload) ?? {}
+        const childAgentId = str(tr, "agentId") || str(tr, "agent_id")
+        const runId = childAgentId ? findRunIdByAgent(project, session, childAgentId) : null
+        const v = runId ? loadVerdict(project, session, runId) : null
+        if (v && verifyVerdict(project, v)) return { hookSpecificOutput: { hookEventName: "PostToolUse", additionalContext: formatVerdict(v) } }
+      }
+      return {}
+    }
     case "Stop": {
+      // kill-switch: stand the evidential Stop gate down per-environment (default: active)
+      if (process.env["CLAUDE_HOOKS_DISABLE_EVIDENTIAL_GATE"] === "1") return {}
       const r = handleStop(project, session, evidenceIscs(project, session))
       return r.decision === "block" ? { decision: "block", reason: r.reason } : {}
     }
